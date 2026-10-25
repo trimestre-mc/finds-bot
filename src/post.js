@@ -3,8 +3,9 @@
 import { discordApi } from './discord.js';
 import { buildAgentLink } from './links.js';
 
-const PLATFORM_NAMES = { weidian: 'Weidian', taobao: 'Taobao', '1688': '1688' };
-const LINK_BUTTON = 5;
+import { COMPONENTS_V2, GOLD, container, gallery, text, sep, row, link, escape } from './components.js';
+
+export const PLATFORM_NAMES = { weidian: 'Weidian', taobao: 'Taobao', '1688': '1688' };
 
 export async function getRate(env) {
   const row = await env.DB.prepare("SELECT value FROM settings WHERE key = 'cny_eur'").first();
@@ -41,30 +42,31 @@ export async function getAgents(env) {
   return results;
 }
 
+// Carte d'un item posté dans un salon (Components V2).
 export function buildItemMessage(item, agents, rate) {
   const platform = PLATFORM_NAMES[item.platform] || item.platform;
-  const links = agents.slice(0, 24).map((a) => ({ label: a.name, url: buildAgentLink(a.template, item) }));
-  const embed = {
-    title: itemTitle(item),
-    url: links.length ? links[0].url : item.url,
-    color: 0xff4d4d,
-    fields: [
-      { name: '💰 Prix', value: formatPrice(item.price_cny, rate), inline: true },
-      { name: '🏪 Vendeur', value: (item.shop_name || '—').slice(0, 100), inline: true },
-    ],
-    footer: { text: `${platform} · ${item.item_id}` },
+  const buttons = agents.slice(0, 24).map((a) => link(`Acheter sur ${a.name}`.slice(0, 80), buildAgentLink(a.template, item), '🛒'));
+  buttons.push(link(platform, item.url, '🔗'));
+  const rows = [];
+  for (let i = 0; i < buttons.length; i += 5) rows.push(row(...buttons.slice(i, i + 5)));
+
+  const original = item.title_en && item.title_zh && item.title_en !== item.title_zh ? `\n-# ${escape(item.title_zh.slice(0, 150))}` : '';
+  const price = item.price_cny != null
+    ? `### ¥${Number(item.price_cny).toFixed(item.price_cny % 1 ? 2 : 0)}  ·  ~${(item.price_cny * rate).toFixed(2).replace('.', ',')} €`
+    : '### Prix non indiqué';
+
+  return {
+    flags: COMPONENTS_V2,
+    allowed_mentions: { parse: [] },
+    components: [container([
+      item.image ? gallery([item.image]) : null,
+      text(`## ${escape(itemTitle(item))}${original}`),
+      text(`${price}\n🏪 ${escape(item.shop_name || platform)}`),
+      sep(),
+      ...rows,
+      text(`-# ${platform} · ${item.item_id}`),
+    ], GOLD)],
   };
-  if (item.title_en && item.title_zh && item.title_en !== item.title_zh) {
-    embed.description = item.title_zh.slice(0, 200);
-  }
-  if (item.image) embed.image = { url: item.image };
-
-  const buttons = links.map((l) => ({ type: 2, style: LINK_BUTTON, label: `Acheter sur ${l.label}`.slice(0, 80), url: l.url }));
-  buttons.push({ type: 2, style: LINK_BUTTON, label: `Voir sur ${platform}`, url: item.url });
-  const components = [];
-  for (let i = 0; i < buttons.length; i += 5) components.push({ type: 1, components: buttons.slice(i, i + 5) });
-
-  return { embeds: [embed], components };
 }
 
 export async function postItem(env, item, channelId, agents, rate) {

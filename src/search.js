@@ -2,7 +2,7 @@
 
 import { translate } from './translate.js';
 
-export const PAGE_SIZE = 10;
+export const PAGE_SIZE = 5;
 export const MAX_BULK = 500;
 
 function terms(text) {

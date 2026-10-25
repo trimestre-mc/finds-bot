@@ -1,20 +1,23 @@
 // Bot Discord "finds" : Worker Cloudflare (interactions HTTP + cron + API indexeur).
+// Une seule commande, /menu, ouvre un panneau ; tout le reste passe par boutons, menus et formulaires.
 
-import {
-  InteractionType, Reply, EPHEMERAL, ADMINISTRATOR,
-  verifyRequest, discordApi, followup, editOriginal, json, reply,
-} from './discord.js';
+import { InteractionType, Reply, EPHEMERAL, verifyRequest, discordApi, editOriginal, json, reply } from './discord.js';
 import { COMMANDS } from './commands.js';
-import { parseWeidianShop, parseItemLink, isValidTemplate } from './links.js';
-import { prepareQuery, countResults, pageResults, allResultIds, PAGE_SIZE, MAX_BULK } from './search.js';
-import {
-  getRate, refreshRate, formatPrice, itemTitle, getAgents, postItem, processQueue,
-} from './post.js';
+import { COMPONENTS_V2, modalValues, escape, fmtInt } from './components.js';
+import { parseWeidianShop, parseItemLink, isValidTemplate, buildAgentLink } from './links.js';
+import { prepareQuery, allResultIds } from './search.js';
+import { getRate, refreshRate, formatPrice, getAgents, postItem, processQueue } from './post.js';
 import { translatePending } from './translate.js';
+import {
+  QUEUE_PER_MINUTE, homeView, searchModal, loadSearch, createSearch, resultsView, confirmAllView,
+  catalogsView, addShopModal, shopView, confirmDeleteShopView, agentsView, agentModal, itemModal,
+  accessView, hasAdminPermission, deniedView, errorView,
+} from './ui.js';
 
 const REINDEX_HOURS = 24;
-const QUEUE_PER_MINUTE = 8;
 const TRANSLATE_PER_MINUTE = 10;
+const MODAL_SUBMIT = 5;
+const MODAL = 9;
 
 export default {
   async fetch(request, env, ctx) {
@@ -40,6 +43,34 @@ export default {
   },
 };
 
+// ---------------------------------------------------------------- Réponses
+
+const panel = (components) => json({
+  type: Reply.MESSAGE,
+  data: { flags: EPHEMERAL | COMPONENTS_V2, components, allowed_mentions: { parse: [] } },
+});
+const update = (components) => json({
+  type: Reply.UPDATE_MESSAGE,
+  data: { flags: COMPONENTS_V2, components, allowed_mentions: { parse: [] } },
+});
+const openModal = (m) => json({ type: MODAL, data: m });
+
+// Répond tout de suite, puis remplace le panneau quand la tâche (lente) est finie.
+function later(it, env, ctx, task) {
+  ctx.waitUntil((async () => {
+    let components;
+    try {
+      components = await task();
+    } catch (err) {
+      console.log('tâche', err && err.stack ? err.stack : String(err));
+      components = errorView(err.message || err);
+    }
+    await editOriginal(env, it.token, { flags: COMPONENTS_V2, components, allowed_mentions: { parse: [] } })
+      .catch((e) => console.log('édition', String(e)));
+  })());
+  return json({ type: Reply.DEFERRED_UPDATE });
+}
+
 // ---------------------------------------------------------------- Interactions
 
 async function handleInteraction(request, env, ctx) {
@@ -50,39 +81,18 @@ async function handleInteraction(request, env, ctx) {
   if (it.type === InteractionType.PING) return json({ type: Reply.PONG });
   if (!it.guild_id) return reply('Ce bot s\'utilise uniquement dans un serveur.');
 
-  if (it.type === InteractionType.AUTOCOMPLETE) return autocomplete(it, env);
-
   if (!(await isAdmin(env, it))) {
-    return reply('⛔ Réservé aux administrateurs du serveur et aux membres ajoutés avec `/admin ajouter`.');
+    return it.type === InteractionType.COMMAND ? panel(deniedView()) : update(deniedView());
   }
 
-  if (it.type === InteractionType.COMMAND) {
-    const name = it.data.name;
-    const sub = it.data.options && it.data.options[0] && it.data.options[0].type === 1 ? it.data.options[0] : null;
-    const opts = optionMap(sub ? sub.options : it.data.options);
-    if (name === 'catalogue') return catalogue(sub.name, opts, it, env, ctx);
-    if (name === 'recherche') return recherche(opts, it, env, ctx);
-    if (name === 'item') return itemAdd(opts, it, env, ctx);
-    if (name === 'agent') return agent(sub.name, opts, env);
-    if (name === 'admin') return admin(sub.name, opts, it, env);
-    if (name === 'statut') return statut(env);
-  }
-  if (it.type === InteractionType.COMPONENT) return component(it, env, ctx);
-  return reply('Commande inconnue.');
-}
-
-function optionMap(options) {
-  const out = {};
-  for (const o of options || []) out[o.name] = o.value;
-  return out;
+  if (it.type === InteractionType.COMMAND) return panel(await homeView(env, it));
+  if (it.type === InteractionType.COMPONENT) return onComponent(it, env, ctx);
+  if (it.type === MODAL_SUBMIT) return onModal(it, env, ctx);
+  return reply('Action inconnue.');
 }
 
 function userId(it) {
   return (it.member && it.member.user && it.member.user.id) || (it.user && it.user.id);
-}
-
-function hasAdminPermission(it) {
-  return it.member && (BigInt(it.member.permissions || '0') & ADMINISTRATOR) === ADMINISTRATOR;
 }
 
 async function isAdmin(env, it) {
@@ -92,104 +102,238 @@ async function isAdmin(env, it) {
   return !!row;
 }
 
-// Exécute une tâche longue après une réponse différée, et affiche l'erreur si besoin.
-function deferred(it, env, ctx, task, update = false) {
-  ctx.waitUntil((async () => {
-    try {
-      await task();
-    } catch (err) {
-      console.log('tâche', err && err.stack ? err.stack : String(err));
-      await editOriginal(env, it.token, { content: `❌ Erreur : ${String(err.message || err).slice(0, 300)}` }).catch(() => {});
+// ---------------------------------------------------------------- Boutons et menus
+
+async function onComponent(it, env, ctx) {
+  const [a, b, c, d] = it.data.custom_id.split(':');
+  const values = it.data.values || [];
+
+  switch (`${a}:${b || ''}`) {
+    case 'home:': return update(await homeView(env, it));
+
+    case 'search:new': return openModal(searchModal());
+    case 'search:latest': {
+      const sid = await createSearch(env, it, { q: '', variants: [], latest: true, includePosted: false });
+      return update(await resultsView(env, sid, 0));
     }
-  })());
-  return json(update ? { type: Reply.DEFERRED_UPDATE } : { type: Reply.DEFERRED_MESSAGE, data: { flags: EPHEMERAL } });
-}
 
-// ---------------------------------------------------------------- Autocomplétion
-
-async function autocomplete(it, env) {
-  const sub = it.data.options && it.data.options[0] && it.data.options[0].type === 1 ? it.data.options[0] : null;
-  const opts = sub ? sub.options : it.data.options;
-  const focused = (opts || []).find((o) => o.focused);
-  const value = focused ? String(focused.value || '') : '';
-  let choices = [];
-  if (it.data.name === 'agent') {
-    const { results } = await env.DB.prepare('SELECT name FROM agents WHERE name LIKE ? ORDER BY position LIMIT 25')
-      .bind(`%${value}%`).all();
-    choices = results.map((r) => ({ name: r.name, value: r.name }));
-  } else {
-    const { results } = await env.DB.prepare(
-      'SELECT id, name, item_count FROM shops WHERE id LIKE ? OR name LIKE ? ORDER BY name LIMIT 25',
-    ).bind(`%${value}%`, `%${value}%`).all();
-    choices = results.map((r) => ({ name: `${r.name || 'Boutique'} (${r.id}) · ${r.item_count} items`.slice(0, 100), value: r.id }));
-  }
-  return json({ type: Reply.AUTOCOMPLETE, data: { choices } });
-}
-
-// ---------------------------------------------------------------- /catalogue
-
-async function catalogue(sub, opts, it, env, ctx) {
-  if (sub === 'ajouter') {
-    const link = String(opts.lien);
-    if (/taobao\.com|tmall\.com|1688\.com/.test(link)) {
-      return reply('⚠️ Les boutiques Taobao et 1688 demandent une connexion, elles ne peuvent pas être indexées automatiquement. Ajoute leurs items avec `/item ajouter`.');
+    case 'cat:list': return update(await catalogsView(env, Number(c) || 0));
+    case 'cat:add': return openModal(addShopModal());
+    case 'cat:shop': return update(await shopView(env, c));
+    case 'cat:items': {
+      const shop = await env.DB.prepare('SELECT name FROM shops WHERE id = ?').bind(c).first();
+      const sid = await createSearch(env, it, { q: '', variants: [], shop: c, shopName: shop ? shop.name : c, includePosted: true });
+      return update(await resultsView(env, sid, 0));
     }
-    let shopId = parseWeidianShop(link);
-    if (!shopId) {
-      const item = parseItemLink(link);
-      if (!item || item.platform !== 'weidian') {
-        return reply('❌ Lien non reconnu. Exemple : `https://weidian.com/?userid=1784277725` ou le lien d\'un item de la boutique.');
+    case 'cat:reidx': {
+      await env.DB.prepare("UPDATE shops SET status = 'pending', last_error = NULL WHERE id = ?").bind(c).run();
+      await triggerIndexer(env);
+      return update(await shopView(env, c, '🔁 Réindexation demandée, elle démarre dans 30 min maximum.'));
+    }
+    case 'cat:del': return update(await confirmDeleteShopView(env, c));
+    case 'cat:delok': {
+      const shop = await env.DB.prepare('SELECT name FROM shops WHERE id = ?').bind(c).first();
+      await env.DB.batch([
+        env.DB.prepare('DELETE FROM items WHERE shop_id = ? AND manual = 0').bind(c),
+        env.DB.prepare('DELETE FROM shops WHERE id = ?').bind(c),
+      ]);
+      return update(await catalogsView(env, 0, `🗑️ **${escape(shop ? shop.name || c : c)}** a été retirée.`));
+    }
+
+    case 'ag:list': return update(await agentsView(env));
+    case 'ag:add': return openModal(agentModal());
+    case 'ag:del': {
+      const name = decodeURIComponent(c);
+      await env.DB.prepare('DELETE FROM agents WHERE name = ?').bind(name).run();
+      return update(await agentsView(env, `🗑️ Agent **${escape(name)}** retiré.`));
+    }
+
+    case 'item:add': return openModal(itemModal());
+
+    case 'acc:': return update(await accessView(env, it));
+    case 'acc:add':
+    case 'acc:rm': {
+      if (!hasAdminPermission(it)) return update(await accessView(env, it, '🔒 Seuls les administrateurs du serveur peuvent modifier cette liste.'));
+      const stmts = values.map((id) => (b === 'add'
+        ? env.DB.prepare('INSERT OR IGNORE INTO admins (guild_id, user_id, added_by) VALUES (?, ?, ?)').bind(it.guild_id, id, userId(it))
+        : env.DB.prepare('DELETE FROM admins WHERE guild_id = ? AND user_id = ?').bind(it.guild_id, id)));
+      if (stmts.length) await env.DB.batch(stmts);
+      const who = values.map((id) => `<@${id}>`).join(', ');
+      return update(await accessView(env, it, b === 'add' ? `✅ Accès donné à ${who}.` : `➖ Accès retiré à ${who}.`));
+    }
+
+    case 's:pg': return update(await resultsView(env, c, Number(d) || 0));
+    case 's:edit': {
+      const s = await loadSearch(env, c);
+      return openModal(searchModal(s ? s.params : {}, c));
+    }
+    case 's:posted': {
+      const s = await loadSearch(env, c);
+      if (s) {
+        s.params.includePosted = !s.params.includePosted;
+        await env.DB.prepare('UPDATE searches SET params = ? WHERE id = ?').bind(JSON.stringify(s.params), c).run();
       }
-      return deferred(it, env, ctx, async () => {
-        const info = await fetchWeidianItem(item.itemId);
-        if (!info.shopId) throw new Error('impossible de trouver la boutique de cet item');
-        await editOriginal(env, it.token, { content: await addShop(env, info.shopId, info.shopName, userId(it)) });
-      });
+      return update(await resultsView(env, c, 0));
     }
-    return reply(await addShop(env, shopId, null, userId(it)));
+    case 's:ch': {
+      const channel = values[0];
+      if (channel) await env.DB.prepare('UPDATE searches SET channel_id = ? WHERE id = ?').bind(channel, c).run();
+      return update(await resultsView(env, c, Number(d) || 0, `📍 Les items seront postés dans <#${channel}>.`));
+    }
+    case 's:sel': return later(it, env, ctx, () => postSelected(env, c, Number(d) || 0, values));
+    case 's:all': return update(await confirmAllView(env, c, Number(d) || 0));
+    case 's:ok': {
+      const s = await loadSearch(env, c);
+      if (!s) return update(await homeView(env, it));
+      const ids = await allResultIds(env, s.params, await getRate(env));
+      const now = Date.now();
+      for (let i = 0; i < ids.length; i += 50) {
+        await env.DB.batch(ids.slice(i, i + 50).map((id) =>
+          env.DB.prepare('INSERT INTO post_queue (item_id, channel_id, created_at) VALUES (?, ?, ?)').bind(id, s.channelId, now)));
+      }
+      const queued = await env.DB.prepare('SELECT COUNT(*) AS n FROM post_queue').first();
+      return update(await resultsView(env, c, Number(d) || 0,
+        `📨 **${fmtInt(ids.length)}** items en route vers <#${s.channelId}>. Fin estimée dans ~${Math.ceil(queued.n / QUEUE_PER_MINUTE)} min.`));
+    }
+    default: return update(await homeView(env, it, '❓ Action inconnue, retour au menu.'));
   }
-
-  if (sub === 'liste') {
-    const { results } = await env.DB.prepare('SELECT * FROM shops ORDER BY added_at').all();
-    if (!results.length) return reply('Aucun catalogue. Ajoute une boutique avec `/catalogue ajouter`.');
-    const icons = { pending: '🕒', indexing: '⏳', ok: '✅', error: '❌' };
-    const lines = results.map((s) => {
-      const when = s.last_indexed ? `<t:${Math.floor(s.last_indexed / 1000)}:R>` : 'jamais';
-      const err = s.status === 'error' && s.last_error ? ` · ${s.last_error.slice(0, 80)}` : '';
-      return `${icons[s.status] || '•'} **${s.name || 'Boutique'}** \`${s.id}\` · ${s.item_count} items · indexé ${when}${err}`;
-    });
-    return reply(chunkLines(lines, 1900)[0] + (lines.length > 30 ? `\n… ${results.length} catalogues au total` : ''));
-  }
-
-  if (sub === 'retirer') {
-    const id = String(opts.id);
-    const shop = await env.DB.prepare('SELECT * FROM shops WHERE id = ?').bind(id).first();
-    if (!shop) return reply('❌ Catalogue introuvable.');
-    await env.DB.batch([
-      env.DB.prepare('DELETE FROM items WHERE shop_id = ? AND manual = 0').bind(id),
-      env.DB.prepare('DELETE FROM shops WHERE id = ?').bind(id),
-    ]);
-    return reply(`🗑️ **${shop.name || id}** retiré, avec ses ${shop.item_count} items.`);
-  }
-
-  if (sub === 'reindexer') {
-    const id = String(opts.id);
-    const r = await env.DB.prepare("UPDATE shops SET status = 'pending', last_error = NULL WHERE id = ?").bind(id).run();
-    if (!r.meta.changes) return reply('❌ Catalogue introuvable.');
-    await triggerIndexer(env);
-    return reply('🔁 Réindexation demandée. Elle démarre au prochain passage de l\'indexeur (30 min maximum).');
-  }
-  return reply('Sous-commande inconnue.');
 }
+
+async function postSelected(env, sid, page, ids) {
+  const s = await loadSearch(env, sid);
+  if (!s) return resultsView(env, sid, page);
+  const agents = await getAgents(env);
+  const rate = await getRate(env);
+  let ok = 0;
+  let error = null;
+  for (const id of ids) {
+    const item = await env.DB.prepare('SELECT * FROM items WHERE id = ?').bind(id).first();
+    if (!item) continue;
+    try {
+      await postItem(env, item, s.channelId, agents, rate);
+      ok++;
+    } catch (err) {
+      error = String(err.message || err);
+      if (/-> (403|404)/.test(error)) break;
+    }
+  }
+  let msg = `✅ **${ok}** item${ok > 1 ? 's' : ''} posté${ok > 1 ? 's' : ''} dans <#${s.channelId}>.`;
+  if (error) {
+    msg = /-> (403|404)/.test(error)
+      ? `❌ Le bot ne peut pas écrire dans <#${s.channelId}>. Donne-lui « Voir le salon » et « Envoyer des messages ».`
+      : `${ok ? msg + ' ' : ''}❌ Un envoi a échoué : ${escape(error.slice(0, 120))}`;
+  }
+  return resultsView(env, sid, page, msg);
+}
+
+// ---------------------------------------------------------------- Formulaires
+
+function parseNumber(v) {
+  if (!v) return null;
+  const n = parseFloat(String(v).replace(',', '.').replace(/[^0-9.]/g, ''));
+  return Number.isFinite(n) ? n : null;
+}
+
+async function onModal(it, env, ctx) {
+  const v = modalValues(it.data);
+  const [, kind, sid] = it.data.custom_id.split(':');
+
+  if (kind === 'search') {
+    return later(it, env, ctx, async () => {
+      const q = (v.q || '').slice(0, 100);
+      const fields = { q, variants: await prepareQuery(env, q), min: parseNumber(v.min), max: parseNumber(v.max), latest: false };
+      const existing = sid ? await loadSearch(env, sid) : null;
+      if (existing) {
+        const params = { ...existing.params, ...fields };
+        await env.DB.prepare('UPDATE searches SET params = ? WHERE id = ?').bind(JSON.stringify(params), sid).run();
+        return resultsView(env, sid, 0);
+      }
+      const newSid = await createSearch(env, it, { ...fields, includePosted: false });
+      return resultsView(env, newSid, 0);
+    });
+  }
+
+  if (kind === 'shop') {
+    const link = v.link || '';
+    if (/taobao\.com|tmall\.com|1688\.com/.test(link)) {
+      return update(await catalogsView(env, 0, '⚠️ Taobao et 1688 demandent une connexion : impossible de les indexer automatiquement. Ajoute leurs items un par un avec **➕ Ajouter un item**.'));
+    }
+    const shopId = parseWeidianShop(link);
+    if (shopId) return update(await catalogsView(env, 0, await addShop(env, shopId, null, userId(it))));
+    const item = parseItemLink(link);
+    if (!item || item.platform !== 'weidian') {
+      return update(await catalogsView(env, 0, '❌ Lien non reconnu. Exemple : `https://weidian.com/?userid=1784277725` ou le lien d\'un item de la boutique.'));
+    }
+    return later(it, env, ctx, async () => {
+      const info = await fetchWeidianItem(item.itemId);
+      if (!info.shopId) return catalogsView(env, 0, '❌ Impossible de trouver la boutique de cet item.');
+      return catalogsView(env, 0, await addShop(env, info.shopId, info.shopName, userId(it)));
+    });
+  }
+
+  if (kind === 'agent') {
+    const name = (v.name || '').replace(/:/g, '').trim().slice(0, 40);
+    const template = (v.template || '').trim();
+    if (!name) return update(await agentsView(env, '❌ Il faut un nom.'));
+    if (!isValidTemplate(template)) {
+      return update(await agentsView(env, '❌ Le lien doit commencer par `https://` et contenir `{url}` (ou `{id}`) à la place du lien produit.'));
+    }
+    const count = await env.DB.prepare('SELECT COUNT(*) AS n FROM agents').first();
+    const position = Math.round(parseNumber(v.position) || count.n + 1);
+    await env.DB.prepare(
+      'INSERT INTO agents (name, template, position) VALUES (?, ?, ?) ON CONFLICT(name) DO UPDATE SET template = excluded.template, position = excluded.position',
+    ).bind(name, template, position).run();
+    const example = buildAgentLink(template, { url: 'https://weidian.com/item.html?itemID=7863670229', item_id: '7863670229', platform: 'weidian' });
+    return update(await agentsView(env, `✅ **${escape(name)}** enregistré. [Tester un lien généré](${example})`));
+  }
+
+  if (kind === 'item') return addItem(it, env, ctx, v);
+
+  return update(await homeView(env, it));
+}
+
+async function addItem(it, env, ctx, v) {
+  const parsed = parseItemLink(v.link || '');
+  if (!parsed) return update(await homeView(env, it, '❌ Lien d\'item non reconnu (Weidian, Taobao ou 1688).'));
+  const price = parseNumber(v.price);
+  const image = v.image && /^https:\/\//.test(v.image) ? v.image : null;
+
+  const save = async (f) => {
+    await env.DB.prepare(
+      `INSERT INTO items (id, platform, item_id, shop_id, shop_name, title_zh, title_en, price_cny, image, url, manual, first_seen)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
+       ON CONFLICT(id) DO UPDATE SET title_zh = excluded.title_zh, title_en = excluded.title_en,
+         price_cny = excluded.price_cny, image = excluded.image, shop_name = excluded.shop_name, manual = 1`,
+    ).bind(`${parsed.platform}:${parsed.itemId}`, parsed.platform, parsed.itemId, f.shopId || null, f.shopName || null,
+      f.titleZh || null, f.titleEn || null, f.price, f.image || null, parsed.url, Date.now()).run();
+    return homeView(env, it, `✅ Item ajouté : **${escape(f.titleEn || f.titleZh)}** (${formatPrice(f.price, await getRate(env))}). Retrouve-le dans **✨ Nouveautés**.`);
+  };
+
+  if (parsed.platform === 'weidian') {
+    return later(it, env, ctx, async () => {
+      const info = await fetchWeidianItem(parsed.itemId);
+      return save({
+        titleZh: info.title, titleEn: v.title || null, price: price != null ? price : info.price,
+        image: image || info.image, shopId: info.shopId, shopName: info.shopName,
+      });
+    });
+  }
+  if (!v.title || price == null) {
+    return update(await homeView(env, it, '❌ Pour Taobao et 1688, le **titre** et le **prix** sont obligatoires.'));
+  }
+  return update(await save({ titleEn: v.title, price, image }));
+}
+
+// ---------------------------------------------------------------- Catalogues
 
 async function addShop(env, shopId, name, by) {
   const existing = await env.DB.prepare('SELECT * FROM shops WHERE id = ?').bind(shopId).first();
-  if (existing) return `ℹ️ Ce catalogue existe déjà : **${existing.name || shopId}** (${existing.item_count} items).`;
+  if (existing) return `ℹ️ **${escape(existing.name || shopId)}** est déjà dans tes catalogues (${fmtInt(existing.item_count)} items).`;
   await env.DB.prepare(
     "INSERT INTO shops (id, platform, name, url, status, added_by, added_at) VALUES (?, 'weidian', ?, ?, 'pending', ?, ?)",
   ).bind(shopId, name, `https://weidian.com/?userid=${shopId}`, by, Date.now()).run();
   await triggerIndexer(env);
-  return `✅ Boutique \`${shopId}\`${name ? ` (**${name}**)` : ''} ajoutée. L'indexation démarre au prochain passage de l'indexeur (30 min maximum), puis les titres sont traduits petit à petit. Suis l'avancement avec \`/catalogue liste\`.`;
+  return `✅ Boutique ${name ? `**${escape(name)}** ` : ''}ajoutée. Ses items arrivent dans 30 min maximum, puis leurs titres sont traduits petit à petit.`;
 }
 
 // Lance l'indexeur tout de suite si un token GitHub est configuré (optionnel).
@@ -212,289 +356,13 @@ async function fetchWeidianItem(itemId) {
   if (!res.ok) throw new Error(`Weidian a répondu ${res.status}`);
   const html = (await res.text()).replaceAll('&#34;', '"').replaceAll('&quot;', '"').replaceAll('&amp;', '&');
   const pick = (re) => { const m = html.match(re); return m ? m[1] : null; };
-  const imgs = pick(/"imgs"\s*:\s*\[\s*"([^"]+)"/);
   return {
     title: pick(/"item_name"\s*:\s*"([^"]+)"/),
     price: parseFloat(pick(/"price"\s*:\s*"?([0-9.]+)/)) || null,
-    image: imgs,
+    image: pick(/"imgs"\s*:\s*\[\s*"([^"]+)"/),
     shopName: pick(/"shopName"\s*:\s*"([^"]+)"/),
     shopId: pick(/"shop_id"\s*:\s*"?(\d+)/),
   };
-}
-
-// ---------------------------------------------------------------- /item
-
-async function itemAdd(opts, it, env, ctx) {
-  const parsed = parseItemLink(String(opts.lien));
-  if (!parsed) return reply('❌ Lien non reconnu. Il faut un lien d\'item Weidian, Taobao ou 1688.');
-  const save = async (fields) => {
-    const id = `${parsed.platform}:${parsed.itemId}`;
-    await env.DB.prepare(
-      `INSERT INTO items (id, platform, item_id, shop_id, shop_name, title_zh, title_en, price_cny, image, url, manual, first_seen)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
-       ON CONFLICT(id) DO UPDATE SET title_zh = excluded.title_zh, title_en = excluded.title_en,
-         price_cny = excluded.price_cny, image = excluded.image, shop_name = excluded.shop_name, manual = 1`,
-    ).bind(id, parsed.platform, parsed.itemId, fields.shopId || null, fields.shopName || null,
-      fields.titleZh || null, fields.titleEn || null, fields.price, fields.image || null, parsed.url, Date.now()).run();
-    return `✅ Item ajouté : **${fields.titleEn || fields.titleZh}** (${formatPrice(fields.price, await getRate(env))}). Tu le retrouveras avec \`/recherche\`.`;
-  };
-
-  if (parsed.platform === 'weidian') {
-    return deferred(it, env, ctx, async () => {
-      const info = await fetchWeidianItem(parsed.itemId);
-      const msg = await save({
-        titleZh: info.title, titleEn: opts.titre || null, price: opts.prix != null ? opts.prix : info.price,
-        image: opts.image || info.image, shopId: info.shopId, shopName: info.shopName,
-      });
-      await editOriginal(env, it.token, { content: msg });
-    });
-  }
-  if (!opts.titre || opts.prix == null) {
-    return reply('❌ Pour Taobao et 1688, il faut remplir `titre` et `prix` (en ¥). L\'image est conseillée.');
-  }
-  if (opts.image && !/^https:\/\//.test(opts.image)) return reply('❌ L\'image doit être un lien https.');
-  return reply(await save({ titleEn: opts.titre, price: opts.prix, image: opts.image }));
-}
-
-// ---------------------------------------------------------------- /agent
-
-async function agent(sub, opts, env) {
-  if (sub === 'ajouter') {
-    const template = String(opts.modele).trim();
-    if (!isValidTemplate(template)) {
-      return reply('❌ Le modèle doit commencer par `https://` et contenir `{url}` (lien produit encodé), `{url_raw}` ou `{id}`.\nExemple : `https://agent.com/product?url={url}&inviteCode=TONCODE`');
-    }
-    const count = await env.DB.prepare('SELECT COUNT(*) AS n FROM agents').first();
-    if (count.n >= 20) return reply('❌ 20 agents maximum.');
-    await env.DB.prepare(
-      'INSERT INTO agents (name, template, position) VALUES (?, ?, ?) ON CONFLICT(name) DO UPDATE SET template = excluded.template, position = excluded.position',
-    ).bind(opts.nom, template, opts.position || count.n + 1).run();
-    const example = template.replaceAll('{url}', encodeURIComponent('https://weidian.com/item.html?itemID=7863670229'))
-      .replaceAll('{url_raw}', 'https://weidian.com/item.html?itemID=7863670229')
-      .replaceAll('{id}', '7863670229').replaceAll('{platform}', 'weidian');
-    return reply(`✅ Agent **${opts.nom}** enregistré.\nExemple de lien généré : ${example}`);
-  }
-  if (sub === 'liste') {
-    const agents = await getAgents(env);
-    if (!agents.length) return reply('Aucun agent. Ajoute ton lien d\'affiliation avec `/agent ajouter`.');
-    return reply(agents.map((a) => `**${a.position}. ${a.name}** · \`${a.template}\``).join('\n').slice(0, 1900));
-  }
-  if (sub === 'retirer') {
-    const r = await env.DB.prepare('DELETE FROM agents WHERE name = ?').bind(opts.nom).run();
-    return reply(r.meta.changes ? `🗑️ Agent **${opts.nom}** retiré.` : '❌ Agent introuvable.');
-  }
-  return reply('Sous-commande inconnue.');
-}
-
-// ---------------------------------------------------------------- /admin
-
-async function admin(sub, opts, it, env) {
-  if (sub === 'liste') {
-    const { results } = await env.DB.prepare('SELECT user_id FROM admins WHERE guild_id = ?').bind(it.guild_id).all();
-    const extra = results.length ? results.map((r) => `<@${r.user_id}>`).join(', ') : 'aucun';
-    return reply(`👑 Accès automatique : le propriétaire et les membres avec la permission **Administrateur**.\n➕ Membres ajoutés : ${extra}`, { allowed_mentions: { parse: [] } });
-  }
-  if (!hasAdminPermission(it)) return reply('⛔ Seuls les administrateurs du serveur peuvent ajouter ou retirer des membres.');
-  const target = String(opts.membre);
-  if (sub === 'ajouter') {
-    await env.DB.prepare('INSERT OR IGNORE INTO admins (guild_id, user_id, added_by) VALUES (?, ?, ?)')
-      .bind(it.guild_id, target, userId(it)).run();
-    return reply(`✅ <@${target}> peut maintenant utiliser le bot.`, { allowed_mentions: { parse: [] } });
-  }
-  if (sub === 'retirer') {
-    await env.DB.prepare('DELETE FROM admins WHERE guild_id = ? AND user_id = ?').bind(it.guild_id, target).run();
-    return reply(`🗑️ <@${target}> n'a plus accès au bot (sauf s'il est administrateur du serveur).`, { allowed_mentions: { parse: [] } });
-  }
-  return reply('Sous-commande inconnue.');
-}
-
-// ---------------------------------------------------------------- /statut
-
-async function statut(env) {
-  const [shops, items, untranslated, queue] = await Promise.all([
-    env.DB.prepare('SELECT COUNT(*) AS n FROM shops').first(),
-    env.DB.prepare('SELECT COUNT(*) AS n FROM items').first(),
-    env.DB.prepare('SELECT COUNT(*) AS n FROM items WHERE title_en IS NULL AND translate_failed < 3').first(),
-    env.DB.prepare('SELECT COUNT(*) AS n FROM post_queue').first(),
-  ]);
-  const rate = await getRate(env);
-  return reply([
-    `📦 **${items.n}** items dans **${shops.n}** catalogues`,
-    `🌐 ${untranslated.n} titres en attente de traduction (~${TRANSLATE_PER_MINUTE}/min)`,
-    `📨 ${queue.n} items dans la file « tout poster » (~${QUEUE_PER_MINUTE}/min)`,
-    `💱 1 ¥ = ${rate.toFixed(4)} €`,
-  ].join('\n'));
-}
-
-// ---------------------------------------------------------------- /recherche
-
-async function recherche(opts, it, env, ctx) {
-  return deferred(it, env, ctx, async () => {
-    const params = {
-      q: opts.mots || '',
-      variants: await prepareQuery(env, opts.mots || ''),
-      min: opts.prix_min != null ? opts.prix_min : null,
-      max: opts.prix_max != null ? opts.prix_max : null,
-      shop: opts.vendeur || null,
-      includePosted: !!opts.inclure_postes,
-    };
-    const channelId = opts.salon || it.channel_id;
-    const sid = crypto.randomUUID().replaceAll('-', '').slice(0, 12);
-    await env.DB.prepare('INSERT INTO searches (id, guild_id, user_id, params, channel_id, created_at) VALUES (?, ?, ?, ?, ?, ?)')
-      .bind(sid, it.guild_id, userId(it), JSON.stringify(params), channelId, Date.now()).run();
-    await editOriginal(env, it.token, await renderSearch(env, sid, params, channelId, 0));
-  });
-}
-
-async function loadSearch(env, sid) {
-  const row = await env.DB.prepare('SELECT * FROM searches WHERE id = ?').bind(sid).first();
-  return row ? { params: JSON.parse(row.params), channelId: row.channel_id } : null;
-}
-
-async function renderSearch(env, sid, params, channelId, page) {
-  const rate = await getRate(env);
-  const total = await countResults(env, params, rate);
-  const pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
-  page = Math.min(Math.max(0, page), pages - 1);
-  const items = total ? await pageResults(env, params, rate, page) : [];
-
-  const filters = [];
-  if (params.min != null) filters.push(`≥ ${params.min} €`);
-  if (params.max != null) filters.push(`≤ ${params.max} €`);
-  if (params.shop) filters.push(`vendeur ${params.shop}`);
-  if (!params.includePosted) filters.push('non postés');
-  const header = `🔎 **${params.q || 'tout'}** · ${total} résultat${total > 1 ? 's' : ''}` +
-    (filters.length ? ` (${filters.join(', ')})` : '') +
-    (total ? ` · page ${page + 1}/${pages}` : '') + ` · salon <#${channelId}>`;
-
-  if (!total) {
-    return { content: `${header}\nAucun item trouvé. Essaie d'autres mots (en anglais, c'est mieux) ou ajoute des catalogues.`, embeds: [], components: [] };
-  }
-
-  const embeds = items.map((item, i) => {
-    const e = {
-      title: `${page * PAGE_SIZE + i + 1}. ${itemTitle(item)}`.slice(0, 256),
-      url: item.url,
-      description: `${formatPrice(item.price_cny, rate)} · ${item.shop_name || '—'}${item.posted_count ? ' · ✅ déjà posté' : ''}`,
-      color: 0x2b2d31,
-    };
-    if (item.image) e.thumbnail = { url: item.image };
-    return e;
-  });
-
-  const components = [
-    {
-      type: 1,
-      components: [{
-        type: 3,
-        custom_id: `sel:${sid}:${page}`,
-        placeholder: 'Choisir un ou plusieurs items à poster',
-        min_values: 1,
-        max_values: items.length,
-        options: items.map((item, i) => ({
-          label: `${page * PAGE_SIZE + i + 1}. ${itemTitle(item)}`.slice(0, 100),
-          description: formatPrice(item.price_cny, rate).slice(0, 100),
-          value: item.id,
-        })),
-      }],
-    },
-    {
-      type: 1,
-      components: [
-        { type: 2, style: 2, label: '◀', custom_id: `pg:${sid}:${page - 1}`, disabled: page === 0 },
-        { type: 2, style: 2, label: '▶', custom_id: `pg:${sid}:${page + 1}`, disabled: page >= pages - 1 },
-        { type: 2, style: 3, label: `Tout poster (${Math.min(total, MAX_BULK)})`, custom_id: `all:${sid}` },
-      ],
-    },
-  ];
-  return { content: header, embeds, components, allowed_mentions: { parse: [] } };
-}
-
-// ---------------------------------------------------------------- Boutons et menus
-
-async function component(it, env, ctx) {
-  const [kind, sid, arg] = it.data.custom_id.split(':');
-  const search = await loadSearch(env, sid);
-  if (!search) return json({ type: Reply.UPDATE_MESSAGE, data: { content: '⌛ Recherche expirée, relance `/recherche`.', embeds: [], components: [] } });
-  const { params, channelId } = search;
-
-  if (kind === 'pg') {
-    return json({ type: Reply.UPDATE_MESSAGE, data: await renderSearch(env, sid, params, channelId, Number(arg)) });
-  }
-
-  if (kind === 'sel') {
-    const ids = it.data.values || [];
-    return deferred(it, env, ctx, async () => {
-      const agents = await getAgents(env);
-      const rate = await getRate(env);
-      let ok = 0;
-      const errors = [];
-      for (const id of ids) {
-        const item = await env.DB.prepare('SELECT * FROM items WHERE id = ?').bind(id).first();
-        if (!item) continue;
-        try {
-          await postItem(env, item, channelId, agents, rate);
-          ok++;
-        } catch (err) {
-          errors.push(String(err.message || err));
-          if (/-> (403|404)/.test(String(err))) break;
-        }
-      }
-      let msg = `✅ ${ok} item${ok > 1 ? 's' : ''} posté${ok > 1 ? 's' : ''} dans <#${channelId}>.`;
-      if (errors.length) msg += `\n❌ ${errors.length} échec(s). Vérifie que le bot peut écrire dans ce salon. (${errors[0].slice(0, 150)})`;
-      await followup(env, it.token, { content: msg, flags: EPHEMERAL });
-      await discordApi(env, 'PATCH', `/webhooks/${env.DISCORD_APP_ID}/${it.token}/messages/${it.message.id}`,
-        await renderSearch(env, sid, params, channelId, Number(arg))).catch(() => {});
-    }, true);
-  }
-
-  if (kind === 'all') {
-    const total = Math.min(await countResults(env, params, await getRate(env)), MAX_BULK);
-    const minutes = Math.ceil(total / QUEUE_PER_MINUTE);
-    return json({
-      type: Reply.MESSAGE,
-      data: {
-        flags: EPHEMERAL,
-        content: `Poster **${total}** items dans <#${channelId}> ? Ils partiront à environ ${QUEUE_PER_MINUTE} par minute (~${minutes} min).`,
-        components: [{
-          type: 1,
-          components: [
-            { type: 2, style: 3, label: 'Confirmer', custom_id: `ok:${sid}` },
-            { type: 2, style: 4, label: 'Annuler', custom_id: `no:${sid}` },
-          ],
-        }],
-      },
-    });
-  }
-
-  if (kind === 'ok') {
-    const ids = await allResultIds(env, params, await getRate(env));
-    const already = await env.DB.prepare('SELECT COUNT(*) AS n FROM post_queue').first();
-    const now = Date.now();
-    for (let i = 0; i < ids.length; i += 50) {
-      await env.DB.batch(ids.slice(i, i + 50).map((id) =>
-        env.DB.prepare('INSERT INTO post_queue (item_id, channel_id, created_at) VALUES (?, ?, ?)').bind(id, channelId, now)));
-    }
-    const minutes = Math.ceil((already.n + ids.length) / QUEUE_PER_MINUTE);
-    return json({
-      type: Reply.UPDATE_MESSAGE,
-      data: { content: `⏳ ${ids.length} items ajoutés à la file pour <#${channelId}>. Fin estimée dans ~${minutes} min. Suivi avec \`/statut\`.`, components: [] },
-    });
-  }
-
-  if (kind === 'no') {
-    return json({ type: Reply.UPDATE_MESSAGE, data: { content: 'Annulé.', components: [] } });
-  }
-  return reply('Action inconnue.');
-}
-
-function chunkLines(lines, max) {
-  const chunks = [''];
-  for (const l of lines) {
-    if ((chunks[chunks.length - 1] + l).length + 1 > max) chunks.push('');
-    chunks[chunks.length - 1] += (chunks[chunks.length - 1] ? '\n' : '') + l;
-  }
-  return chunks;
 }
 
 // ---------------------------------------------------------------- API de l'indexeur

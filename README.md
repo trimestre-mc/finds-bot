@@ -7,21 +7,22 @@ Bot Discord qui indexe automatiquement des boutiques Weidian, permet de chercher
 - **Traduction des titres** : Workers AI (chinois → anglais)
 - **Indexeur** : GitHub Actions toutes les 30 min (Chromium sans fenêtre, ouvre les boutiques comme un visiteur)
 
-## Commandes
+## Utilisation
 
-| Commande | Rôle |
+Une seule commande : **`/menu`**. Elle ouvre un panneau privé (visible par toi seul), et tout se fait avec des boutons, des menus et des formulaires :
+
+| Bouton | Rôle |
 |---|---|
-| `/catalogue ajouter lien:` | Ajoute une boutique Weidian (lien de boutique ou d'un de ses items) |
-| `/catalogue liste` / `retirer` / `reindexer` | Gère les catalogues |
-| `/recherche mots: salon: prix_min: prix_max: vendeur: inclure_postes:` | Cherche, puis poste les items choisis ou tout d'un coup |
-| `/item ajouter lien: titre: prix: image:` | Ajoute un item à la main (Taobao, 1688, ou Weidian) |
-| `/agent ajouter nom: modele: position:` | Lien d'affiliation, ex. `https://agent.com/product?url={url}&code=TONCODE` |
-| `/admin ajouter` / `retirer` / `liste` | Donne l'accès à d'autres membres |
-| `/statut` | Items, traductions en attente, file d'envoi |
+| 🔎 **Rechercher** | Mots-clés et prix, puis : choisir le salon, poster les items sélectionnés ou 📤 tout poster (8/min) |
+| ✨ **Nouveautés** | Les derniers items indexés |
+| 📚 **Catalogues** | Ajouter une boutique Weidian, voir ses items, réindexer, retirer |
+| 🏷️ **Agents** | Tes liens d'affiliation (un bouton « Acheter sur … » par agent sous chaque item) |
+| ➕ **Ajouter un item** | À la main (Taobao, 1688, ou Weidian rempli tout seul) |
+| 👥 **Accès** | Donner l'accès à d'autres membres |
 
-Accès : le propriétaire et les membres avec la permission **Administrateur**, plus les membres ajoutés avec `/admin ajouter`.
+Accès : le propriétaire et les membres avec la permission **Administrateur**, plus les membres ajoutés dans 👥 Accès.
 
-Variables du modèle d'agent : `{url}` (lien produit encodé), `{url_raw}`, `{id}`, `{platform}`.
+Lien d'agent : mets `{url}` (lien produit encodé) à la place du lien du produit. Aussi disponibles : `{url_raw}`, `{id}`, `{platform}`.
 
 ## Installation Discord
 
