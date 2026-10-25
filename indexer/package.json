@@ -1,0 +1,11 @@
+{
+  "name": "finds-bot-indexer",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node index.mjs"
+  },
+  "dependencies": {
+    "playwright": "1.55.0"
+  }
+}

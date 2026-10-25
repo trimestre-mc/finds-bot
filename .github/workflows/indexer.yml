@@ -1,0 +1,44 @@
+name: indexer
+
+on:
+  schedule:
+    - cron: '*/30 * * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: indexer
+  cancel-in-progress: false
+
+jobs:
+  index:
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Vérifier s'il y a du travail
+        id: jobs
+        run: |
+          n=$(curl -sf -H "Authorization: Bearer ${{ secrets.INDEXER_SECRET }}" "${{ secrets.WORKER_URL }}/api/indexer/jobs" | python3 -c "import sys,json; print(len(json.load(sys.stdin)['shops']))")
+          echo "count=$n" >> "$GITHUB_OUTPUT"
+          echo "$n catalogue(s) à indexer"
+
+      - uses: actions/setup-node@v4
+        if: steps.jobs.outputs.count != '0'
+        with:
+          node-version: 22
+
+      - name: Installer Playwright
+        if: steps.jobs.outputs.count != '0'
+        working-directory: indexer
+        run: |
+          npm install --no-audit --no-fund
+          npx playwright install --with-deps chromium
+
+      - name: Indexer
+        if: steps.jobs.outputs.count != '0'
+        working-directory: indexer
+        env:
+          WORKER_URL: ${{ secrets.WORKER_URL }}
+          INDEXER_SECRET: ${{ secrets.INDEXER_SECRET }}
+        run: node index.mjs

@@ -1,0 +1,21 @@
+name = "finds-bot"
+main = "src/index.js"
+compatibility_date = "2026-09-01"
+
+[triggers]
+crons = ["* * * * *"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "finds-bot"
+database_id = "491d8592-7575-4b7e-8858-ccba2b5a3e7b"
+
+[ai]
+binding = "AI"
+
+[vars]
+DISCORD_APP_ID = "REMPLACER_PAR_APP_ID"
+DISCORD_PUBLIC_KEY = "REMPLACER_PAR_PUBLIC_KEY"
+# GITHUB_REPO = "trimestre-mc/finds-bot"  # avec le secret GITHUB_TOKEN : indexation immédiate à l'ajout d'un catalogue
+
+# Secrets (wrangler secret put ...) : DISCORD_BOT_TOKEN, INDEXER_SECRET, GITHUB_TOKEN (optionnel)
