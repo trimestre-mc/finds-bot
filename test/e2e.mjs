@@ -52,14 +52,11 @@ const mock = createServer((req, res) => {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       return res.end(JSON.stringify({ id: '444', type: 15, flags: 16, available_tags: [{ id: 't-shoes', name: 'Shoes' }, { id: 't-other', name: 'Autre' }] }));
     }
-    // Salon 777 : conversion automatique (un ancien message, puis un nouveau lien Taobao).
+    // Salon 777 : conversion automatique (un message d'avant l'ajout du salon, puis un lien d'un membre et un d'un bot).
     if (req.method === 'GET' && req.url.startsWith('/channels/777/messages')) {
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      const after = (req.url.match(/after=(\d+)/) || [])[1];
-      const msgs = !after ? [{ id: '5000', author: { bot: false }, content: 'vieux lien https://item.taobao.com/item.htm?id=111111111' }]
-        : after === '5000' ? [{ id: '5001', author: { bot: false }, content: 'W2C https://item.taobao.com/item.htm?id=730344766230 svp' },
-          { id: '5002', author: { bot: true }, content: 'https://item.taobao.com/item.htm?id=222222222' }] : [];
-      return res.end(JSON.stringify(msgs));
+      const after = BigInt((req.url.match(/after=(\d+)/) || [])[1] || '0');
+      return res.end(JSON.stringify(CHANNEL_777.filter((m) => BigInt(m.id) > after)));
     }
     // Salon QC 999 : une photo QC d'un membre avec le lien de l'item Margiela, un message sans photo, un bot.
     if (req.method === 'GET' && req.url.startsWith('/channels/999/messages?')) {
@@ -98,6 +95,12 @@ dev.stdout.on('data', (d) => (devLog += d));
 dev.stderr.on('data', (d) => (devLog += d));
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const snowflake = (ms) => String((BigInt(ms) - 1420070400000n) << 22n);
+const CHANNEL_777 = [
+  { id: snowflake(Date.now() - 3600000), author: { bot: false }, content: 'vieux lien https://item.taobao.com/item.htm?id=111111111' },
+  { id: snowflake(Date.now() + 3600000), author: { bot: false }, content: 'W2C https://item.taobao.com/item.htm?id=730344766230 svp' },
+  { id: snowflake(Date.now() + 3600001), author: { bot: true }, content: 'https://item.taobao.com/item.htm?id=222222222' },
+];
 let failures = 0;
 function check(name, cond, extra = '') {
   console.log(`${cond ? '✅' : '❌'} ${name}${extra ? ' — ' + extra : ''}`);
@@ -369,7 +372,7 @@ try {
   // ---- QC
   sql(`UPDATE items SET qc_count = 4278, qc_checked_at = ${Date.now()} WHERE id = 'weidian:7779545401'`);
   await click('set:qc', ['999']);
-  await fetch(WORKER + '/__scheduled?cron=*/2+*+*+*+*');
+  await fetch(WORKER + '/__scheduled?cron=*/3+*+*+*+*');
   await sleep(4000);
   check('📸 salon QC : photo de membre + lien → QC communauté', sql("SELECT COUNT(*) AS n, SUM(images) AS img FROM qc_posts WHERE item_id = 'weidian:7779545401'")[0].img === 2
     && sql("SELECT COUNT(*) AS n FROM qc_posts")[0].n === 1);
@@ -507,12 +510,11 @@ try {
 
   // Conversion automatique dans un salon
   await click('set:convert', ['777']);
-  await fetch(WORKER + '/__scheduled?cron=*/2+*+*+*+*');
-  await sleep(3000);
   mark = calls.length;
   await fetch(WORKER + '/__scheduled?cron=*/2+*+*+*+*');
   const autoReply = await waitCall((c) => c.method === 'POST' && c.path === '/channels/777/messages' && calls.indexOf(c) >= mark, 15000);
-  check('🔄 conversion auto : répond au lien d\'un membre', autoReply && autoReply.body.message_reference.message_id === '5001' && validate('conversion', autoReply.body));
+  check('🔄 conversion auto : répond en quelques secondes au lien d\'un membre', autoReply && autoReply.body.message_reference.message_id === CHANNEL_777[1].id && validate('conversion', autoReply.body));
+  await sleep(4000);
   check('🔄 conversion auto : ignore les anciens messages et les bots', calls.filter((c) => c.method === 'POST' && c.path === '/channels/777/messages').length === 1);
 
   // Bannir une boutique

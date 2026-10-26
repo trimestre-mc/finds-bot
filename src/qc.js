@@ -350,7 +350,7 @@ export async function syncQcCatalog(env) {
     stmts = [];
     await env.DB.batch(out);
   };
-  while (used() < 40 && written < b.left && pages < SYNC_PAGES_PER_RUN) {
+  while (used() < 32 && written < b.left && pages < SYNC_PAGES_PER_RUN) {
     if (state.plat >= SYNC_PLATFORMS.length) { state.done = true; break; }
     let page;
     try {

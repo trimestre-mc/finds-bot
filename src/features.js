@@ -403,51 +403,6 @@ export async function runSchedules(env) {
   }
 }
 
-// ---------------------------------------------------------------- Conversion automatique des liens (cron toutes les 2 min)
-
-export async function runAutoConvert(env) {
-  const { results } = await env.DB.prepare('SELECT * FROM convert_channels ORDER BY added_at LIMIT 5').all();
-  if (!results.length) return;
-  let calls = 0;
-  for (const ch of results) {
-    if (calls > 40) break;
-    try {
-      const path = `/channels/${ch.channel_id}/messages?limit=50${ch.last_message_id ? `&after=${ch.last_message_id}` : ''}`;
-      const messages = await discordApi(env, 'GET', path);
-      calls++;
-      if (!messages.length) continue;
-      const newest = messages.reduce((m, x) => (BigInt(x.id) > BigInt(m) ? x.id : m), messages[0].id);
-      // Première lecture : on démarre à partir de maintenant, sans répondre aux anciens messages.
-      if (!ch.last_message_id) {
-        await env.DB.prepare('UPDATE convert_channels SET last_message_id = ? WHERE channel_id = ?').bind(newest, ch.channel_id).run();
-        continue;
-      }
-      let converted = 0;
-      for (const m of messages.slice().reverse()) {
-        if (m.author && m.author.bot) continue;
-        await collectQc(env, m, ch.guild_id, ch.channel_id).catch(() => {});
-        const refs = extractItemRefs(messageText(m)).slice(0, 3);
-        if (!refs.length || calls > 45) continue;
-        const cards = [];
-        for (const ref of refs) {
-          const known = await env.DB.prepare('SELECT * FROM items WHERE id = ?').bind(`${ref.platform}:${ref.itemId}`).first();
-          cards.push(...await convertView(env, ref, known));
-        }
-        await discordApi(env, 'POST', `/channels/${ch.channel_id}/messages`, {
-          flags: COMPONENTS_V2, components: cards, allowed_mentions: { parse: [] },
-          message_reference: { message_id: m.id, fail_if_not_exists: false },
-        });
-        calls++;
-        converted++;
-      }
-      await env.DB.prepare('UPDATE convert_channels SET last_message_id = ?, converted = converted + ? WHERE channel_id = ?')
-        .bind(newest, converted, ch.channel_id).run();
-    } catch (err) {
-      await logError(env, 'conversion', `<#${ch.channel_id}> : ${String(err.message || err).slice(0, 200)}`);
-    }
-  }
-}
-
 // Liste des QC de la communauté pour un item (les plus récents d'abord).
 export async function communityQcList(env, itemId) {
   const { results } = await env.DB.prepare('SELECT * FROM qc_posts WHERE item_id = ? ORDER BY at DESC LIMIT 6').bind(itemId).all();

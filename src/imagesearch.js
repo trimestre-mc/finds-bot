@@ -1,15 +1,11 @@
-// Recherche par image (cron toutes les 2 min) : dans les salons choisis, chaque photo postée par un membre est
+// Recherche par image : dans les salons choisis (surveillés par watch.js), chaque photo postée par un membre est
 // envoyée à la recherche par image de FinderQC (avec l'accord de son propriétaire), et le bot répond avec les items
 // qui ressemblent le plus : photo, prix, nombre de QC, bouton d'achat avec ton code et bouton QC.
 
-import { COMPONENTS_V2, container, text, sep, section, thumb, row, link, escape } from './components.js';
-import { discordApi } from './discord.js';
+import { container, text, sep, section, thumb, row, link, escape } from './components.js';
 import { formatPrice, itemTitle, postContext, trackedLink } from './post.js';
 import { buildAgentLink, canonicalUrl } from './links.js';
-import { popularItemStatements } from './items.js';
-import { budget } from './budget.js';
 import { ACCENTS } from './config.js';
-import { logError } from './post.js';
 
 const API = 'https://server.finderqc.com/api/searchImage';
 const UA = 'finds-bot/1.0 (+https://finds-bot.wheatenmoon5861.workers.dev)';
@@ -18,7 +14,7 @@ const RESULTS = 4; // 4 items par réponse (limite de 40 composants d'un message
 const MAX_BYTES = 8 * 1024 * 1024;
 const fmt = (n) => Number(n || 0).toLocaleString('fr-FR').replace(/ | /g, ' ');
 
-const isImage = (a) => /^image\/(jpeg|png|webp|gif)/.test(a.content_type || '') || /\.(jpe?g|png|webp)$/i.test(a.filename || '');
+export const isImage = (a) => /^image\/(jpeg|png|webp|gif)/.test(a.content_type || '') || /\.(jpe?g|png|webp)$/i.test(a.filename || '');
 
 // Items qui ressemblent à une image (URL). Renvoie [{ platform, id, title, price, image, sold, qc }] ou [].
 export async function searchByImage(imageUrl, filename = 'image.jpg') {
@@ -63,61 +59,4 @@ export function imageResultsView(ctx, found, channelId) {
     blocks.push(row(...buttons));
   }
   return [container(blocks, (ACCENTS[ctx.cfg.accent] || ACCENTS.orange).color)];
-}
-
-export async function runImageSearch(env) {
-  const { results } = await env.DB.prepare('SELECT * FROM image_channels ORDER BY added_at LIMIT 5').all();
-  if (!results.length) return;
-  let calls = 0;
-  let searched = 0;
-  let ctx = null;
-  const found = [];
-  for (const ch of results) {
-    if (calls > 30) break;
-    try {
-      const path = `/channels/${ch.channel_id}/messages?limit=50${ch.last_message_id ? `&after=${ch.last_message_id}` : ''}`;
-      const messages = await discordApi(env, 'GET', path);
-      calls++;
-      if (!messages.length) continue;
-      const newest = messages.reduce((m, x) => (BigInt(x.id) > BigInt(m) ? x.id : m), messages[0].id);
-      // Première lecture : on démarre à partir de maintenant, sans répondre aux anciennes photos.
-      if (!ch.last_message_id) {
-        await env.DB.prepare('UPDATE image_channels SET last_message_id = ? WHERE channel_id = ?').bind(newest, ch.channel_id).run();
-        continue;
-      }
-      let done = 0;
-      let last = ch.last_message_id;
-      for (const m of messages.slice().sort((a, b) => (BigInt(a.id) < BigInt(b.id) ? -1 : 1))) {
-        // Au plus 5 photos par passage : le reste attend le prochain (dans 2 min).
-        if (searched >= 5 || calls > 40) break;
-        last = m.id;
-        if (m.author && m.author.bot) continue;
-        const images = (m.attachments || []).filter(isImage).slice(0, 2);
-        for (const a of images) {
-          const items = await searchByImage(a.url, a.filename).catch((err) => { console.log('image', String(err).slice(0, 120)); return null; });
-          calls += 3;
-          searched++;
-          if (!items) continue;
-          found.push(...items);
-          if (!ctx) ctx = await postContext(env);
-          await discordApi(env, 'POST', `/channels/${ch.channel_id}/messages`, {
-            flags: COMPONENTS_V2, components: imageResultsView(ctx, items, ch.channel_id), allowed_mentions: { parse: [] },
-            message_reference: { message_id: m.id, fail_if_not_exists: false },
-          });
-          calls++;
-          done++;
-        }
-      }
-      await env.DB.prepare('UPDATE image_channels SET last_message_id = ?, searched = searched + ? WHERE channel_id = ?')
-        .bind(searched >= 5 ? last : newest, done, ch.channel_id).run();
-    } catch (err) {
-      await logError(env, 'recherche image', `<#${ch.channel_id}> : ${String(err.message || err).slice(0, 200)}`);
-    }
-  }
-  // Les items trouvés rejoignent le catalogue (budget du jour).
-  if (found.length) {
-    const b = await budget(env, 'items');
-    const { stmts, count } = popularItemStatements(env, found.slice(0, b.left), 'finderqc');
-    if (count) await env.DB.batch(stmts).then(() => b.use(count)).catch(() => {});
-  }
 }

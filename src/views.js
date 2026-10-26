@@ -302,8 +302,8 @@ export async function findView(env, sid, page) {
   ], (ACCENTS[ctx.cfg.accent] || ACCENTS.orange).color)];
 }
 
-export async function convertView(env, ref, known) {
-  const ctx = await postContext(env);
+export async function convertView(env, ref, known, ctx = null) {
+  ctx = ctx || await postContext(env);
   const item = known || { id: `${ref.platform}:${ref.itemId}`, item_id: ref.itemId, platform: ref.platform, url: ref.url };
   const platform = PLATFORM_NAMES[item.platform];
   const head = known

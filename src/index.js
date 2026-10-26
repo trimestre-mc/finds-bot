@@ -12,14 +12,15 @@ import { prepareQuery, idsToPost, withoutCache, inferCategory } from './search.j
 import { getRate, refreshRate, formatPrice, postItem, processQueue, postContext } from './post.js';
 import {
   triggerIndexer, handleGo, handlePublicCommand, handlePublicComponent, handleFeatureComponent, handleFeatureModal,
-  runSchedules, runAutoConvert, runQcChannels,
+  runSchedules, runQcChannels,
 } from './features.js';
 import { categorizePending, detectCategory } from './categories.js';
 import { fetchQcPage, runQcChecks, refreshQc, qcWindow, syncQcCatalog } from './qc.js';
 import { popularItemStatements } from './items.js';
 import { budget } from './budget.js';
 import { withDb } from './turso.js';
-import { runImageSearch, searchByImage } from './imagesearch.js';
+import { searchByImage } from './imagesearch.js';
+import { watchChannels } from './watch.js';
 import { translatePending, rewriteTitles, titleWait } from './translate.js';
 import { fetchWeidianItem } from './weidian.js';
 import { extractWeidian, ingest, resolveQueue, scanSource, runDiscovery, addShopQuiet } from './discover.js';
@@ -60,17 +61,18 @@ export default {
       })());
       return;
     }
-    if (event.cron === '1-59/2 * * * *') {
-      // Synchro du catalogue FinderQC (items + nombre de QC), seule dans son exécution (« */1 » serait fusionné avec « * »).
-      if (env.TURSO_URL) ctx.waitUntil(syncQcCatalog(env).catch((e) => console.log('synchro QC', String(e))));
+    if (event.cron === '*/2 * * * *' || event.cron === '1-59/2 * * * *') {
+      // Salons de conversion et de recherche par image, relus toutes les 3 s : une exécution chaque minute
+      // (minutes paires et impaires ; « */1 » serait fusionné avec « * * * * * » et ne se déclencherait pas).
+      ctx.waitUntil(watchChannels(env).catch((e) => console.log('salons', String(e))));
       return;
     }
-    if (event.cron === '*/2 * * * *') {
-      ctx.waitUntil(Promise.all([
-        runAutoConvert(env).catch((e) => console.log('conversion', String(e))),
-        runQcChannels(env).catch((e) => console.log('salons QC', String(e))),
-        runImageSearch(env).catch((e) => console.log('recherche image', String(e))),
-      ]));
+    if (event.cron === '*/3 * * * *') {
+      // Synchro du catalogue FinderQC (items + nombre de QC), puis les salons QC de la communauté.
+      ctx.waitUntil((async () => {
+        if (env.TURSO_URL) await syncQcCatalog(env).catch((e) => console.log('synchro QC', String(e)));
+        await runQcChannels(env).catch((e) => console.log('salons QC', String(e)));
+      })());
       return;
     }
     // Chaque minute : la file d'envoi d'abord (seule dans l'exécution), sinon l'entretien (traduction, catégories, indexeur).
@@ -555,6 +557,16 @@ async function handleApi(request, env, url) {
       return json({ ok: true, items: await searchByImage(url.searchParams.get('url') || '') });
     } catch (err) {
       return json({ ok: false, error: String(err.message || err) });
+    }
+  }
+
+  // Diagnostic : ce que le bot voit d'un salon (accès, contenu des messages = intent Message Content).
+  if (path === '/api/channel-check' && request.method === 'GET') {
+    try {
+      const msgs = await discordApi(env, 'GET', `/channels/${encodeURIComponent(url.searchParams.get('id') || '')}/messages?limit=5`);
+      return json({ ok: true, messages: msgs.map((m) => ({ id: m.id, bot: !!(m.author && m.author.bot), text: url.searchParams.get('text') ? (m.content || '').slice(0, 300) : (m.content || '').length, attachments: (m.attachments || []).length, embeds: (m.embeds || []).length })) });
+    } catch (err) {
+      return json({ ok: false, error: String(err.message || err).slice(0, 200) });
     }
   }
 

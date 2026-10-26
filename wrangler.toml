@@ -4,7 +4,7 @@ compatibility_date = "2026-09-01"
 
 [triggers]
 # Workers gratuit : 5 crons pour tout le compte. Chaque cron est une exécution séparée, avec ses 50 requêtes externes.
-crons = ["* * * * *", "1-59/2 * * * *", "*/2 * * * *", "*/5 * * * *"]
+crons = ["* * * * *", "*/2 * * * *", "1-59/2 * * * *", "*/3 * * * *", "*/5 * * * *"]
 
 [[d1_databases]]
 binding = "DB"
