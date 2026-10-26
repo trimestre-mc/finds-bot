@@ -39,6 +39,21 @@ les traduit, les classe, et les poste en belles cartes avec tes liens d'affiliat
 - 🏷️ **Agents** : BBDBuy / Kakobuy avec juste ton code (seul `AGENTS_OWNER_ID` peut les modifier)
 - 👥 **Accès** · 🩺 **Santé** (indexeur, files, erreurs récentes)
 
+## Sources de données et autorisations
+
+| Source | Utilisation | Autorisation |
+|---|---|---|
+| Weidian (pages publiques) | Liste des boutiques, pages produit (photos, titres) | Pages publiques, rythme lent, arrêt dès le moindre refus |
+| Jadeship | Best Items, Live Feed, annuaire des vendeurs | Accord du propriétaire, déclaré par l'utilisateur du bot le 26/10/2026 |
+| FinderQC / UUFinds (même propriétaire) | Photos QC des agents (API `server.finderqc.com`) | Accord du propriétaire, déclaré par l'utilisateur du bot le 26/10/2026 |
+| Repfind | Photos QC de secours (API `repfind.ai/client`) | Accord du propriétaire, déclaré par l'utilisateur du bot le 26/10/2026 |
+| Discord (salons choisis) | Sources de finds, QC de la communauté, conversion des liens | Salons du serveur, choisis par les admins |
+
+Ces accords n'ont pas été vérifiés par écrit dans ce dépôt : si l'un d'eux est retiré, désactiver la source correspondante
+(`indexer/jadeship.mjs`, `fetchQcPage` / `fetchRepfindPage` dans `src/qc.js`). Le bot s'identifie toujours avec
+`User-Agent: finds-bot/1.0 (+https://github.com/trimestre-mc/finds-bot)`, garde les résultats en cache et respecte les
+limites de rythme ; aucune protection (Cloudflare, captcha, en-têtes) n'est contournée.
+
 ## Installation Discord
 
 1. Portail développeur → **New Application** ; copie l'Application ID et la Public Key dans `wrangler.toml`.
@@ -55,7 +70,9 @@ Nouvelle installation : `npm run db:init`. Le schéma complet est dans `schema.s
 
 - Taobao et 1688 exigent une connexion : pas d'indexation de boutiques, mais les items populaires arrivent via Jadeship et tout lien se convertit avec `/convert`.
 - Si Weidian ralentit ou demande une vérification, l'indexeur s'arrête (rien n'est contourné) et reprend au passage suivant.
-- Quotas gratuits : Workers AI (~3 000 titres réécrits / jour ; la plupart des titres arrivent déjà en anglais), 50 requêtes externes par exécution du Worker.
+- Quotas gratuits : Workers AI (~1 200 titres réécrits / jour ; la plupart des titres arrivent déjà en anglais), 50 requêtes externes par exécution du Worker.
+- Base D1 gratuite (100 000 lignes écrites, 5 millions lues par jour) : budgets d'écriture quotidiens (`src/budget.js`), recherche par catégorie (index) et cache partagé des recherches. Au-delà d'un budget, le travail reprend le lendemain.
+- QC : une photo QC n'existe que si l'item a été acheté via un agent. Les items jamais achetés n'en ont nulle part ; le salon QC de la communauté comble ce vide.
 
 ## Tests
 

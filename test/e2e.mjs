@@ -89,6 +89,8 @@ const sh = (cmd) => execSync(cmd, { cwd: ROOT, stdio: 'pipe' }).toString();
 rmSync(ROOT + '.wrangler/state', { recursive: true, force: true });
 sh('npx wrangler d1 execute finds-bot --local --file schema.sql');
 const sql = (q) => JSON.parse(sh(`npx wrangler d1 execute finds-bot --local --json --command "${q}"`))[0].results;
+// Requête contenant des guillemets doubles (JSON) : passée par un fichier.
+const sqlFile = (q) => { const f = ROOT + '.wrangler/e2e.sql'; writeFileSync(f, q); sh(`npx wrangler d1 execute finds-bot --local --file ${f}`); };
 
 const dev = spawn('npx', ['wrangler', 'dev', '--port', '8787', '--test-scheduled'], { cwd: ROOT, stdio: ['ignore', 'pipe', 'pipe'] });
 let devLog = '';
@@ -520,6 +522,28 @@ try {
   await submit('m:shop', { links: 'https://weidian.com/?userid=1840259863' });
   const reBan = await lastEdit(mark);
   check('🚫 boutique bannie jamais réajoutée', reBan && sql("SELECT COUNT(*) AS n FROM shops WHERE id = '1840259863'")[0].n === 0, reBan && allText(reBan.body).split('\n')[0]);
+
+  // Budgets d'écriture quotidiens (quota gratuit D1)
+  const day = new Date().toISOString().slice(0, 10);
+  const api = (path, body) => fetch(WORKER + path, { method: body ? 'POST' : 'GET', headers: { Authorization: `Bearer ${SECRET}`, 'Content-Type': 'application/json' }, body: body ? JSON.stringify(body) : undefined });
+  sql(`UPDATE shops SET status = 'pending' WHERE id = '1617411897'`);
+  const jobsBefore = await api('/api/indexer/jobs').then((r) => r.json());
+  sqlFile(`INSERT OR REPLACE INTO settings (key, value) VALUES ('budget:items', '{"day":"${day}","used":5000}');
+    INSERT OR REPLACE INTO settings (key, value) VALUES ('budget:pages', '{"day":"${day}","used":3000}');`);
+  const jobsFull = await api('/api/indexer/jobs').then((r) => r.json());
+  check('budget épuisé : l\'indexeur n\'a plus de travail aujourd\'hui', jobsBefore.shops.length > 0 && jobsFull.shops.length === 0 && jobsFull.missingImages === 0 && jobsFull.linkQueue === 0,
+    `${jobsBefore.shops.length} boutique(s) → ${jobsFull.shops.length}`);
+  const bRun = await api('/api/indexer/start', { shopId: '1617411897' }).then((r) => r.json());
+  const refused = await api('/api/indexer/items', { shopId: '1617411897', runId: bRun.runId, items: [{ itemId: '7000000999', name: 'x', price: 10 }] });
+  check('budget épuisé : écriture d\'items refusée (429)', refused.status === 429 && sql("SELECT COUNT(*) AS n FROM items WHERE item_id = '7000000999'")[0].n === 0);
+  await api('/api/indexer/finish', { shopId: '1617411897', runId: bRun.runId, budget: true });
+  check('budget épuisé : la boutique repasse en attente (reprise demain)', sql("SELECT status FROM shops WHERE id = '1617411897'")[0].status === 'pending');
+  sqlFile(`INSERT OR REPLACE INTO settings (key, value) VALUES ('budget:items', '{"day":"2000-01-01","used":5000}');`);
+  check('nouveau jour : le budget est de nouveau disponible', (await api('/api/indexer/jobs').then((r) => r.json())).shops.length > 0);
+
+  // QC : secours Repfind quand FinderQC n'a rien
+  const rf = await api('/api/qc-window?item=weidian:7802530042').then((r) => r.json());
+  check('QC : secours Repfind quand FinderQC n\'a rien (dans Discord)', rf.ok && rf.photos > 0 && /cdn\.repfind\.ai/.test(rf.firstPhoto || '') && rf.externalLinks === 0, `${rf.qcCount} QC, ${rf.photos} photos`);
 
   const health = await click('health');
   check('🩺 santé : limites Discord', /Santé du bot/.test(allText(health.data.data)) && validate('santé', health.data.data));

@@ -14,7 +14,7 @@ export const BATCHES_PER_VIEW = 3;
 const RECHECK_MS = 3 * 86400000;
 
 const fmt = (n) => Number(n || 0).toLocaleString('fr-FR').replace(/ | /g, ' ');
-const isImg = (u) => /^https:\/\/img\.finderqc\.com\//.test(u || '');
+const isImg = (u) => /^https:\/\/(img\.finderqc\.com|cdn\.repfind\.ai)\//.test(u || '');
 
 // Une page de lots QC FinderQC (12 lots). Renvoie { count, batches: [{ agent, date, attrs, photos }] } ou null.
 export async function fetchQcPage(itemId, page = 1) {
@@ -39,6 +39,50 @@ export async function fetchQcPage(itemId, page = 1) {
 
 const PLATFORMS = { Weidian: 'weidian', Taobao: 'taobao', Ali1688: '1688' };
 
+// Repfind (2e source, avec l'accord de son propriétaire) : utilisé quand FinderQC n'a rien pour l'item.
+const REPFIND = 'https://www.repfind.ai/client';
+
+export async function fetchRepfindPage(itemId, page = 1) {
+  const get = async (path) => {
+    const res = await fetch(REPFIND + path, { headers: { 'User-Agent': UA } });
+    if (!res.ok) throw new Error(`Repfind ${res.status}`);
+    const text = await res.text();
+    if (!text) throw new Error('Repfind : réponse vide (rythme limité)');
+    return JSON.parse(text);
+  };
+  const d = await get(`/product/detail?id=${encodeURIComponent(itemId)}`);
+  if (d.code !== 200 || !d.data || !d.data.id) return { count: 0, batches: [], similar: [], running: false };
+  const q = await get(`/product/qc/search?productId=${encodeURIComponent(d.data.id)}&pageNum=${page}&pageSize=${BATCHES_PER_API_PAGE}`);
+  const batches = (q.rows || []).map((r) => {
+    let attrs = '';
+    try { attrs = JSON.parse(((r.images || [])[0] || {}).label || '{}').skuName || ''; } catch {}
+    return { agent: r.platform || '', date: r.qcTime ? Date.parse(r.qcTime) : null, attrs, photos: (r.images || []).map((i) => i.imgUrl).filter(isImg) };
+  }).filter((b) => b.photos.length);
+  return { count: Number(q.qcTotal) || 0, batches, similar: [], running: !!q.qcRunning };
+}
+
+// QC d'un item, toutes sources : FinderQC d'abord, Repfind si FinderQC n'a rien (ou si Repfind est la source connue).
+export async function fetchQc(item, page = 1, opts = {}) {
+  let hint = null;
+  try { hint = JSON.parse(item.qc_preview || 'null'); } catch {}
+  const preferRepfind = hint && !Array.isArray(hint) && hint.s === 'repfind';
+  let qc = { count: 0, batches: [], similar: [], running: false };
+  if (!preferRepfind) {
+    try { qc = await fetchQcPage(item.item_id, page); qc.source = 'finderqc'; } catch (err) { console.log('finderqc', String(err).slice(0, 100)); }
+  }
+  if (!qc.count && opts.repfind !== false) {
+    try {
+      const r = await fetchRepfindPage(item.item_id, page);
+      if (r.count || r.running) qc = { ...r, similar: qc.similar || [], source: 'repfind' };
+    } catch (err) { console.log('repfind', String(err).slice(0, 100)); }
+  }
+  return qc;
+}
+
+function previewJson(qc) {
+  return JSON.stringify({ s: qc.source || 'finderqc', p: qc.batches.flatMap((b) => b.photos).slice(0, 8) });
+}
+
 // Toutes les 5 minutes : QC des items qui comptent (populaires, déjà postés, ajoutés à la main), revérifiées tous
 // les 3 jours, et découverte de leurs items similaires. Renvoie le nombre de requêtes externes faites.
 export async function runQcChecks(env, limit) {
@@ -50,14 +94,14 @@ export async function runQcChecks(env, limit) {
   const stmts = [];
   const found = [];
   let calls = 0;
+  let repfindLeft = 3; // Repfind limite le rythme : quelques appels par passage seulement
   for (const item of results) {
     calls++;
-    let qc;
-    try { qc = await fetchQcPage(item.item_id, 1); } catch (err) { console.log('qc', String(err).slice(0, 100)); break; }
-    const preview = qc.batches.flatMap((b) => b.photos).slice(0, 8);
+    const qc = await fetchQc(item, 1, { repfind: repfindLeft > 0 });
+    if (qc.source === 'repfind' || !qc.count) { repfindLeft--; calls += 2; }
     stmts.push(env.DB.prepare('UPDATE items SET qc_count = ?, qc_preview = ?, qc_checked_at = ? WHERE id = ?')
-      .bind(qc.count, JSON.stringify(preview), Date.now(), item.id));
-    found.push(...qc.similar.slice(0, 10));
+      .bind(qc.count, previewJson(qc), qc.running ? null : Date.now(), item.id));
+    found.push(...(qc.similar || []).slice(0, 10));
   }
   // Items similaires : au plus 10 par passage, pris sur le budget quotidien « items » (quota D1 gratuit).
   const b = await budget(env, 'items');
@@ -73,18 +117,14 @@ export async function runQcChecks(env, limit) {
 // Met à jour le nombre de QC et l'aperçu d'un item (une requête, au plus tous les 3 jours). Renvoie l'item à jour.
 export async function refreshQc(env, item) {
   if (item.qc_checked_at && Date.now() - item.qc_checked_at < RECHECK_MS) return item;
-  let qc = { count: item.qc_count || 0, batches: [] };
-  try {
-    qc = await fetchQcPage(item.item_id, 1);
-  } catch (err) {
-    console.log('qc', item.id, String(err).slice(0, 120));
-    return item;
-  }
-  const preview = qc.batches.flatMap((b) => b.photos).slice(0, 8);
+  const qc = await fetchQc(item, 1);
+  const preview = previewJson(qc);
+  // Récupération en cours chez Repfind : on revérifiera (pas de date de vérification).
+  const checkedAt = qc.running ? null : Date.now();
   // Le cache est un plus : si la base refuse l'écriture (quota du jour), on affiche quand même les QC.
   await env.DB.prepare('UPDATE items SET qc_count = ?, qc_preview = ?, qc_checked_at = ? WHERE id = ?')
-    .bind(qc.count, JSON.stringify(preview), Date.now(), item.id).run().catch((err) => console.log('qc cache', String(err).slice(0, 100)));
-  return { ...item, qc_count: qc.count, qc_preview: JSON.stringify(preview), qc_checked_at: Date.now() };
+    .bind(qc.count, preview, checkedAt, item.id).run().catch((err) => console.log('qc cache', String(err).slice(0, 100)));
+  return { ...item, qc_count: qc.count, qc_preview: preview, qc_checked_at: checkedAt, qc_running: qc.running };
 }
 
 // QC de la communauté pour un item : nombre de posts, de photos, et le plus récent.
@@ -143,8 +183,7 @@ export async function qcWindow(env, item, view = 0, opts = {}) {
   const en = opts.lang === 'en';
   const first = view * BATCHES_PER_VIEW;
   const apiPage = Math.floor(first / BATCHES_PER_API_PAGE) + 1;
-  let qc = { count: item.qc_count || 0, batches: [] };
-  try { qc = await fetchQcPage(item.item_id, apiPage); } catch (err) { console.log('qc', String(err).slice(0, 100)); }
+  const qc = await fetchQc(item, apiPage);
   const offset = first % BATCHES_PER_API_PAGE;
   const batches = qc.batches.slice(offset, offset + BATCHES_PER_VIEW);
   const totalBatchesSeen = (apiPage - 1) * BATCHES_PER_API_PAGE + qc.batches.length;
@@ -162,6 +201,10 @@ export async function qcWindow(env, item, view = 0, opts = {}) {
   const title = escape((item.title_en || item.title_zh || `${item.platform} ${item.item_id}`).slice(0, 80));
   const head = `## 📸 ${title}\n-# ${qc.count ? (en ? `${fmt(qc.count)} QC photos` : `${fmt(qc.count)} photos QC`) : (en ? 'No agent QC yet' : 'Pas encore de QC d\'agents')}` +
     (batches.length ? `  ·  ${en ? 'batches' : 'lots'} ${first + 1}–${first + batches.length}${hasNext ? '' : ` / ${totalBatchesSeen}`}` : '');
+  if (!blocks.length && qc.running) {
+    blocks.push(text(en ? '⏳ QC photos for this item are being fetched right now. Come back in a few minutes.'
+      : '⏳ Les photos QC de cet item sont en cours de récupération. Reviens dans quelques minutes.'));
+  }
   if (!blocks.length) {
     blocks.push(text(opts.qcChannel
       ? (en ? `Bought it? Post your QC photos with the item link in <#${opts.qcChannel}>.` : `Tu l'as acheté ? Poste tes photos QC avec le lien de l'item dans <#${opts.qcChannel}> : elles apparaîtront ici.`)
@@ -180,8 +223,8 @@ export async function postForumQc(env, threadId, item, lang = 'fr') {
   const en = lang === 'en';
   const { photos, calls: got } = await communityPhotos(env, item.id, 4);
   let calls = got;
-  let qc = { count: 0, batches: [] };
-  try { qc = await fetchQcPage(item.item_id, 1); calls++; } catch { calls++; }
+  const qc = await fetchQc(item, 1);
+  calls += qc.source === 'repfind' ? 3 : 1;
   if (!photos.length && !qc.batches.length) return calls;
 
   const files = [];

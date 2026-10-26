@@ -6,7 +6,7 @@ import { panel, update, openModal, later, userId } from './respond.js';
 import { COMMANDS } from './commands.js';
 import { modalValues, escape, fmtInt } from './components.js';
 import {
-  parseItemLink, isValidTemplate, buildAgentLink, AGENT_PRESETS, isValidCode, presetTemplate,
+  parseItemLink, isValidTemplate, canonicalUrl, buildAgentLink, AGENT_PRESETS, isValidCode, presetTemplate,
 } from './links.js';
 import { prepareQuery, idsToPost, withoutCache, inferCategory } from './search.js';
 import { getRate, refreshRate, formatPrice, postItem, processQueue, postContext } from './post.js';
@@ -518,15 +518,15 @@ async function handleApi(request, env, url) {
     const key = url.searchParams.get('item') || '';
     const [platform, itemId] = key.split(':');
     let item = await env.DB.prepare('SELECT * FROM items WHERE id = ?').bind(key).first();
-    if (!item) return json({ ok: false, error: 'item inconnu' });
-    item = await refreshQc(env, item);
+    if (!item && !canonicalUrl(platform, itemId)) return json({ ok: false, error: 'item inconnu' });
+    item = await refreshQc(env, item || { id: key, item_id: itemId, platform, url: canonicalUrl(platform, itemId), popularity: 0 });
     const view = await qcWindow(env, item, 0, {});
     const s = JSON.stringify(view);
     return json({
       ok: true, item: key, title: item.title_en || item.title_zh, qcCount: item.qc_count,
       galleries: (s.match(/"type":12/g) || []).length,
-      photos: (s.match(/https:\/\/img\.finderqc\.com[^"]+/g) || []).length,
-      firstPhoto: (s.match(/https:\/\/img\.finderqc\.com[^"]+/) || [null])[0],
+      photos: (s.match(/https:\/\/(img\.finderqc\.com|cdn\.repfind\.ai)[^"]+/g) || []).length,
+      firstPhoto: (s.match(/https:\/\/(img\.finderqc\.com|cdn\.repfind\.ai)[^"]+/) || [null])[0],
       externalLinks: (s.match(/"url":"https:\/\/(www\.)?(uufinds|finderqc)/g) || []).length,
       platform, itemId,
     });
