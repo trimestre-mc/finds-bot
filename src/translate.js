@@ -2,8 +2,9 @@
 // en titres produit courts et propres en anglais. m2m100 sert de secours.
 
 const MT_MODEL = '@cf/meta/m2m100-1.2b';
-const LLM_MODEL = '@cf/meta/llama-3.3-70b-instruct-fp8-fast';
-const BATCH = 12;
+// Gemma 4 : meilleurs titres que Llama 3.3 70B sur nos tests (marques reconnues) et ~5 fois moins cher en neurons.
+const LLM_MODEL = '@cf/google/gemma-4-26b-a4b-it';
+const BATCH = 20;
 
 export async function translate(env, text, from, to) {
   if (!text || !text.trim()) return '';
@@ -14,8 +15,15 @@ export async function translate(env, text, from, to) {
 const SYSTEM = `You turn messy Chinese marketplace listing titles into clean English product titles for a shopping catalog.
 For each title:
 - Write 3 to 8 words in Title Case: [Brand if explicitly present] + [model/collection code if present] + [color if given] + [item type].
-- Item type must be exact: 手镯 = bracelet, 项链 = necklace, 戒指 = ring, 墨镜 = sunglasses, 卫衣 = hoodie/sweatshirt, 短袖/T恤/tee = tee, 长袖 = long sleeve tee, 短裤 = shorts, 牛仔裤 = jeans, 夹克 = jacket, 外套 = jacket/coat, 针织 = knit.
-- NEVER invent or guess a brand. Only use a brand that is clearly written (Latin letters like BAL, Sup, ALO, Acne, Ralph Lauren) or one of these exact nicknames: 双b/巴黎 = Balenciaga, 小香 = Chanel, 小马 = Ralph Lauren, 某b = Burberry. If no brand is clear, write no brand.
+- Item type must be exact: 手镯 = bracelet, 项链 = necklace, 戒指 = ring, 墨镜 = sunglasses, 卫衣 = hoodie/sweatshirt, 卫裤 = sweatpants, 短袖/T恤/tee = tee, 长袖 = long sleeve tee, 短裤 = shorts, 牛仔裤 = jeans, 夹克 = jacket, 外套 = jacket/coat, 针织 = knit.
+- Brands: use a brand ONLY if it is written in Latin letters (Nike, BAL, Sup, ALO, Acne, Off White, CDG, TNF) or is one of these Chinese names/nicknames. Otherwise write no brand; never guess from the style.
+  克罗心/CH = Chrome Hearts; 巴黎世家/巴黎/双b = Balenciaga; 小香/香奈儿 = Chanel; 小马/拉夫劳伦/RL = Ralph Lauren; 博柏利/巴宝莉/某b = Burberry;
+  踢不烂/TBL/大黄靴 = Timberland; 葆蝶家/bv = Bottega Veneta; 古驰 = Gucci; 普拉达 = Prada; 路易威登/LV/老花 = Louis Vuitton; 迪奥 = Dior;
+  芬迪 = Fendi; 圣罗兰/YSL = Saint Laurent; 罗意威 = Loewe; 蒙口/蒙克莱/盟可睐 = Moncler; 大鹅/加拿大鹅 = Canada Goose; 始祖鸟 = Arc'teryx;
+  北面 = The North Face; 斯图西 = Stussy; 椰子/侃爷 = Yeezy; 耐克 = Nike; 阿迪 = Adidas; 新百伦 = New Balance; 亚瑟士 = Asics; 萨洛蒙 = Salomon;
+  马吉拉/MM6 = Maison Margiela; 德训鞋 = German Army Trainer; 鳄鱼 = Lacoste; 汤姆布朗/TB = Thom Browne; 川久保玲 = Comme des Garcons;
+  卡哈特 = Carhartt; 恐惧之神/FOG/ESS = Fear of God Essentials; 棕榈天使 = Palm Angels; 爱马仕 = Hermes; 卡地亚 = Cartier;
+  梵克雅宝/四叶草 = Van Cleef & Arpels; 宝格丽 = Bulgari; 劳力士 = Rolex; 欧米茄 = Omega; 老爹鞋 = dad sneakers.
 - Drop seller names and shop slogans (XX出品, XXmade, Rain Made, 杰尼龟, 我是呼吸, 自主, 现货, 发出, 库存, 不退换, 到货转寄, celebrity names, internal codes like #H134), and fabric/process details.
 Reply with ONLY a JSON array of strings, same order and same count as the input.`;
 
@@ -30,19 +38,22 @@ export function tidyTitle(t) {
 }
 
 export async function rewriteTitles(env, titles, model = LLM_MODEL) {
+  // Modèles « qui réfléchissent » (Qwen3, Gemma 4…) : réflexion coupée, sinon elle mange tous les jetons.
+  const reasoning = !/llama/.test(model);
   const res = await env.AI.run(model, {
     messages: [
       { role: 'system', content: SYSTEM },
-      { role: 'user', content: JSON.stringify(titles) },
+      { role: 'user', content: JSON.stringify(titles) + (reasoning ? ' /no_think' : '') },
     ],
     max_tokens: 60 + titles.length * 30,
     temperature: 0.2,
+    ...(reasoning ? { chat_template_kwargs: { enable_thinking: false }, reasoning_effort: 'low' } : {}),
   });
   const raw = typeof res.response === 'string' ? res.response
     : res.choices ? String(res.choices[0].message.content || '') : JSON.stringify(res.response);
   const match = raw.match(/\[[\s\S]*\]/);
   const arr = match ? JSON.parse(match[0]) : null;
-  if (!Array.isArray(arr) || arr.length !== titles.length) throw new Error(`réponse inattendue: ${raw.slice(0, 120)}`);
+  if (!Array.isArray(arr) || arr.length !== titles.length) throw new Error(`réponse inattendue: ${(raw || JSON.stringify(res)).slice(0, 400)}`);
   return arr.map(tidyTitle);
 }
 
@@ -57,9 +68,9 @@ async function rewriteInHalves(env, titles) {
   }
 }
 
-// Budget quotidien du grand modèle (quota gratuit Workers AI : 10 000 neurons/jour, ~5 par titre).
+// Budget quotidien du modèle (quota gratuit Workers AI : 10 000 neurons/jour, ~0,9 par titre avec Gemma 4).
 // On en garde pour la recherche multilingue.
-const TITLES_PER_DAY = 1200;
+const TITLES_PER_DAY = 6500;
 
 async function aiBudget(env) {
   const day = new Date().toISOString().slice(0, 10);
