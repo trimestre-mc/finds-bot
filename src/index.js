@@ -197,8 +197,12 @@ async function onComponent(it, env, ctx) {
     }
     case 's:ch': {
       const channel = values[0];
-      if (channel) await env.DB.prepare('UPDATE searches SET channel_id = ? WHERE id = ?').bind(channel, c).run();
-      return update(await resultsView(env, c, Number(d) || 0, `📍 Les items seront postés dans <#${channel}>.`));
+      const resolved = it.data.resolved && it.data.resolved.channels && it.data.resolved.channels[channel];
+      const type = resolved && resolved.type === 15 ? 15 : 0;
+      if (channel) await env.DB.prepare('UPDATE searches SET channel_id = ?, channel_type = ? WHERE id = ?').bind(channel, type, c).run();
+      return update(await resultsView(env, c, Number(d) || 0, type === 15
+        ? `📍 Forum <#${channel}> : chaque item aura son propre post.`
+        : `📍 Les items seront postés dans <#${channel}>.`));
     }
     case 's:sel': return later(it, env, ctx, () => postSelected(env, c, Number(d) || 0, values));
     case 's:all': return update(await confirmAllView(env, c, Number(d) || 0));
@@ -209,7 +213,7 @@ async function onComponent(it, env, ctx) {
       const now = Date.now();
       for (let i = 0; i < ids.length; i += 50) {
         await env.DB.batch(ids.slice(i, i + 50).map((id) =>
-          env.DB.prepare('INSERT INTO post_queue (item_id, channel_id, created_at) VALUES (?, ?, ?)').bind(id, s.channelId, now)));
+          env.DB.prepare('INSERT INTO post_queue (item_id, channel_id, channel_type, created_at) VALUES (?, ?, ?, ?)').bind(id, s.channelId, s.channelType, now)));
       }
       const queued = await env.DB.prepare('SELECT COUNT(*) AS n FROM post_queue').first();
       // On commence tout de suite, le cron prend le relais chaque minute.
@@ -232,7 +236,7 @@ async function postSelected(env, sid, page, ids) {
     const item = await env.DB.prepare('SELECT * FROM items WHERE id = ?').bind(id).first();
     if (!item) continue;
     try {
-      await postItem(env, item, s.channelId, agents, rate);
+      await postItem(env, item, s.channelId, agents, rate, true, s.channelType);
       ok++;
     } catch (err) {
       error = String(err.message || err);
@@ -242,7 +246,7 @@ async function postSelected(env, sid, page, ids) {
   let msg = `✅ **${ok}** item${ok > 1 ? 's' : ''} posté${ok > 1 ? 's' : ''} dans <#${s.channelId}>.`;
   if (error) {
     msg = /-> (403|404)/.test(error)
-      ? `❌ Le bot ne peut pas écrire dans <#${s.channelId}>. Donne-lui « Voir le salon » et « Envoyer des messages ».`
+      ? `❌ Le bot ne peut pas écrire dans <#${s.channelId}>. Donne-lui « Voir le salon » et « Envoyer des messages »${s.channelType === 15 ? ' (« Créer des posts » pour un forum)' : ''}.`
       : `${ok ? msg + ' ' : ''}❌ Un envoi a échoué : ${escape(error.slice(0, 120))}`;
   }
   return resultsView(env, sid, page, msg);

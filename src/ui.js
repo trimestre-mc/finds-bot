@@ -72,14 +72,15 @@ export function searchModal(params = {}, sid = '') {
 
 export async function loadSearch(env, sid) {
   const row = await env.DB.prepare('SELECT * FROM searches WHERE id = ?').bind(sid).first();
-  return row ? { params: JSON.parse(row.params), channelId: row.channel_id } : null;
+  return row ? { params: JSON.parse(row.params), channelId: row.channel_id, channelType: row.channel_type || 0 } : null;
 }
 
 export async function createSearch(env, it, params) {
   const sid = crypto.randomUUID().replaceAll('-', '').slice(0, 12);
   const uid = (it.member && it.member.user.id) || (it.user && it.user.id);
-  await env.DB.prepare('INSERT INTO searches (id, guild_id, user_id, params, channel_id, created_at) VALUES (?, ?, ?, ?, ?, ?)')
-    .bind(sid, it.guild_id, uid, JSON.stringify(params), it.channel_id, Date.now()).run();
+  const type = it.channel && it.channel.type === 15 ? 15 : 0;
+  await env.DB.prepare('INSERT INTO searches (id, guild_id, user_id, params, channel_id, channel_type, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
+    .bind(sid, it.guild_id, uid, JSON.stringify(params), it.channel_id, type, Date.now()).run();
   return sid;
 }
 
@@ -133,8 +134,8 @@ export async function resultsView(env, sid, page, msg) {
     row({
       type: 8,
       custom_id: `s:ch:${sid}:${page}`,
-      placeholder: 'Salon où poster',
-      channel_types: [0, 5],
+      placeholder: 'Salon ou forum où poster',
+      channel_types: [0, 5, 15],
       default_values: [{ id: channelId, type: 'channel' }],
     }),
     row({
@@ -165,7 +166,7 @@ export async function confirmAllView(env, sid, page) {
   if (!s) return expiredView();
   const total = Math.min(await countResults(env, s.params, await getRate(env)), MAX_BULK);
   return [container([
-    text(`## 📤 Tout poster ?\n**${fmtInt(total)}** items vont partir dans <#${s.channelId}>, environ ${QUEUE_PER_MINUTE} par minute (~${Math.ceil(total / QUEUE_PER_MINUTE)} min).`),
+    text(`## 📤 Tout poster ?\n**${fmtInt(total)}** items vont partir dans <#${s.channelId}>${s.channelType === 15 ? ' (1 post de forum par item)' : ''}, environ ${QUEUE_PER_MINUTE} par minute (~${Math.ceil(total / QUEUE_PER_MINUTE)} min).`),
     text('-# Ils partent un par un pour ne pas spammer le salon. Tu peux suivre l\'avancement depuis le menu.'),
     sep(),
     row(

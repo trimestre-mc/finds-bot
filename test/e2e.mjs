@@ -207,10 +207,24 @@ try {
   const pics = posted && findComp(posted.body, (c) => c.type === 12);
   check('carte postée : galerie de photos', pics && pics.items.length >= 2 && pics.items.length <= 4, pics && `${pics.items.length} photos`);
   check('carte postée : prix en € en avant', /### 💶 \d+,\d{2} €  ·  ¥\d/.test(cardText), cardText.split('\n').find((l) => l.includes('💶')));
-  check('carte postée : bouton Acheter BBDBuy avec code', /\[🛒 Acheter sur BBDBuy →\]\(https:\/\/www\.bbdbuy\.com\/goods\/WEIDIAN\/\d+\?inviteCode=TEST\)/.test(cardText));
+  const buy = posted && findComp(posted.body, (c) => c.type === 2 && c.label === 'Acheter sur BBDBuy');
+  const view = posted && findComp(posted.body, (c) => c.type === 2 && c.label === 'Voir l\'annonce Weidian');
+  check('carte postée : bouton « Acheter sur BBDBuy » avec code, à côté de « Voir l\'annonce »',
+    buy && view && /^https:\/\/www\.bbdbuy\.com\/goods\/WEIDIAN\/\d+\?inviteCode=TEST$/.test(buy.url) && !cardText.includes('Acheter sur'));
   check('photos récupérées par l\'indexeur', sql("SELECT COUNT(*) AS n FROM items WHERE images IS NOT NULL AND images != '[]'")[0].n >= 55);
   const after = await lastEdit(mark);
   check('panneau mis à jour après envoi', after && /1\*\* item posté/.test(allText(after.body)) && validate('après envoi', after.body));
+
+  const FORUM = '444';
+  const fch = await interact({ type: 3, ...member(true), message: { id: 'm1' },
+    data: { custom_id: `s:ch:${sid}:0`, component_type: 8, values: [FORUM], resolved: { channels: { [FORUM]: { id: FORUM, type: 15 } } } } });
+  check('choix d\'un forum', /Forum <#444> : chaque item aura son propre post/.test(allText(fch.data.data)));
+  const sel2 = findComp(fch.data.data, (c) => c.type === 3);
+  await click(`s:sel:${sid}:0`, [sel2.options[0].value]);
+  const thread = await waitCall((c) => c.method === 'POST' && c.path === `/channels/${FORUM}/threads`);
+  check('forum : 1 item = 1 post (titre + prix, carte dedans)', thread && /€$/.test(thread.body.name) && thread.body.name.length <= 100
+    && validate('post de forum', thread.body.message), thread && thread.body.name);
+  await click(`s:ch:${sid}:0`, [OTHER_CHANNEL]);
 
   const conf = await click(`s:all:${sid}:0`);
   check('tout poster → confirmation', /Tout poster \?/.test(allText(conf.data.data)) && validate('confirmation', conf.data.data));
@@ -225,8 +239,8 @@ try {
   await fetch(WORKER + '/__scheduled?cron=*+*+*+*+*');
   await sleep(45000);
   const queueLeft = sql('SELECT COUNT(*) AS n FROM post_queue')[0].n;
-  const titles = posts().slice(before).map((c) => allText(c.body).split('\n').pop());
-  check('toute la file envoyée, sans doublon', queueLeft === 0 && posts().length - before === 59 && new Set(titles).size === titles.length,
+  const titles = posts().slice(before).map((c) => findComp(c.body, (x) => x.type === 2 && x.style === 5).url);
+  check('toute la file envoyée, sans doublon', queueLeft === 0 && posts().length - before === 58 && new Set(titles).size === titles.length,
     `${posts().length - before} postés, ${queueLeft} restants, ${new Set(titles).size} uniques`);
 
   const tr = sql("SELECT title_en FROM items WHERE title_en IS NOT NULL AND title_en LIKE '% %' LIMIT 1")[0];

@@ -73,9 +73,7 @@ const fmtEur = (cny, rate) => `${(cny * rate).toFixed(2).replace('.', ',')} €`
 export function buildItemMessage(item, agents, rate, images = []) {
   const platform = PLATFORM_NAMES[item.platform] || item.platform;
   const links = agents.slice(0, 20).map((a) => ({ name: a.name, url: buildAgentLink(a.template, item) }));
-  const [main, ...others] = links;
-
-  const buttons = others.map((l) => link(l.name.slice(0, 80), l.url, '🛒'));
+  const buttons = links.map((l) => link(`Acheter sur ${l.name}`.slice(0, 80), l.url, '🛒'));
   buttons.push(link(`Voir l'annonce ${platform}`, item.url, '🔗'));
   const rows = [];
   for (let i = 0; i < buttons.length; i += 5) rows.push(row(...buttons.slice(i, i + 5)));
@@ -93,16 +91,25 @@ export function buildItemMessage(item, agents, rate, images = []) {
       text(`## ${escape(itemTitle(item))}`),
       text(`${price}\n-# 🏪 ${escape(item.shop_name || platform)}  ·  ${platform}`),
       sep(),
-      main ? text(`### [🛒 Acheter sur ${escape(main.name)} →](${main.url})`) : null,
       ...rows,
     ], CARD_ACCENT)],
   };
 }
 
 // Poste un item. Renvoie le nombre de requêtes externes faites (pour rester sous la limite Cloudflare).
-export async function postItem(env, item, channelId, agents, rate, allowFetch = true) {
+export const FORUM = 15;
+
+// Poste un item : message dans un salon texte, ou nouveau post (1 item = 1 post) dans un forum.
+export async function postItem(env, item, channelId, agents, rate, allowFetch = true, channelType = 0) {
   const [images, fetched] = await itemImages(env, item, allowFetch);
-  await discordApi(env, 'POST', `/channels/${channelId}/messages`, buildItemMessage(item, agents, rate, images));
+  const message = buildItemMessage(item, agents, rate, images);
+  if (Number(channelType) === FORUM) {
+    const price = item.price_cny != null ? `  ·  ${fmtEur(item.price_cny, rate)}` : '';
+    const name = `${itemTitle(item).slice(0, 100 - price.length)}${price}`;
+    await discordApi(env, 'POST', `/channels/${channelId}/threads`, { name, message });
+  } else {
+    await discordApi(env, 'POST', `/channels/${channelId}/messages`, message);
+  }
   await env.DB.prepare('UPDATE items SET posted_count = posted_count + 1, last_posted = ? WHERE id = ?')
     .bind(Date.now(), item.id).run();
   return 1 + fetched;
@@ -131,7 +138,7 @@ export async function processQueue(env, budgetMs) {
   try {
     while (Date.now() < deadline && calls < MAX_CALLS) {
       const job = await env.DB.prepare(
-        `DELETE FROM post_queue WHERE id = (SELECT MIN(id) FROM post_queue) RETURNING item_id, channel_id`,
+        `DELETE FROM post_queue WHERE id = (SELECT MIN(id) FROM post_queue) RETURNING item_id, channel_id, channel_type`,
       ).first();
       if (!job) break;
       const item = await env.DB.prepare('SELECT * FROM items WHERE id = ?').bind(job.item_id).first();
@@ -139,7 +146,7 @@ export async function processQueue(env, budgetMs) {
       if (!agents) [agents, rate] = await Promise.all([getAgents(env), getRate(env)]);
       const started = Date.now();
       try {
-        calls += await postItem(env, item, job.channel_id, agents, rate, calls < MAX_CALLS - 2);
+        calls += await postItem(env, item, job.channel_id, agents, rate, calls < MAX_CALLS - 2, job.channel_type);
         posted++;
       } catch (err) {
         console.log('envoi échoué', item.id, String(err).slice(0, 300));

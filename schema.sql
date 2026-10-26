@@ -61,6 +61,7 @@ CREATE TABLE IF NOT EXISTS searches (
   user_id TEXT,
   params TEXT NOT NULL,
   channel_id TEXT NOT NULL,
+  channel_type INTEGER NOT NULL DEFAULT 0,   -- 0 = salon texte, 15 = forum
   created_at INTEGER
 );
 
@@ -69,6 +70,7 @@ CREATE TABLE IF NOT EXISTS post_queue (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   item_id TEXT NOT NULL,
   channel_id TEXT NOT NULL,
+  channel_type INTEGER NOT NULL DEFAULT 0,
   created_at INTEGER
 );
 
