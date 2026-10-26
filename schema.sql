@@ -25,6 +25,7 @@ CREATE TABLE IF NOT EXISTS items (
   price_cny REAL,
   image TEXT,
   url TEXT NOT NULL,
+  images TEXT,                      -- JSON : photos de la page produit (rempli au premier post)
   stock INTEGER,
   manual INTEGER NOT NULL DEFAULT 0,
   translate_failed INTEGER NOT NULL DEFAULT 0,

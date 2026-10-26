@@ -3,7 +3,10 @@
 import { discordApi } from './discord.js';
 import { buildAgentLink } from './links.js';
 
-import { COMPONENTS_V2, GOLD, container, gallery, text, sep, row, link, escape } from './components.js';
+import { COMPONENTS_V2, container, gallery, text, sep, row, link, escape } from './components.js';
+import { fetchWeidianItem } from './weidian.js';
+
+const CARD_ACCENT = 0xf97316;
 
 export const PLATFORM_NAMES = { weidian: 'Weidian', taobao: 'Taobao', '1688': '1688' };
 
@@ -42,40 +45,72 @@ export async function getAgents(env) {
   return results;
 }
 
+// Photos d'un item : jusqu'à 4. Pour Weidian, on lit la page produit une fois puis on garde le résultat.
+// Renvoie [photos, nombre de requêtes externes faites].
+export async function itemImages(env, item, allowFetch = true) {
+  let images = [];
+  try { images = item.images ? JSON.parse(item.images) : []; } catch {}
+  if (item.images == null && allowFetch && item.platform === 'weidian') {
+    try {
+      images = (await fetchWeidianItem(item.item_id)).images;
+    } catch (err) {
+      console.log('photos', item.id, String(err).slice(0, 120));
+    }
+    await env.DB.prepare('UPDATE items SET images = ? WHERE id = ?').bind(JSON.stringify(images.slice(0, 8)), item.id).run();
+    return [mergeImages(item.image, images), 1];
+  }
+  return [mergeImages(item.image, images), 0];
+}
+
+function mergeImages(main, extra) {
+  return [...new Set([main, ...(extra || [])].filter((u) => u && /^https:\/\//.test(u)))].slice(0, 4);
+}
+
+const fmtCny = (cny) => `¥${Number(cny).toFixed(cny % 1 ? 2 : 0)}`;
+const fmtEur = (cny, rate) => `${(cny * rate).toFixed(2).replace('.', ',')} €`;
+
 // Carte d'un item posté dans un salon (Components V2).
-export function buildItemMessage(item, agents, rate) {
+export function buildItemMessage(item, agents, rate, images = []) {
   const platform = PLATFORM_NAMES[item.platform] || item.platform;
-  const buttons = agents.slice(0, 24).map((a) => link(`Acheter sur ${a.name}`.slice(0, 80), buildAgentLink(a.template, item), '🛒'));
-  buttons.push(link(platform, item.url, '🔗'));
+  const links = agents.slice(0, 20).map((a) => ({ name: a.name, url: buildAgentLink(a.template, item) }));
+  const [main, ...others] = links;
+
+  const buttons = others.map((l) => link(l.name.slice(0, 80), l.url, '🛒'));
+  buttons.push(link(`Voir l'annonce ${platform}`, item.url, '🔗'));
   const rows = [];
   for (let i = 0; i < buttons.length; i += 5) rows.push(row(...buttons.slice(i, i + 5)));
 
-  const original = item.title_en && item.title_zh && item.title_en !== item.title_zh ? `\n-# ${escape(item.title_zh.slice(0, 150))}` : '';
   const price = item.price_cny != null
-    ? `### ¥${Number(item.price_cny).toFixed(item.price_cny % 1 ? 2 : 0)}  ·  ~${(item.price_cny * rate).toFixed(2).replace('.', ',')} €`
-    : '### Prix non indiqué';
+    ? `### 💶 ${fmtEur(item.price_cny, rate)}  ·  ${fmtCny(item.price_cny)}`
+    : '### 💶 Prix sur l\'annonce';
+  const pics = images.length ? images : item.image ? [item.image] : [];
 
   return {
     flags: COMPONENTS_V2,
     allowed_mentions: { parse: [] },
     components: [container([
-      item.image ? gallery([item.image]) : null,
-      text(`## ${escape(itemTitle(item))}${original}`),
-      text(`${price}\n🏪 ${escape(item.shop_name || platform)}`),
+      pics.length ? gallery(pics) : null,
+      text(`## ${escape(itemTitle(item))}`),
+      text(`${price}\n-# 🏪 ${escape(item.shop_name || platform)}  ·  ${platform}`),
       sep(),
+      main ? text(`### [🛒 Acheter sur ${escape(main.name)} →](${main.url})`) : null,
       ...rows,
-      text(`-# ${platform} · ${item.item_id}`),
-    ], GOLD)],
+      text(`-# Prix indicatif, hors livraison  ·  ID ${item.item_id}`),
+    ], CARD_ACCENT)],
   };
 }
 
-export async function postItem(env, item, channelId, agents, rate) {
-  await discordApi(env, 'POST', `/channels/${channelId}/messages`, buildItemMessage(item, agents, rate));
+// Poste un item. Renvoie le nombre de requêtes externes faites (pour rester sous la limite Cloudflare).
+export async function postItem(env, item, channelId, agents, rate, allowFetch = true) {
+  const [images, fetched] = await itemImages(env, item, allowFetch);
+  await discordApi(env, 'POST', `/channels/${channelId}/messages`, buildItemMessage(item, agents, rate, images));
   await env.DB.prepare('UPDATE items SET posted_count = posted_count + 1, last_posted = ? WHERE id = ?')
     .bind(Date.now(), item.id).run();
+  return 1 + fetched;
 }
 
 export const POST_INTERVAL_MS = 1100;
+const MAX_CALLS = 42;
 export const POSTS_PER_MINUTE = 45;
 
 // Vide la file "tout poster" pendant budgetMs. Appelé par le cron et juste après « Confirmer ».
@@ -93,8 +128,9 @@ export async function processQueue(env, budgetMs) {
   let agents = null;
   let rate = null;
   let posted = 0;
+  let calls = 0; // Cloudflare gratuit : 50 requêtes externes max par exécution
   try {
-    while (Date.now() < deadline) {
+    while (Date.now() < deadline && calls < MAX_CALLS) {
       const job = await env.DB.prepare(
         `DELETE FROM post_queue WHERE id = (SELECT MIN(id) FROM post_queue) RETURNING item_id, channel_id`,
       ).first();
@@ -104,7 +140,7 @@ export async function processQueue(env, budgetMs) {
       if (!agents) [agents, rate] = await Promise.all([getAgents(env), getRate(env)]);
       const started = Date.now();
       try {
-        await postItem(env, item, job.channel_id, agents, rate);
+        calls += await postItem(env, item, job.channel_id, agents, rate, calls < MAX_CALLS - 2);
         posted++;
       } catch (err) {
         console.log('envoi échoué', item.id, String(err).slice(0, 300));

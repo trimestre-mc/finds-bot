@@ -13,6 +13,7 @@ const MAX_ITEMS = Number(process.env.MAX_ITEMS || 5000);
 const PAGE_DELAY_MS = 600;
 const SHOP_DELAY_MS = 3000;
 const TIME_BUDGET_MS = 40 * 60 * 1000;
+const IMAGE_DELAY_MS = 450;
 const LIST_API = 'getCateItemListForCommonItemSection';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -109,6 +110,38 @@ async function crawlShop(page, shopId, onBatch) {
   return { count: seen.size, shopName };
 }
 
+// Photos des items (page produit publique), une seule fois par item, à rythme modéré.
+async function fetchImages(itemId) {
+  const res = await fetch(`https://weidian.com/item.html?itemID=${itemId}`);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const html = (await res.text()).replaceAll('&#34;', '"').replaceAll('&quot;', '"').replaceAll('&amp;', '&');
+  const block = (html.match(/"imgs"\s*:\s*\[([^\]]*)\]/) || [])[1] || '';
+  return [...new Set((block.match(/https:\/\/[^"]+/g) || []).map((u) => u.split('?')[0]))].slice(0, 8);
+}
+
+async function fillImages() {
+  const { items } = await api(`/api/indexer/missing-images?limit=3000`);
+  if (!items.length) return;
+  console.log(`📸 ${items.length} items sans photos`);
+  let batch = [];
+  let done = 0;
+  let errors = 0;
+  for (const itemId of items) {
+    if (Date.now() - started > TIME_BUDGET_MS) { console.log('Temps écoulé, photos : la suite au prochain passage.'); break; }
+    try {
+      batch.push({ itemId, images: await fetchImages(itemId) });
+      errors = 0;
+    } catch (err) {
+      batch.push({ itemId, images: [] });
+      if (++errors >= 5) { console.log(`Arrêt photos après 5 erreurs : ${err.message}`); break; }
+    }
+    if (batch.length >= 50) { await api('/api/indexer/images', { items: batch }); done += batch.length; batch = []; }
+    await sleep(IMAGE_DELAY_MS);
+  }
+  if (batch.length) { await api('/api/indexer/images', { items: batch }); done += batch.length; }
+  console.log(`📸 photos récupérées pour ${done} items`);
+}
+
 async function main() {
   const browser = await chromium.launch({ headless: true });
   const context = await browser.newContext({ locale: 'zh-CN', viewport: { width: 1280, height: 900 } });
@@ -147,6 +180,7 @@ async function main() {
       }
       await sleep(SHOP_DELAY_MS);
     }
+    await fillImages();
   } finally {
     await browser.close();
   }

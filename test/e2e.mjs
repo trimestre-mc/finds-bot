@@ -203,9 +203,12 @@ try {
   check('poster la sélection (réponse différée)', post.data.type === 6);
   const posted = await waitCall((c) => c.method === 'POST' && c.path === `/channels/${OTHER_CHANNEL}/messages`);
   check('carte postée : limites Discord', posted && validate('carte postée', posted.body));
-  const buy = posted && findComp(posted.body, (c) => c.type === 2 && c.style === 5);
-  check('carte postée : image + bouton BBDBuy avec code', posted && !!findComp(posted.body, (c) => c.type === 12) && /^https:\/\/www\.bbdbuy\.com\/goods\/WEIDIAN\/\d+\?inviteCode=TEST$/.test(buy.url),
-    posted && `${buy.label} | ${allText(posted.body).split('\n')[0]}`);
+  const cardText = posted ? allText(posted.body) : '';
+  const pics = posted && findComp(posted.body, (c) => c.type === 12);
+  check('carte postée : galerie de photos', pics && pics.items.length >= 2 && pics.items.length <= 4, pics && `${pics.items.length} photos`);
+  check('carte postée : prix en € en avant', /### 💶 \d+,\d{2} €  ·  ¥\d/.test(cardText), cardText.split('\n').find((l) => l.includes('💶')));
+  check('carte postée : bouton Acheter BBDBuy avec code', /\[🛒 Acheter sur BBDBuy →\]\(https:\/\/www\.bbdbuy\.com\/goods\/WEIDIAN\/\d+\?inviteCode=TEST\)/.test(cardText));
+  check('photos récupérées par l\'indexeur', sql("SELECT COUNT(*) AS n FROM items WHERE images IS NOT NULL AND images != '[]'")[0].n >= 55);
   const after = await lastEdit(mark);
   check('panneau mis à jour après envoi', after && /1\*\* item posté/.test(allText(after.body)) && validate('après envoi', after.body));
 

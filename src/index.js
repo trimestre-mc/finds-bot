@@ -9,7 +9,8 @@ import {
 } from './links.js';
 import { prepareQuery, allResultIds } from './search.js';
 import { getRate, refreshRate, formatPrice, getAgents, postItem, processQueue } from './post.js';
-import { translatePending } from './translate.js';
+import { translatePending, rewriteTitles } from './translate.js';
+import { fetchWeidianItem } from './weidian.js';
 import {
   QUEUE_PER_MINUTE, homeView, searchModal, loadSearch, createSearch, resultsView, confirmAllView,
   catalogsView, addShopModal, shopView, confirmDeleteShopView, agentsView, agentModal, presetModal, itemModal,
@@ -41,6 +42,7 @@ export default {
         processQueue(env, 50000).catch((e) => console.log('file', String(e))),
         translatePending(env, TRANSLATE_PER_MINUTE).catch((e) => console.log('traduction', String(e))),
         refreshRate(env).catch((e) => console.log('taux', String(e))),
+        autoIndex(env).catch((e) => console.log('indexeur', String(e))),
       ]);
       await env.DB.prepare('DELETE FROM searches WHERE created_at < ?').bind(Date.now() - 24 * 3600 * 1000).run();
     })());
@@ -383,7 +385,8 @@ function indexerDelay(env) {
 // Lance l'indexeur tout de suite si un token GitHub est configuré (optionnel).
 async function triggerIndexer(env) {
   if (!env.GITHUB_TOKEN || !env.GITHUB_REPO) return;
-  await fetch(`https://api.github.com/repos/${env.GITHUB_REPO}/actions/workflows/indexer.yml/dispatches`, {
+  await env.DB.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('last_dispatch', ?)").bind(String(Date.now())).run();
+  const res = await fetch(`https://api.github.com/repos/${env.GITHUB_REPO}/actions/workflows/indexer.yml/dispatches`, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${env.GITHUB_TOKEN}`,
@@ -391,23 +394,31 @@ async function triggerIndexer(env) {
       'User-Agent': 'finds-bot',
     },
     body: JSON.stringify({ ref: 'main' }),
-  }).catch((e) => console.log('dispatch', String(e)));
+  }).catch((e) => ({ ok: false, status: String(e) }));
+  if (!res.ok) console.log('dispatch GitHub refusé', res.status);
 }
 
-// Lit une page produit Weidian publique.
-async function fetchWeidianItem(itemId) {
-  const res = await fetch(`https://weidian.com/item.html?itemID=${itemId}`);
-  if (!res.ok) throw new Error(`Weidian a répondu ${res.status}`);
-  const html = (await res.text()).replaceAll('&#34;', '"').replaceAll('&quot;', '"').replaceAll('&amp;', '&');
-  const pick = (re) => { const m = html.match(re); return m ? m[1] : null; };
-  return {
-    title: pick(/"item_name"\s*:\s*"([^"]+)"/),
-    price: parseFloat(pick(/"price"\s*:\s*"?([0-9.]+)/)) || null,
-    image: pick(/"imgs"\s*:\s*\[\s*"([^"]+)"/),
-    shopName: pick(/"shopName"\s*:\s*"([^"]+)"/),
-    shopId: pick(/"shop_id"\s*:\s*"?(\d+)/),
-  };
+// Boutiques à indexer : nouvelles, à rafraîchir (24 h) ou bloquées en cours d'indexation.
+async function dueShops(env, limit) {
+  const now = Date.now();
+  const { results } = await env.DB.prepare(
+    `SELECT id, name FROM shops
+     WHERE status = 'pending'
+        OR (status IN ('ok', 'error') AND (last_indexed IS NULL OR last_indexed < ?))
+        OR (status = 'indexing' AND (last_indexed IS NULL OR last_indexed < ?))
+     ORDER BY CASE status WHEN 'pending' THEN 0 ELSE 1 END, last_indexed LIMIT ?`,
+  ).bind(now - REINDEX_HOURS * 3600 * 1000, now - 3 * 3600 * 1000, limit).all();
+  return results;
 }
+
+// Appelé chaque minute : le planificateur de GitHub étant peu fiable, le bot lance l'indexeur lui-même.
+async function autoIndex(env) {
+  if (!env.GITHUB_TOKEN || !env.GITHUB_REPO) return;
+  const last = await env.DB.prepare("SELECT value FROM settings WHERE key = 'last_dispatch'").first();
+  if (last && Date.now() - Number(last.value) < 12 * 60 * 1000) return;
+  if ((await dueShops(env, 1)).length) await triggerIndexer(env);
+}
+
 
 // ---------------------------------------------------------------- API de l'indexeur
 
@@ -421,6 +432,12 @@ async function handleApi(request, env, url) {
     return json({ ok: true, commands: data.map((c) => c.name) });
   }
 
+  // Diagnostic : aperçu des titres réécrits pour une liste de titres chinois.
+  if (path === '/api/titles-preview' && request.method === 'POST') {
+    const { titles } = await request.json();
+    return json({ titles: await rewriteTitles(env, (titles || []).slice(0, 20)) });
+  }
+
   // Configure l'application Discord : URL des interactions + commandes.
   if (path === '/api/setup' && request.method === 'POST') {
     const app = await discordApi(env, 'PATCH', '/applications/@me', {
@@ -431,15 +448,8 @@ async function handleApi(request, env, url) {
   }
 
   if (path === '/api/indexer/jobs' && request.method === 'GET') {
-    const now = Date.now();
-    const { results } = await env.DB.prepare(
-      `SELECT id, name FROM shops
-       WHERE status = 'pending'
-          OR (status IN ('ok', 'error') AND (last_indexed IS NULL OR last_indexed < ?))
-          OR (status = 'indexing' AND (last_indexed IS NULL OR last_indexed < ?))
-       ORDER BY CASE status WHEN 'pending' THEN 0 ELSE 1 END, last_indexed LIMIT 10`,
-    ).bind(now - REINDEX_HOURS * 3600 * 1000, now - 3 * 3600 * 1000).all();
-    return json({ shops: results });
+    const missing = await env.DB.prepare("SELECT COUNT(*) AS n FROM items WHERE platform = 'weidian' AND images IS NULL").first();
+    return json({ shops: await dueShops(env, 10), missingImages: missing.n });
   }
 
   const body = request.method === 'POST' ? await request.json() : {};
@@ -468,6 +478,20 @@ async function handleApi(request, env, url) {
       i.stock != null ? Number(i.stock) : null, now, body.runId));
     if (stmts.length) await env.DB.batch(stmts);
     if (body.shopName) await env.DB.prepare('UPDATE shops SET name = ? WHERE id = ?').bind(body.shopName, body.shopId).run();
+    return json({ ok: true, saved: stmts.length });
+  }
+
+  if (path === '/api/indexer/missing-images' && request.method === 'GET') {
+    const { results } = await env.DB.prepare(
+      "SELECT item_id FROM items WHERE platform = 'weidian' AND images IS NULL ORDER BY first_seen DESC LIMIT ?",
+    ).bind(Math.min(Number(url.searchParams.get('limit')) || 500, 3000)).all();
+    return json({ items: results.map((r) => r.item_id) });
+  }
+
+  if (path === '/api/indexer/images') {
+    const stmts = (body.items || []).slice(0, 200).map((i) => env.DB.prepare('UPDATE items SET images = ? WHERE id = ?')
+      .bind(JSON.stringify((i.images || []).filter((u) => /^https:\/\//.test(u)).slice(0, 8)), `weidian:${i.itemId}`));
+    if (stmts.length) await env.DB.batch(stmts);
     return json({ ok: true, saved: stmts.length });
   }
 

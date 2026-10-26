@@ -19,9 +19,9 @@ jobs:
       - name: Vérifier s'il y a du travail
         id: jobs
         run: |
-          n=$(curl -sf -H "Authorization: Bearer ${{ secrets.INDEXER_SECRET }}" "${{ secrets.WORKER_URL }}/api/indexer/jobs" | python3 -c "import sys,json; print(len(json.load(sys.stdin)['shops']))")
+          n=$(curl -sf -H "Authorization: Bearer ${{ secrets.INDEXER_SECRET }}" "${{ secrets.WORKER_URL }}/api/indexer/jobs" | python3 -c "import sys,json; d=json.load(sys.stdin); print(len(d['shops']) + d.get('missingImages', 0))")
           echo "count=$n" >> "$GITHUB_OUTPUT"
-          echo "$n catalogue(s) à indexer"
+          echo "$n catalogue(s) ou photos à traiter"
 
       - uses: actions/setup-node@v4
         if: steps.jobs.outputs.count != '0'
