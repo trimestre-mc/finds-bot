@@ -14,7 +14,7 @@ import { CATEGORY_BY_KEY } from './categories.js';
 import { homeView, loadSearch, createSearch, resultsView, filtersView, catalogsView } from './ui.js';
 import {
   schedulesView, scheduleView, scheduleModal, statsView, historyView, settingsView, healthView, findView, convertView,
-  categoryChannelsView, categoryChannels, categoryRhythm, CATEGORY_RHYTHMS,
+  categoryChannelsView, categoryChannels, categoryRhythm, CATEGORY_RHYTHMS, categoryRhythmModal, rhythmOf,
 } from './views.js';
 
 // ---------------------------------------------------------------- Indexeur GitHub
@@ -219,7 +219,7 @@ export async function handleFeatureComponent(it, env, ctx, a, b, c, d, values) {
         await env.DB.prepare('UPDATE schedules SET channel_id = ?, channel_type = ?, enabled = 1, next_at = ? WHERE id = ?')
           .bind(values[0], type, Date.now() + 60000, existing.id).run();
       } else {
-        const r = CATEGORY_RHYTHMS[await categoryRhythm(env)];
+        const r = await categoryRhythm(env);
         await env.DB.prepare(
           `INSERT INTO schedules (guild_id, name, params, channel_id, channel_type, per_run, every_minutes, next_at, created_by, created_at)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -229,15 +229,9 @@ export async function handleFeatureComponent(it, env, ctx, a, b, c, d, values) {
       return update(await categoryChannelsView(env, it, c, `✅ ${cat.emoji} ${cat.label} → <#${values[0]}>. Premiers items dans environ une minute.`));
     }
     case 'cch:rhythm': {
-      const r = CATEGORY_RHYTHMS[values[0]];
-      if (r) {
-        await env.DB.batch([
-          env.DB.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('cat_rhythm', ?)").bind(values[0]),
-          env.DB.prepare("UPDATE schedules SET per_run = ?, every_minutes = ? WHERE guild_id = ? AND json_extract(params, '$.catChannel') IS NOT NULL")
-            .bind(r.per, r.every, it.guild_id),
-        ]);
-      }
-      return update(await categoryChannelsView(env, it, null, r ? `⏱️ Rythme : ${r.label} par salon.` : null));
+      if (values[0] === 'custom') return openModal(categoryRhythmModal(await categoryRhythm(env)));
+      if (!CATEGORY_RHYTHMS[values[0]]) return update(await categoryChannelsView(env, it, null));
+      return update(await setCategoryRhythm(env, it, values[0]));
     }
     case 'sch:preset': {
       const p = PRESETS[c];
@@ -381,6 +375,14 @@ function parseNum(v) {
 }
 
 export async function handleFeatureModal(it, env, kind, rest, v) {
+  if (kind === 'cch' && rest[0] === 'rhythm') {
+    const count = Math.round(parseNum(v.count) || 0);
+    const minutes = Math.round(parseNum(v.minutes) || 0);
+    if (count < 1 || count > 10 || minutes < 5 || minutes > 1440) {
+      return update(await categoryChannelsView(env, it, null, '❌ Entre 1 et 10 items, toutes les 5 à 1440 minutes.'));
+    }
+    return update(await setCategoryRhythm(env, it, `custom:${count}:${minutes}`));
+  }
   if (kind !== 'sch') return null;
   const hours = parseNum(v.hours);
   const count = Math.round(parseNum(v.count) || 0);
@@ -399,6 +401,17 @@ export async function handleFeatureModal(it, env, kind, rest, v) {
   const id = await createSchedule(env, it, name, s.params, count, Math.round(hours * 60));
   await env.DB.prepare('UPDATE schedules SET channel_id = ?, channel_type = ? WHERE id = ?').bind(s.channelId, s.channelType, id).run();
   return update(await scheduleView(env, id, '✅ Drop programmé. Le premier part dans environ une minute.'));
+}
+
+// Rythme commun des salons par catégorie : enregistré, et appliqué tout de suite aux drops existants.
+async function setCategoryRhythm(env, it, key) {
+  const r = rhythmOf(key);
+  await env.DB.batch([
+    env.DB.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('cat_rhythm', ?)").bind(r.key),
+    env.DB.prepare("UPDATE schedules SET per_run = ?, every_minutes = ? WHERE guild_id = ? AND json_extract(params, '$.catChannel') IS NOT NULL")
+      .bind(r.per, r.every, it.guild_id),
+  ]);
+  return categoryChannelsView(env, it, null, `⏱️ Rythme : ${r.label} par salon.`);
 }
 
 // ---------------------------------------------------------------- Exécution des drops (cron chaque minute)
@@ -428,8 +441,9 @@ export async function runSchedule(env, s) {
 }
 
 export async function runSchedules(env) {
-  // Un drop par minute au plus (requêtes à la base limitées par exécution).
-  const { results } = await env.DB.prepare('SELECT * FROM schedules WHERE enabled = 1 AND next_at <= ? ORDER BY next_at LIMIT 1')
+  // Trois drops par minute au plus (requêtes à la base limitées par exécution) : assez pour une dizaine de salons
+  // par catégorie, même à un rythme rapide.
+  const { results } = await env.DB.prepare('SELECT * FROM schedules WHERE enabled = 1 AND next_at <= ? ORDER BY next_at LIMIT 3')
     .bind(Date.now()).all();
   for (const s of results) {
     try {

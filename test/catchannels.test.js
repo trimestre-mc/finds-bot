@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
-import { handleFeatureComponent, runSchedule } from '../src/features.js';
+import { handleFeatureComponent, handleFeatureModal, runSchedule } from '../src/features.js';
 
 function memoryDb() {
   const db = new DatabaseSync(':memory:');
@@ -45,6 +45,16 @@ test('salons par catégorie : un salon choisi = un drop des meilleurs items de l
   await handleFeatureComponent(it, env, ctx, 'cch', 'rhythm', undefined, undefined, ['10m']);
   const s2 = DB.raw.prepare('SELECT * FROM schedules').get();
   assert.deepEqual([s2.per_run, s2.every_minutes], [1, 10]);
+
+  // Rythme personnalisé : « Personnalisé… » ouvre une modale, puis 5 items toutes les 15 min.
+  const custom = await (await handleFeatureComponent(it, env, ctx, 'cch', 'rhythm', undefined, undefined, ['custom'])).json();
+  assert.equal(custom.type, 9, 'modale');
+  assert.equal(custom.data.custom_id, 'm:cch:rhythm');
+  await handleFeatureModal(it, env, 'cch', ['rhythm'], { count: '5', minutes: '15' });
+  const s3 = DB.raw.prepare('SELECT * FROM schedules').get();
+  assert.deepEqual([s3.per_run, s3.every_minutes], [5, 15]);
+  const bad = await (await handleFeatureModal(it, env, 'cch', ['rhythm'], { count: '50', minutes: '1' })).json();
+  assert.match(JSON.stringify(bad), /Entre 1 et 10 items/);
 
   DB.raw.exec('UPDATE schedules SET per_run = 3');
   const n = await runSchedule(env, DB.raw.prepare('SELECT * FROM schedules').get());

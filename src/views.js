@@ -36,6 +36,8 @@ export function describeParams(p) {
 
 // Rythme commun à tous les salons de catégorie.
 export const CATEGORY_RHYTHMS = {
+  '5x10m': { per: 5, every: 10, label: '5 items toutes les 10 min' },
+  '1x5m': { per: 1, every: 5, label: '1 item toutes les 5 min' },
   '10m': { per: 1, every: 10, label: '1 item toutes les 10 min' },
   '30m': { per: 2, every: 30, label: '2 items toutes les 30 min' },
   '1h': { per: 3, every: 60, label: '3 items par heure' },
@@ -50,9 +52,28 @@ export async function categoryChannels(env, guildId) {
   return new Map(results.map((s) => [JSON.parse(s.params).catChannel, s]));
 }
 
+// Rythme choisi : un préréglage, ou « custom:<items>:<minutes> » (modale « Personnalisé »).
 export async function categoryRhythm(env) {
   const row = await env.DB.prepare("SELECT value FROM settings WHERE key = 'cat_rhythm'").first();
-  return row && CATEGORY_RHYTHMS[row.value] ? row.value : '1h';
+  return rhythmOf(row ? row.value : '1h');
+}
+
+export function rhythmOf(key) {
+  if (CATEGORY_RHYTHMS[key]) return { key, ...CATEGORY_RHYTHMS[key] };
+  const m = /^custom:(\d+):(\d+)$/.exec(String(key || ''));
+  if (m) {
+    const per = Number(m[1]);
+    const every = Number(m[2]);
+    return { key, per, every, label: `${per} item${per > 1 ? 's' : ''} ${everyLabel(every)}` };
+  }
+  return { key: '1h', ...CATEGORY_RHYTHMS['1h'] };
+}
+
+export function categoryRhythmModal(current) {
+  return modal('m:cch:rhythm', '⏱️ Rythme des salons par catégorie', [
+    { id: 'count', label: 'Combien d\'items à chaque fois ?', description: 'Entre 1 et 10', placeholder: '3', value: current.per, required: true, max: 2 },
+    { id: 'minutes', label: 'Toutes les combien de minutes ?', description: 'Entre 5 et 1440 (une fois par jour)', placeholder: '60', value: current.every, required: true, max: 4 },
+  ]);
 }
 
 // Un salon par catégorie : le bot y poste tout seul les meilleurs items de la catégorie.
@@ -78,10 +99,13 @@ export async function categoryChannelsView(env, it, pick, msg) {
       type: 8, custom_id: `cch:set:${pick}`, placeholder: `2. Salon pour ${picked.label} (vide = arrêter)`, channel_types: [0, 5, 15],
       min_values: 0, max_values: 1, default_values: current ? [{ id: current.channel_id, type: 'channel' }] : [],
     }) : null,
-    text('**Rythme** (pour toutes les catégories)'),
+    text(`**Rythme** (pour toutes les catégories) : ${rhythm.label} par salon`),
     row({
       type: 3, custom_id: 'cch:rhythm', placeholder: 'Rythme',
-      options: Object.entries(CATEGORY_RHYTHMS).map(([k, r]) => ({ label: `${r.label} par salon`, value: k, default: k === rhythm })),
+      options: [
+        ...Object.entries(CATEGORY_RHYTHMS).map(([k, r]) => ({ label: `${r.label} par salon`, value: k, default: k === rhythm.key })),
+        { label: 'Personnalisé…', value: 'custom', emoji: { name: '✏️' }, description: 'Choisis le nombre d\'items et l\'intervalle', default: rhythm.key.startsWith('custom:') },
+      ],
     }),
     row(emojiBtn('⏰', 'Drops', 'sch:list'), backHome()),
   ])];
