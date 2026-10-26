@@ -178,6 +178,7 @@ export async function settingsView(env, it, msg) {
   const cfg = await getConfig(env);
   const { results: conv } = await env.DB.prepare('SELECT * FROM convert_channels WHERE guild_id = ?').bind(it.guild_id).all();
   const { results: qcCh } = await env.DB.prepare('SELECT * FROM qc_channels WHERE guild_id = ?').bind(it.guild_id).all();
+  const { results: imgCh } = await env.DB.prepare('SELECT * FROM image_channels WHERE guild_id = ?').bind(it.guild_id).all().catch(() => ({ results: [] }));
   return [container([
     notice(msg),
     text('## ⚙️ Réglages'),
@@ -209,6 +210,11 @@ export async function settingsView(env, it, msg) {
     row({
       type: 8, custom_id: 'set:convert', placeholder: 'Salons de conversion automatique', channel_types: [0, 5],
       min_values: 0, max_values: 10, default_values: conv.map((c) => ({ id: c.channel_id, type: 'channel' })),
+    }),
+    text(`**🔎 Recherche par image**\n-# Dans ces salons, chaque photo postée par un membre reçoit une réponse avec les items qui ressemblent le plus (prix, QC, bouton d'achat avec ton code).\n${imgCh.length ? imgCh.map((c) => `<#${c.channel_id}> · ${fmtInt(c.searched)} photos recherchées`).join('\n') : '-# Aucun salon.'}`),
+    row({
+      type: 8, custom_id: 'set:image', placeholder: 'Salons de recherche par image', channel_types: [0, 5],
+      min_values: 0, max_values: 10, default_values: imgCh.map((c) => ({ id: c.channel_id, type: 'channel' })),
     }),
     row(emojiBtn('📸', cfg.forumQc ? 'QC sous les posts de forum : activé' : 'QC sous les posts de forum : désactivé', 'set:forumqc', cfg.forumQc ? Style.SUCCESS : Style.SECONDARY)),
     text(`**📸 Salons QC**\n-# Les membres y postent leurs photos QC avec le lien de l'item : chaque item gagne un bouton « QC communauté ».\n${qcCh.length ? qcCh.map((c) => `<#${c.channel_id}> · ${fmtInt(c.collected)} QC récupérés`).join('\n') : '-# Aucun salon.'}`),

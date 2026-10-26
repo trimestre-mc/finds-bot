@@ -85,7 +85,8 @@ export async function handlePublicCommand(it, env, ctx) {
     }
     const ref = refs[0];
     const known = await env.DB.prepare('SELECT * FROM items WHERE id = ?').bind(`${ref.platform}:${ref.itemId}`).first();
-    return panel(await convertView(env, ref, known));
+    // Réponse visible par tout le salon (les erreurs restent privées).
+    return panel(await convertView(env, ref, known), false);
   }
   return null;
 }
@@ -293,6 +294,17 @@ export async function handleFeatureComponent(it, env, ctx, a, b, c, d, values) {
       const s = await loadSearch(env, c);
       if (s) await saveParams(env, c, { withQc: !s.params.withQc });
       return update(await resultsView(env, c, 0));
+    }
+    case 'set:image': {
+      const stmts = [env.DB.prepare(`DELETE FROM image_channels WHERE guild_id = ? AND channel_id NOT IN (${values.map(() => '?').join(',') || "''"})`)
+        .bind(it.guild_id, ...values)];
+      for (const ch of values) {
+        stmts.push(env.DB.prepare('INSERT OR IGNORE INTO image_channels (channel_id, guild_id, added_at) VALUES (?, ?, ?)').bind(ch, it.guild_id, Date.now()));
+      }
+      await env.DB.batch(stmts);
+      return update(await settingsView(env, it, values.length
+        ? `🔎 Recherche par image active dans ${values.map((v) => `<#${v}>`).join(', ')}. Réponse sous chaque photo en 2 min maximum.`
+        : '🔎 Recherche par image désactivée.'));
     }
     case 'set:convert': {
       const stmts = [env.DB.prepare(`DELETE FROM convert_channels WHERE guild_id = ? AND channel_id NOT IN (${values.map(() => '?').join(',') || "''"})`)

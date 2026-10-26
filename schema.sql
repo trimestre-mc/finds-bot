@@ -174,6 +174,15 @@ CREATE TABLE IF NOT EXISTS convert_channels (
   added_at INTEGER
 );
 
+-- Salons de recherche par image (photo postée → items qui ressemblent)
+CREATE TABLE IF NOT EXISTS image_channels (
+  channel_id TEXT PRIMARY KEY,
+  guild_id TEXT,
+  last_message_id TEXT,
+  searched INTEGER NOT NULL DEFAULT 0,
+  added_at INTEGER
+);
+
 -- Journal des erreurs (écran Santé)
 CREATE TABLE IF NOT EXISTS logs (
   id INTEGER PRIMARY KEY AUTOINCREMENT,

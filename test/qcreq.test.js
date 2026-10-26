@@ -91,3 +91,14 @@ test('FinderQC surchargé (429) : la fenêtre dit « réessaie », pas « aucune
   assert.match(view, /pub:qcp:weidian:4290211664:0/);
   assert.doesNotMatch(view, /Aucune photo QC|pub:qcreq/);
 });
+
+test('source QC indisponible : la fenêtre montre les photos déjà enregistrées', async () => {
+  const photos = ['https://cdn.repfind.ai/a/1.jpg', 'https://cdn.repfind.ai/a/2.jpg'];
+  const item = { id: 'weidian:7220434617', item_id: '7220434617', platform: 'weidian', qc_count: 15, qc_preview: JSON.stringify({ s: 'repfind', p: photos }) };
+  globalThis.fetch = async () => new Response('', { status: 403 });
+  const view = allText(await qcWindow({ DB: memoryDb() }, item, 0, { community: [], qcChannel: '555' }));
+  assert.match(view, /Photos QC enregistrées/);
+  assert.match(view, /cdn\.repfind\.ai\/a\/1\.jpg/);
+  assert.match(view, /15 photos QC/);
+  assert.doesNotMatch(view, /Aucune photo QC|pub:qcreq/);
+});

@@ -19,6 +19,7 @@ import { fetchQcPage, runQcChecks, refreshQc, qcWindow, syncQcCatalog } from './
 import { popularItemStatements } from './items.js';
 import { budget } from './budget.js';
 import { withDb } from './turso.js';
+import { runImageSearch, searchByImage } from './imagesearch.js';
 import { translatePending, rewriteTitles, titleWait } from './translate.js';
 import { fetchWeidianItem } from './weidian.js';
 import { extractWeidian, ingest, resolveQueue, scanSource, runDiscovery, addShopQuiet } from './discover.js';
@@ -68,6 +69,7 @@ export default {
       ctx.waitUntil(Promise.all([
         runAutoConvert(env).catch((e) => console.log('conversion', String(e))),
         runQcChannels(env).catch((e) => console.log('salons QC', String(e))),
+        runImageSearch(env).catch((e) => console.log('recherche image', String(e))),
       ]));
       return;
     }
@@ -101,6 +103,7 @@ const INDEXES = [
   'CREATE INDEX IF NOT EXISTS items_recent ON items(first_seen DESC)',
   'CREATE TABLE IF NOT EXISTS search_cache (key TEXT PRIMARY KEY, ids TEXT NOT NULL, at INTEGER NOT NULL)',
   'CREATE TABLE IF NOT EXISTS qc_requests (item_id TEXT PRIMARY KEY, user_id TEXT, at INTEGER NOT NULL)',
+  'CREATE TABLE IF NOT EXISTS image_channels (channel_id TEXT PRIMARY KEY, guild_id TEXT, last_message_id TEXT, searched INTEGER NOT NULL DEFAULT 0, added_at INTEGER)',
 ];
 let indexesReady = false;
 let indexesTriedAt = 0;
@@ -108,7 +111,7 @@ let indexesTriedAt = 0;
 async function ensureIndexes(env) {
   if (indexesReady || Date.now() - indexesTriedAt < 600000) return;
   indexesTriedAt = Date.now();
-  const row = await env.DB.prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE name IN ('items_nocat', 'items_noimg', 'items_qcdue', 'items_recent', 'search_cache', 'qc_requests')").first();
+  const row = await env.DB.prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE name IN ('items_nocat', 'items_noimg', 'items_qcdue', 'items_recent', 'search_cache', 'qc_requests', 'image_channels')").first();
   if (row.n === INDEXES.length) { indexesReady = true; return; }
   for (const sql of INDEXES) await env.DB.prepare(sql).run();
   indexesReady = true;
@@ -544,6 +547,15 @@ async function handleApi(request, env, url) {
       externalLinks: (s.match(/"url":"https:\/\/(www\.)?(uufinds|finderqc)/g) || []).length,
       platform, itemId,
     });
+  }
+
+  // Diagnostic : recherche par image d'une photo (URL), comme dans un salon de recherche par image.
+  if (path === '/api/image-search' && request.method === 'GET') {
+    try {
+      return json({ ok: true, items: await searchByImage(url.searchParams.get('url') || '') });
+    } catch (err) {
+      return json({ ok: false, error: String(err.message || err) });
+    }
   }
 
   // Diagnostic : la source QC répond-elle au bot ? (écran Santé et dépannage)

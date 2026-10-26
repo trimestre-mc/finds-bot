@@ -83,7 +83,7 @@ export async function fetchQc(item, page = 1, opts = {}) {
     try {
       const r = await fetchRepfindPage(item.item_id, page);
       if (r.count || r.running) qc = { ...r, similar: qc.similar || [], source: 'repfind' };
-    } catch (err) { console.log('repfind', String(err).slice(0, 100)); }
+    } catch (err) { failed = true; console.log('repfind', String(err).slice(0, 100)); }
   }
   // Source injoignable (et rien ailleurs) : « on ne sait pas », surtout pas « aucune QC ».
   if (failed && !qc.count && !qc.running) qc.failed = true;
@@ -220,8 +220,16 @@ export async function qcWindow(env, item, view = 0, opts = {}) {
       : '⏳ Les photos QC de cet item sont en cours de récupération. Reviens dans quelques minutes.'));
   }
   if (!blocks.length && qc.failed) {
-    blocks.push(text(en ? '⏳ The QC source is busy right now. Try again in a minute.'
-      : '⏳ La source des QC est surchargée en ce moment. Réessaie dans une minute.'));
+    // Source indisponible : les photos déjà enregistrées pour cet item, sinon « réessaie ».
+    let saved = [];
+    try { const h = JSON.parse(item.qc_preview || 'null'); saved = (Array.isArray(h) ? h : (h && h.p) || []).filter(isImg); } catch {}
+    if (saved.length && view === 0) {
+      blocks.push(text(en ? '🗂️ Saved QC photos (the source is busy, more in a minute)' : '🗂️ Photos QC enregistrées (la source est surchargée, plus de photos dans une minute)'));
+      blocks.push(gallery(saved.slice(0, 10)));
+    } else {
+      blocks.push(text(en ? '⏳ The QC source is busy right now. Try again in a minute.'
+        : '⏳ La source des QC est surchargée en ce moment. Réessaie dans une minute.'));
+    }
   }
   let ask = null;
   if (!blocks.length) {
