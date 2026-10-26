@@ -40,7 +40,9 @@ CREATE INDEX IF NOT EXISTS items_untranslated ON items(title_en) WHERE title_en 
 CREATE TABLE IF NOT EXISTS agents (
   name TEXT PRIMARY KEY,
   template TEXT NOT NULL,
-  position INTEGER NOT NULL DEFAULT 0
+  position INTEGER NOT NULL DEFAULT 0,
+  preset TEXT,                      -- clé de AGENT_PRESETS, ou NULL pour un lien personnalisé
+  code TEXT                         -- code d'affiliation (agents préréglés)
 );
 
 -- Admins ajoutés en plus des membres avec la permission Administrateur

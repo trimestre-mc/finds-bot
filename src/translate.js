@@ -16,20 +16,26 @@ export async function translatePending(env, limit) {
      ORDER BY first_seen DESC LIMIT ?`,
   ).bind(limit).all();
   let done = 0;
-  for (const it of results) {
-    try {
-      const en = await translate(env, it.title_zh, 'zh', 'en');
-      await env.DB.prepare('UPDATE items SET title_en = ? WHERE id = ?').bind(en || it.title_zh, it.id).run();
-      done++;
-    } catch (err) {
-      const msg = String(err);
+  for (let i = 0; i < results.length; i += 10) {
+    const batch = results.slice(i, i + 10);
+    const out = await Promise.allSettled(batch.map((it) => translate(env, it.title_zh, 'zh', 'en')));
+    const stmts = [];
+    let quota = false;
+    out.forEach((r, j) => {
+      const it = batch[j];
+      if (r.status === 'fulfilled') {
+        stmts.push(env.DB.prepare('UPDATE items SET title_en = ? WHERE id = ?').bind(r.value || it.title_zh, it.id));
+        done++;
+        return;
+      }
+      const msg = String(r.reason);
       console.log('traduction échouée', it.id, msg.slice(0, 200));
       // Quota épuisé ou modèle indisponible : on réessaiera plus tard sans pénaliser l'item.
-      if (!/limit|quota|neuron|429|capacity|unavailable/i.test(msg)) {
-        await env.DB.prepare('UPDATE items SET translate_failed = translate_failed + 1 WHERE id = ?').bind(it.id).run();
-      }
-      break;
-    }
+      if (/limit|quota|neuron|429|capacity|unavailable/i.test(msg)) quota = true;
+      else stmts.push(env.DB.prepare('UPDATE items SET translate_failed = translate_failed + 1 WHERE id = ?').bind(it.id));
+    });
+    if (stmts.length) await env.DB.batch(stmts);
+    if (quota) break;
   }
   return done;
 }

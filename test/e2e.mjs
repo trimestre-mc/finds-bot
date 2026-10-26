@@ -31,7 +31,7 @@ const { publicKey, privateKey } = generateKeyPairSync('ed25519');
 const pubHex = Buffer.from(publicKey.export({ format: 'jwk' }).x, 'base64url').toString('hex');
 writeFileSync(ROOT + '.dev.vars', [
   `DISCORD_PUBLIC_KEY=${pubHex}`, 'DISCORD_APP_ID=999', 'DISCORD_BOT_TOKEN=fake',
-  `INDEXER_SECRET=${SECRET}`, `DISCORD_API=http://localhost:${MOCK_PORT}`,
+  `INDEXER_SECRET=${SECRET}`, `DISCORD_API=http://localhost:${MOCK_PORT}`, 'AGENTS_OWNER_ID=1',
 ].join('\n'));
 
 const sh = (cmd) => execSync(cmd, { cwd: ROOT, stdio: 'pipe' }).toString();
@@ -149,13 +149,24 @@ try {
   check('accueil : limites Discord', validate('accueil', home.data.data));
   check('accueil : conseils de démarrage', /Commence par ajouter/.test(allText(home.data.data)));
 
-  const agModal = await click('ag:add');
-  check('bouton Agents → formulaire', agModal.data.type === 9 && agModal.data.data.components.length === 3);
-  const ag = await submit('m:agent', { name: 'BBDBuy', template: 'https://bbdbuy.com/product?url={url}&inviteCode=TEST', position: '' });
-  check('agent enregistré', ag.data.type === 7 && /BBDBuy\*\* enregistré/.test(allText(ag.data.data)));
+  const agModal = await click('ag:pick', ['bbdbuy']);
+  check('menu Agents → BBDBuy → formulaire « code »', agModal.data.type === 9 && agModal.data.data.custom_id === 'm:agent:bbdbuy');
+  const agLink = await submit('m:agent:bbdbuy', { code: 'https://bbdbuy.com/?inviteCode=X', position: '' });
+  check('un lien à la place du code est refusé', /juste ton \*\*code\*\*/.test(allText(agLink.data.data)));
+  const ag = await submit('m:agent:bbdbuy', { code: 'TEST', position: '' });
+  check('BBDBuy enregistré avec juste le code', ag.data.type === 7 && /BBDBuy\*\* enregistré avec le code/.test(allText(ag.data.data)));
   check('vue agents : limites Discord', validate('agents', ag.data.data));
-  const agBad = await submit('m:agent', { name: 'X', template: 'https://x.com/no-placeholder' });
+  const custom = await click('ag:pick', ['custom']);
+  check('menu Agents → Autre agent → formulaire lien', custom.data.data.custom_id === 'm:agent:custom');
+  const agBad = await submit('m:agent:custom', { name: 'X', template: 'https://x.com/no-placeholder' });
   check('agent invalide refusé', /doit commencer/.test(allText(agBad.data.data)));
+  const otherAdmin = { member: { user: { id: '7' }, permissions: ADMIN_PERMS } };
+  const lockedView = await interact({ type: 3, ...otherAdmin, message: { id: 'm1' }, data: { custom_id: 'ag:list', component_type: 2 } });
+  const addBtn = findComp(lockedView.data.data, (c) => c.custom_id === 'ag:pick');
+  check('agents : autre admin voit les boutons verrouillés', addBtn && addBtn.disabled === true && /propriétaire du bot/.test(allText(lockedView.data.data)));
+  const lockedSubmit = await interact({ type: 5, ...otherAdmin, message: { id: 'm1' },
+    data: { custom_id: 'm:agent:custom', components: [{ type: 18, component: { type: 4, custom_id: 'name', value: 'Pirate' } }, { type: 18, component: { type: 4, custom_id: 'template', value: 'https://evil.com/?u={url}' } }] } });
+  check('agents : autre admin ne peut pas modifier', /Seul le propriétaire/.test(allText(lockedSubmit.data.data)) && sql("SELECT COUNT(*) AS n FROM agents WHERE name = 'Pirate'")[0].n === 0);
 
   const shopModal = await click('cat:add');
   check('bouton Ajouter boutique → formulaire', shopModal.data.type === 9);
@@ -193,20 +204,27 @@ try {
   const posted = await waitCall((c) => c.method === 'POST' && c.path === `/channels/${OTHER_CHANNEL}/messages`);
   check('carte postée : limites Discord', posted && validate('carte postée', posted.body));
   const buy = posted && findComp(posted.body, (c) => c.type === 2 && c.style === 5);
-  check('carte postée : image + bouton BBDBuy avec code', posted && !!findComp(posted.body, (c) => c.type === 12) && buy.url.includes('inviteCode=TEST'),
+  check('carte postée : image + bouton BBDBuy avec code', posted && !!findComp(posted.body, (c) => c.type === 12) && /^https:\/\/www\.bbdbuy\.com\/goods\/WEIDIAN\/\d+\?inviteCode=TEST$/.test(buy.url),
     posted && `${buy.label} | ${allText(posted.body).split('\n')[0]}`);
   const after = await lastEdit(mark);
   check('panneau mis à jour après envoi', after && /1\*\* item posté/.test(allText(after.body)) && validate('après envoi', after.body));
 
   const conf = await click(`s:all:${sid}:0`);
   check('tout poster → confirmation', /Tout poster \?/.test(allText(conf.data.data)) && validate('confirmation', conf.data.data));
+  const posts = () => calls.filter((c) => c.path === `/channels/${OTHER_CHANNEL}/messages`);
+  const before = posts().length;
   const ok = await click(`s:ok:${sid}:0`);
   check('file remplie', /en route vers/.test(allText(ok.data.data)), allText(ok.data.data).split('\n')[0]);
-  const before = calls.filter((c) => c.path === `/channels/${OTHER_CHANNEL}/messages`).length;
+  await sleep(27000);
+  const fast = posts().length - before;
+  check('envoi immédiat après confirmation (~1/s)', fast >= 18 && fast <= 26, `${fast} postés en 27 s`);
   await fetch(WORKER + '/__scheduled?cron=*+*+*+*+*');
-  await sleep(15000);
-  const sent = calls.filter((c) => c.path === `/channels/${OTHER_CHANNEL}/messages`).length - before;
-  check('le cron poste la file petit à petit', sent === 8, `${sent} postés en 1 passage`);
+  await fetch(WORKER + '/__scheduled?cron=*+*+*+*+*');
+  await sleep(45000);
+  const queueLeft = sql('SELECT COUNT(*) AS n FROM post_queue')[0].n;
+  const titles = posts().slice(before).map((c) => allText(c.body).split('\n').pop());
+  check('toute la file envoyée, sans doublon', queueLeft === 0 && posts().length - before === 59 && new Set(titles).size === titles.length,
+    `${posts().length - before} postés, ${queueLeft} restants, ${new Set(titles).size} uniques`);
 
   const tr = sql("SELECT title_en FROM items WHERE title_en IS NOT NULL AND title_en LIKE '% %' LIMIT 1")[0];
   const word = tr.title_en.split(' ').find((w) => w.length > 4) || tr.title_en.split(' ')[0];
@@ -245,6 +263,8 @@ try {
   console.error(err);
   console.log(devLog.slice(-3000));
 } finally {
+  const workerErrors = devLog.split('\n').filter((l) => /envoi échoué|traduction échouée|tâche|erreur|Error/.test(l));
+  if (workerErrors.length) console.log('Logs Worker :\n' + workerErrors.slice(0, 15).join('\n'));
   dev.kill();
   mock.close();
   rmSync(ROOT + '.dev.vars', { force: true });

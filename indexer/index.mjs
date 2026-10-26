@@ -10,8 +10,8 @@ const WORKER_URL = (process.env.WORKER_URL || '').replace(/\/$/, '');
 const SECRET = process.env.INDEXER_SECRET || '';
 const LOCAL_SHOP = process.env.SHOP || '';
 const MAX_ITEMS = Number(process.env.MAX_ITEMS || 5000);
-const PAGE_DELAY_MS = 1000;
-const SHOP_DELAY_MS = 5000;
+const PAGE_DELAY_MS = 600;
+const SHOP_DELAY_MS = 3000;
 const TIME_BUDGET_MS = 40 * 60 * 1000;
 const LIST_API = 'getCateItemListForCommonItemSection';
 

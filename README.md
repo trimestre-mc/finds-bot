@@ -5,7 +5,7 @@ Bot Discord qui indexe automatiquement des boutiques Weidian, permet de chercher
 - **Bot** : Cloudflare Worker (gratuit, 24h/24) — `https://finds-bot.wheatenmoon5861.workers.dev`
 - **Base** : Cloudflare D1
 - **Traduction des titres** : Workers AI (chinois → anglais)
-- **Indexeur** : GitHub Actions toutes les 30 min (Chromium sans fenêtre, ouvre les boutiques comme un visiteur)
+- **Indexeur** : GitHub Actions toutes les 10 min (Chromium sans fenêtre, ouvre les boutiques comme un visiteur)
 
 ## Utilisation
 
@@ -22,7 +22,7 @@ Une seule commande : **`/menu`**. Elle ouvre un panneau privé (visible par toi 
 
 Accès : le propriétaire et les membres avec la permission **Administrateur**, plus les membres ajoutés dans 👥 Accès.
 
-Lien d'agent : mets `{url}` (lien produit encodé) à la place du lien du produit. Aussi disponibles : `{url_raw}`, `{id}`, `{platform}`.
+Agents : choisis BBDBuy ou Kakobuy et colle juste ton code. « Autre agent » accepte un lien complet avec `{url}` (lien produit encodé), `{url_raw}`, `{id}`, `{platform}` ou `{PLATFORM}`. Seul `AGENTS_OWNER_ID` peut modifier les agents.
 
 ## Installation Discord
 
@@ -41,7 +41,7 @@ Lien d'agent : mets `{url}` (lien produit encodé) à la place du lien du produi
 
 ## Indexation immédiate (optionnel)
 
-Par défaut, un nouveau catalogue est indexé au prochain passage (30 min max). Pour lancer l'indexeur tout de suite, crée un token GitHub *fine-grained* limité à ce repo avec la permission **Actions: write**, puis :
+Par défaut, un nouveau catalogue est indexé au prochain passage (10 à 20 min, GitHub retarde parfois). Pour lancer l'indexeur tout de suite, crée un token GitHub *fine-grained* limité à ce repo avec la permission **Actions: write**, puis :
 `npx wrangler secret put GITHUB_TOKEN` et décommente `GITHUB_REPO` dans `wrangler.toml`.
 
 ## Limites

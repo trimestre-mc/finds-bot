@@ -4,11 +4,11 @@ import {
   Style, container, section, text, sep, row, thumb, btn, emojiBtn, modal,
   escape, fmtInt, ago,
 } from './components.js';
-import { getRate, getAgents, formatPrice, itemTitle } from './post.js';
-import { buildAgentLink } from './links.js';
+import { getRate, getAgents, formatPrice, itemTitle, POSTS_PER_MINUTE } from './post.js';
+import { buildAgentLink, AGENT_PRESETS } from './links.js';
 import { countResults, pageResults, PAGE_SIZE, MAX_BULK } from './search.js';
 
-export const QUEUE_PER_MINUTE = 8;
+export const QUEUE_PER_MINUTE = POSTS_PER_MINUTE;
 const SHOPS_PER_PAGE = 6;
 const STATUS_ICON = { pending: '🕒', indexing: '⏳', ok: '🟢', error: '🔴' };
 const EXAMPLE_ITEM = { url: 'https://weidian.com/item.html?itemID=7863670229', item_id: '7863670229', platform: 'weidian' };
@@ -265,27 +265,50 @@ export async function confirmDeleteShopView(env, shopId) {
 
 // ---------------------------------------------------------------- Agents
 
-export async function agentsView(env, msg) {
+export async function agentsView(env, msg, canEdit = true) {
   const agents = await getAgents(env);
   const cards = agents.map((a, i) => section(
-    `**${i + 1}. ${escape(a.name)}**\n-# ${escape(buildAgentLink(a.template, EXAMPLE_ITEM).slice(0, 180))}`,
-    btn('Retirer', `ag:del:${encodeURIComponent(a.name)}`, Style.DANGER),
+    `**${i + 1}. ${escape(a.name)}**\n-# ` + (a.code
+      ? `Code : \`${escape(a.code)}\`  ·  [tester le lien](${buildAgentLink(a.template, EXAMPLE_ITEM)})`
+      : escape(buildAgentLink(a.template, EXAMPLE_ITEM).slice(0, 180))),
+    btn('Retirer', `ag:del:${encodeURIComponent(a.name)}`, Style.DANGER, { disabled: !canEdit }),
   ));
+  const options = [
+    ...Object.entries(AGENT_PRESETS).map(([key, p]) => ({
+      label: p.name, value: key, emoji: { name: '🛒' },
+      description: agents.some((a) => a.preset === key) ? 'Changer ton code' : 'Juste ton code d\'affiliation',
+    })),
+    { label: 'Autre agent', value: 'custom', emoji: { name: '🔗' }, description: 'Avec un lien complet' },
+  ];
   return [container([
     notice(msg),
     text('## 🏷️ Agents\n-# Chaque agent devient un bouton « Acheter sur … » sous les items postés, avec ton code d\'affiliation.'),
     sep(),
-    ...(cards.length ? cards : [text('Aucun agent configuré.\n-# Ajoute ton lien BBDBuy (ou un autre) pour gagner tes commissions.')]),
+    ...(cards.length ? cards : [text('Aucun agent configuré.\n-# Choisis ton agent ci-dessous et colle ton code : le bot fait les liens tout seul.')]),
+    canEdit ? null : text('-# 🔒 Seul le propriétaire du bot peut modifier les agents.'),
     sep(),
-    row(
-      emojiBtn('➕', 'Ajouter / modifier', 'ag:add', Style.PRIMARY, { disabled: agents.length >= 20 }),
-      backHome(),
-    ),
+    row({
+      type: 3, custom_id: 'ag:pick', placeholder: '➕ Ajouter ou modifier un agent…', options,
+      disabled: !canEdit || agents.length >= 20,
+    }),
+    row(backHome()),
   ])];
 }
 
+// Agent préréglé : juste le code.
+export function presetModal(key, current) {
+  const p = AGENT_PRESETS[key];
+  return modal(`m:agent:${key}`, `🛒 ${p.name}`, [
+    {
+      id: 'code', label: `Ton code d'affiliation ${p.name}`, required: true, max: 64, value: current && current.code,
+      description: 'Juste le code, pas le lien. Le bot fabrique les liens tout seul.', placeholder: 'ex : wBxYkx123',
+    },
+    { id: 'position', label: 'Position du bouton (optionnel)', description: '1 = premier bouton', placeholder: '1', max: 2, value: current && current.position },
+  ]);
+}
+
 export function agentModal() {
-  return modal('m:agent', '🏷️ Ajouter un agent', [
+  return modal('m:agent:custom', '🔗 Autre agent', [
     { id: 'name', label: 'Nom', description: 'Affiché sur le bouton. Même nom = modifier.', placeholder: 'BBDBuy', required: true, max: 40 },
     {
       id: 'template', label: 'Lien d\'affiliation', required: true, long: true, max: 500,

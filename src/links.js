@@ -25,13 +25,30 @@ export function parseItemLink(input) {
   return null;
 }
 
+// Agents préréglés : il suffit de donner son code d'affiliation.
+// Formats vérifiés sur les sites (BBDBuy garde inviteCode même s'il redirige vers la connexion).
+export const AGENT_PRESETS = {
+  bbdbuy: { name: 'BBDBuy', template: 'https://www.bbdbuy.com/goods/{PLATFORM}/{id}?inviteCode={code}' },
+  kakobuy: { name: 'Kakobuy', template: 'https://www.kakobuy.com/item/details?url={url}&affcode={code}' },
+};
+
+export function isValidCode(code) {
+  return /^[A-Za-z0-9_-]{1,64}$/.test(code);
+}
+
+export function presetTemplate(presetKey, code) {
+  const preset = AGENT_PRESETS[presetKey];
+  return preset ? preset.template.replaceAll('{code}', encodeURIComponent(code)) : null;
+}
+
 // Remplit le modèle d'un agent pour un item.
 export function buildAgentLink(template, item) {
   return template
     .replaceAll('{url}', encodeURIComponent(item.url))
     .replaceAll('{url_raw}', item.url)
     .replaceAll('{id}', item.item_id)
-    .replaceAll('{platform}', item.platform);
+    .replaceAll('{platform}', item.platform)
+    .replaceAll('{PLATFORM}', String(item.platform).toUpperCase());
 }
 
 export function isValidTemplate(template) {

@@ -4,18 +4,20 @@
 import { InteractionType, Reply, EPHEMERAL, verifyRequest, discordApi, editOriginal, json, reply } from './discord.js';
 import { COMMANDS } from './commands.js';
 import { COMPONENTS_V2, modalValues, escape, fmtInt } from './components.js';
-import { parseWeidianShop, parseItemLink, isValidTemplate, buildAgentLink } from './links.js';
+import {
+  parseWeidianShop, parseItemLink, isValidTemplate, buildAgentLink, AGENT_PRESETS, isValidCode, presetTemplate,
+} from './links.js';
 import { prepareQuery, allResultIds } from './search.js';
 import { getRate, refreshRate, formatPrice, getAgents, postItem, processQueue } from './post.js';
 import { translatePending } from './translate.js';
 import {
   QUEUE_PER_MINUTE, homeView, searchModal, loadSearch, createSearch, resultsView, confirmAllView,
-  catalogsView, addShopModal, shopView, confirmDeleteShopView, agentsView, agentModal, itemModal,
+  catalogsView, addShopModal, shopView, confirmDeleteShopView, agentsView, agentModal, presetModal, itemModal,
   accessView, hasAdminPermission, deniedView, errorView,
 } from './ui.js';
 
 const REINDEX_HOURS = 24;
-const TRANSLATE_PER_MINUTE = 10;
+const TRANSLATE_PER_MINUTE = 40;
 const MODAL_SUBMIT = 5;
 const MODAL = 9;
 
@@ -35,9 +37,11 @@ export default {
 
   async scheduled(event, env, ctx) {
     ctx.waitUntil((async () => {
-      await processQueue(env, QUEUE_PER_MINUTE).catch((e) => console.log('file', String(e)));
-      await translatePending(env, TRANSLATE_PER_MINUTE).catch((e) => console.log('traduction', String(e)));
-      await refreshRate(env).catch((e) => console.log('taux', String(e)));
+      await Promise.all([
+        processQueue(env, 50000).catch((e) => console.log('file', String(e))),
+        translatePending(env, TRANSLATE_PER_MINUTE).catch((e) => console.log('traduction', String(e))),
+        refreshRate(env).catch((e) => console.log('taux', String(e))),
+      ]);
       await env.DB.prepare('DELETE FROM searches WHERE created_at < ?').bind(Date.now() - 24 * 3600 * 1000).run();
     })());
   },
@@ -95,6 +99,13 @@ function userId(it) {
   return (it.member && it.member.user && it.member.user.id) || (it.user && it.user.id);
 }
 
+const AGENTS_LOCKED = '🔒 Seul le propriétaire du bot peut modifier les agents.';
+
+// Les liens d'affiliation ne peuvent être changés que par AGENTS_OWNER_ID (si défini).
+function canEditAgents(env, it) {
+  return !env.AGENTS_OWNER_ID || userId(it) === env.AGENTS_OWNER_ID;
+}
+
 async function isAdmin(env, it) {
   if (hasAdminPermission(it)) return true;
   const row = await env.DB.prepare('SELECT 1 FROM admins WHERE guild_id = ? AND user_id = ?')
@@ -128,7 +139,7 @@ async function onComponent(it, env, ctx) {
     case 'cat:reidx': {
       await env.DB.prepare("UPDATE shops SET status = 'pending', last_error = NULL WHERE id = ?").bind(c).run();
       await triggerIndexer(env);
-      return update(await shopView(env, c, '🔁 Réindexation demandée, elle démarre dans 30 min maximum.'));
+      return update(await shopView(env, c, `🔁 Réindexation demandée, elle ${indexerDelay(env)}.`));
     }
     case 'cat:del': return update(await confirmDeleteShopView(env, c));
     case 'cat:delok': {
@@ -140,12 +151,19 @@ async function onComponent(it, env, ctx) {
       return update(await catalogsView(env, 0, `🗑️ **${escape(shop ? shop.name || c : c)}** a été retirée.`));
     }
 
-    case 'ag:list': return update(await agentsView(env));
-    case 'ag:add': return openModal(agentModal());
+    case 'ag:list': return update(await agentsView(env, null, canEditAgents(env, it)));
+    case 'ag:pick': {
+      if (!canEditAgents(env, it)) return update(await agentsView(env, AGENTS_LOCKED, false));
+      const key = values[0];
+      if (!AGENT_PRESETS[key]) return openModal(agentModal());
+      const current = await env.DB.prepare('SELECT code, position FROM agents WHERE preset = ?').bind(key).first();
+      return openModal(presetModal(key, current));
+    }
     case 'ag:del': {
+      if (!canEditAgents(env, it)) return update(await agentsView(env, AGENTS_LOCKED, false));
       const name = decodeURIComponent(c);
       await env.DB.prepare('DELETE FROM agents WHERE name = ?').bind(name).run();
-      return update(await agentsView(env, `🗑️ Agent **${escape(name)}** retiré.`));
+      return update(await agentsView(env, `🗑️ Agent **${escape(name)}** retiré.`, true));
     }
 
     case 'item:add': return openModal(itemModal());
@@ -192,6 +210,8 @@ async function onComponent(it, env, ctx) {
           env.DB.prepare('INSERT INTO post_queue (item_id, channel_id, created_at) VALUES (?, ?, ?)').bind(id, s.channelId, now)));
       }
       const queued = await env.DB.prepare('SELECT COUNT(*) AS n FROM post_queue').first();
+      // On commence tout de suite, le cron prend le relais chaque minute.
+      ctx.waitUntil(processQueue(env, 25000).catch((e) => console.log('file', String(e))));
       return update(await resultsView(env, c, Number(d) || 0,
         `📨 **${fmtInt(ids.length)}** items en route vers <#${s.channelId}>. Fin estimée dans ~${Math.ceil(queued.n / QUEUE_PER_MINUTE)} min.`));
     }
@@ -237,6 +257,7 @@ function parseNumber(v) {
 async function onModal(it, env, ctx) {
   const v = modalValues(it.data);
   const [, kind, sid] = it.data.custom_id.split(':');
+  const count = () => env.DB.prepare('SELECT COUNT(*) AS n FROM agents').first();
 
   if (kind === 'search') {
     return later(it, env, ctx, async () => {
@@ -271,20 +292,39 @@ async function onModal(it, env, ctx) {
     });
   }
 
+  if (kind === 'agent' && AGENT_PRESETS[sid]) {
+    if (!canEditAgents(env, it)) return update(await agentsView(env, AGENTS_LOCKED, false));
+    const preset = AGENT_PRESETS[sid];
+    const code = (v.code || '').trim();
+    if (!isValidCode(code)) {
+      return update(await agentsView(env, '❌ Colle juste ton **code** (lettres, chiffres, - ou _), pas un lien.', true));
+    }
+    const position = Math.round(parseNumber(v.position) || (await count()).n + 1);
+    await env.DB.batch([
+      env.DB.prepare('DELETE FROM agents WHERE preset = ? AND name != ?').bind(sid, preset.name),
+      env.DB.prepare(
+        `INSERT INTO agents (name, template, position, preset, code) VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(name) DO UPDATE SET template = excluded.template, position = excluded.position, preset = excluded.preset, code = excluded.code`,
+      ).bind(preset.name, presetTemplate(sid, code), position, sid, code),
+    ]);
+    return update(await agentsView(env, `✅ **${preset.name}** enregistré avec le code \`${escape(code)}\`.`, true));
+  }
+
   if (kind === 'agent') {
+    if (!canEditAgents(env, it)) return update(await agentsView(env, AGENTS_LOCKED, false));
     const name = (v.name || '').replace(/:/g, '').trim().slice(0, 40);
     const template = (v.template || '').trim();
-    if (!name) return update(await agentsView(env, '❌ Il faut un nom.'));
+    if (!name) return update(await agentsView(env, '❌ Il faut un nom.', true));
     if (!isValidTemplate(template)) {
-      return update(await agentsView(env, '❌ Le lien doit commencer par `https://` et contenir `{url}` (ou `{id}`) à la place du lien produit.'));
+      return update(await agentsView(env, '❌ Le lien doit commencer par `https://` et contenir `{url}` (ou `{id}`) à la place du lien produit.', true));
     }
-    const count = await env.DB.prepare('SELECT COUNT(*) AS n FROM agents').first();
-    const position = Math.round(parseNumber(v.position) || count.n + 1);
+    const position = Math.round(parseNumber(v.position) || (await count()).n + 1);
     await env.DB.prepare(
-      'INSERT INTO agents (name, template, position) VALUES (?, ?, ?) ON CONFLICT(name) DO UPDATE SET template = excluded.template, position = excluded.position',
+      `INSERT INTO agents (name, template, position) VALUES (?, ?, ?)
+       ON CONFLICT(name) DO UPDATE SET template = excluded.template, position = excluded.position, preset = NULL, code = NULL`,
     ).bind(name, template, position).run();
     const example = buildAgentLink(template, { url: 'https://weidian.com/item.html?itemID=7863670229', item_id: '7863670229', platform: 'weidian' });
-    return update(await agentsView(env, `✅ **${escape(name)}** enregistré. [Tester un lien généré](${example})`));
+    return update(await agentsView(env, `✅ **${escape(name)}** enregistré. [Tester un lien généré](${example})`, true));
   }
 
   if (kind === 'item') return addItem(it, env, ctx, v);
@@ -333,7 +373,11 @@ async function addShop(env, shopId, name, by) {
     "INSERT INTO shops (id, platform, name, url, status, added_by, added_at) VALUES (?, 'weidian', ?, ?, 'pending', ?, ?)",
   ).bind(shopId, name, `https://weidian.com/?userid=${shopId}`, by, Date.now()).run();
   await triggerIndexer(env);
-  return `✅ Boutique ${name ? `**${escape(name)}** ` : ''}ajoutée. Ses items arrivent dans 30 min maximum, puis leurs titres sont traduits petit à petit.`;
+  return `✅ Boutique ${name ? `**${escape(name)}** ` : ''}ajoutée. L'indexation ${indexerDelay(env)}, puis les titres sont traduits petit à petit.`;
+}
+
+function indexerDelay(env) {
+  return env.GITHUB_TOKEN && env.GITHUB_REPO ? 'démarre maintenant (2-3 min)' : 'démarre au prochain passage de l\'indexeur (10 à 20 min)';
 }
 
 // Lance l'indexeur tout de suite si un token GitHub est configuré (optionnel).

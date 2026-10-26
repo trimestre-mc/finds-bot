@@ -75,31 +75,50 @@ export async function postItem(env, item, channelId, agents, rate) {
     .bind(Date.now(), item.id).run();
 }
 
-// Vide une partie de la file "tout poster". Appelé chaque minute par le cron.
-export async function processQueue(env, limit) {
-  const { results } = await env.DB.prepare(
-    `SELECT q.id AS qid, q.channel_id, i.* FROM post_queue q
-     LEFT JOIN items i ON i.id = q.item_id ORDER BY q.id LIMIT ?`,
-  ).bind(limit).all();
-  if (!results.length) return 0;
-  const agents = await getAgents(env);
-  const rate = await getRate(env);
+export const POST_INTERVAL_MS = 1100;
+export const POSTS_PER_MINUTE = 45;
+
+// Vide la file "tout poster" pendant budgetMs. Appelé par le cron et juste après « Confirmer ».
+export async function processQueue(env, budgetMs) {
+  // Un seul envoyeur à la fois (cron et bouton « Confirmer » peuvent se chevaucher).
+  const now = Date.now();
+  const lock = await env.DB.prepare(
+    `INSERT INTO settings (key, value) VALUES ('queue_lock', ?)
+     ON CONFLICT(key) DO UPDATE SET value = excluded.value WHERE CAST(settings.value AS INTEGER) < ?
+     RETURNING value`,
+  ).bind(String(now + budgetMs + 15000), now).first();
+  if (!lock) return 0;
+
+  const deadline = now + budgetMs;
+  let agents = null;
+  let rate = null;
   let posted = 0;
-  for (const row of results) {
-    await env.DB.prepare('DELETE FROM post_queue WHERE id = ?').bind(row.qid).run();
-    if (!row.id) continue; // item supprimé entre-temps
-    try {
-      await postItem(env, row, row.channel_id, agents, rate);
-      posted++;
-      await new Promise((r) => setTimeout(r, 1200));
-    } catch (err) {
-      console.log('envoi échoué', row.id, String(err).slice(0, 300));
-      if (/-> (403|404)/.test(String(err))) {
-        // Salon inaccessible : on vide le reste de la file pour ce salon.
-        await env.DB.prepare('DELETE FROM post_queue WHERE channel_id = ?').bind(row.channel_id).run();
-        break;
+  try {
+    while (Date.now() < deadline) {
+      const job = await env.DB.prepare(
+        `DELETE FROM post_queue WHERE id = (SELECT MIN(id) FROM post_queue) RETURNING item_id, channel_id`,
+      ).first();
+      if (!job) break;
+      const item = await env.DB.prepare('SELECT * FROM items WHERE id = ?').bind(job.item_id).first();
+      if (!item) continue; // item supprimé entre-temps
+      if (!agents) [agents, rate] = await Promise.all([getAgents(env), getRate(env)]);
+      const started = Date.now();
+      try {
+        await postItem(env, item, job.channel_id, agents, rate);
+        posted++;
+      } catch (err) {
+        console.log('envoi échoué', item.id, String(err).slice(0, 300));
+        if (/-> (403|404)/.test(String(err))) {
+          // Salon inaccessible : on vide le reste de la file pour ce salon.
+          await env.DB.prepare('DELETE FROM post_queue WHERE channel_id = ?').bind(job.channel_id).run();
+        }
       }
+      // Discord accepte ~1 message par seconde et par salon pour un bot.
+      const wait = POST_INTERVAL_MS - (Date.now() - started);
+      if (wait > 0) await new Promise((r) => setTimeout(r, wait));
     }
+  } finally {
+    await env.DB.prepare("UPDATE settings SET value = '0' WHERE key = 'queue_lock'").run();
   }
   return posted;
 }
