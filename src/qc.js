@@ -226,7 +226,12 @@ export async function qcWindow(env, item, view = 0, opts = {}) {
   const en = opts.lang === 'en';
   const first = view * BATCHES_PER_VIEW;
   const apiPage = Math.floor(first / BATCHES_PER_API_PAGE) + 1;
-  const qc = await fetchQc(item, apiPage);
+  // Item vérifié récemment et sans QC (pas de récupération en cours) : inutile de redemander à la source.
+  let hint = null;
+  try { hint = JSON.parse(item.qc_preview || 'null'); } catch {}
+  const knownEmpty = view === 0 && !(item.qc_count > 0) && !item.qc_running && item.qc_checked_at
+    && Date.now() - item.qc_checked_at < RECHECK_MS && !(hint && hint.s === 'repfind');
+  const qc = knownEmpty ? { count: 0, batches: [], similar: [] } : await fetchQc(item, apiPage);
   const offset = first % BATCHES_PER_API_PAGE;
   const batches = qc.batches.slice(offset, offset + BATCHES_PER_VIEW);
   const totalBatchesSeen = (apiPage - 1) * BATCHES_PER_API_PAGE + qc.batches.length;
