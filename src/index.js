@@ -23,7 +23,7 @@ import { searchByImage } from './imagesearch.js';
 import { watchChannels } from './watch.js';
 import { translatePending, rewriteTitles, titleWait } from './translate.js';
 import { fetchWeidianItem } from './weidian.js';
-import { extractWeidian, ingest, resolveQueue, scanSource, runDiscovery, addShopQuiet } from './discover.js';
+import { extractWeidian, ingest, resolveQueue, scanSource, runDiscovery } from './discover.js';
 import {
   QUEUE_PER_MINUTE, homeView, searchModal, loadSearch, createSearch, resultsView, confirmAllView,
   catalogsView, addShopModal, shopView, confirmDeleteShopView, agentsView, agentModal, presetModal, itemModal,
@@ -665,20 +665,35 @@ async function handleApi(request, env, url) {
     return json({ items: results.map((r) => r.item_id) });
   }
 
+  if ((path === '/api/indexer/images' || path === '/api/indexer/resolved') && (body.items || []).length) {
+    const b = await budget(env, 'pages');
+    if (!b.left) return json({ error: 'budget' }, 429);
+    await b.use(Math.min(300, body.items.length));
+  }
+
   if (path === '/api/indexer/resolved') {
-    let added = 0;
+    // Tout en un seul lot : avec Turso, chaque requête à la base compte dans les 50 requêtes externes autorisées.
+    const stmts = [];
+    const shopInserts = [];
     for (const r of (body.items || []).slice(0, 300)) {
       const id = String(r.itemId);
-      const q = await env.DB.prepare('SELECT source FROM link_queue WHERE item_id = ?').bind(id).first();
       if (r.shopId && /^\d{5,12}$/.test(String(r.shopId))) {
-        if (await addShopQuiet(env, String(r.shopId), r.shopName, q ? q.source : 'jadeship', null)) added++;
-        await env.DB.prepare(
+        const shopId = String(r.shopId);
+        shopInserts.push(stmts.length);
+        stmts.push(env.DB.prepare(
+          `INSERT OR IGNORE INTO shops (id, platform, name, url, status, source, added_by, added_at)
+           SELECT ?, 'weidian', ?, ?, 'pending', COALESCE((SELECT source FROM link_queue WHERE item_id = ?), 'jadeship'), NULL, ?
+           WHERE NOT EXISTS (SELECT 1 FROM blacklist WHERE shop_id = ?)`,
+        ).bind(shopId, r.shopName || null, `https://weidian.com/?userid=${shopId}`, id, Date.now(), shopId));
+        stmts.push(env.DB.prepare(
           `UPDATE items SET shop_id = ?, shop_name = COALESCE(shop_name, ?), images = COALESCE(images, ?), title_en = COALESCE(title_en, ?),
              category = CASE WHEN category = 'other' AND title_en IS NULL THEN NULL ELSE category END WHERE id = ?`,
-        ).bind(String(r.shopId), r.shopName || null, JSON.stringify((r.images || []).slice(0, 8)), englishTitle(r.title), `weidian:${id}`).run();
+        ).bind(shopId, r.shopName || null, JSON.stringify((r.images || []).slice(0, 8)), englishTitle(r.title), `weidian:${id}`));
       }
-      await env.DB.prepare('DELETE FROM link_queue WHERE item_id = ?').bind(id).run();
+      stmts.push(env.DB.prepare('DELETE FROM link_queue WHERE item_id = ?').bind(id));
     }
+    const res = stmts.length ? await env.DB.batch(stmts) : [];
+    const added = shopInserts.reduce((n, i) => n + ((res[i] && res[i].meta.changes) > 0 ? 1 : 0), 0);
     return json({ ok: true, shopsAdded: added });
   }
 
@@ -706,12 +721,6 @@ async function handleApi(request, env, url) {
        ORDER BY popularity DESC, first_seen DESC LIMIT ?`,
     ).bind(sh.n, sh.i, Math.min(Number(url.searchParams.get('limit')) || 500, 8000)).all();
     return json({ items: results.map((r) => r.item_id) });
-  }
-
-  if ((path === '/api/indexer/images' || path === '/api/indexer/resolved') && (body.items || []).length) {
-    const b = await budget(env, 'pages');
-    if (!b.left) return json({ error: 'budget' }, 429);
-    await b.use(Math.min(300, body.items.length));
   }
 
   if (path === '/api/indexer/images') {
