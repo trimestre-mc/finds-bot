@@ -1,5 +1,6 @@
 // Recherche dans les items indexés.
 
+import { relevance } from './synonyms.js';
 import { translate } from './translate.js';
 import { detectCategory } from './categories.js';
 
@@ -47,10 +48,36 @@ export const DROP_WINDOW_DAYS = 14;
 
 // Construit la clause WHERE à partir des paramètres enregistrés d'une recherche.
 // money.rate convertit les prix min/max (dans la devise choisie) en ¥.
+// Texte cherché d'un item, entouré d'espaces (pour les mots entiers avec GLOB).
+const ITEM_TEXT = "(' ' || LOWER(COALESCE(title_en,'') || ' ' || COALESCE(title_zh,'') || ' ' || COALESCE(shop_name,'')) || ' ')";
+const latinAlt = (s) => /^[a-z0-9' -]+$/.test(s);
+
 function where(params, money) {
   const clauses = ['hidden = 0'];
   const binds = [];
-  if (params.variants && params.variants.length) {
+  if (params.groups && params.groups.length) {
+    // Chaque groupe (mot cherché et ses équivalents) doit correspondre : mot latin entier (GLOB), mot chinois
+    // n'importe où, ou item déjà classé dans le type d'article cherché.
+    for (const g of params.groups) {
+      const ors = [];
+      for (const a of g.alt) {
+        if (latinAlt(a)) {
+          for (const form of new Set([a, `${a}s`])) {
+            ors.push(`${ITEM_TEXT} GLOB ?`);
+            binds.push(`*[^a-z0-9]${form}[^a-z0-9]*`);
+          }
+        } else {
+          ors.push(`${ITEM_TEXT} LIKE ?`);
+          binds.push(`%${a}%`);
+        }
+      }
+      if (g.cat) {
+        ors.push('category = ?');
+        binds.push(g.cat);
+      }
+      clauses.push(`(${ors.join(' OR ')})`);
+    }
+  } else if (params.variants && params.variants.length) {
     const ors = params.variants.map((words) => {
       const ands = words.map((w) => {
         binds.push(`%${w}%`);
@@ -95,6 +122,25 @@ function order(params) {
 
 export async function allResultIds(env, params, money) {
   const w = where(params, money);
+  if (params.groups && params.groups.length) {
+    // Recherche par mots : les plus pertinents d'abord (mots trouvés dans le titre anglais, bon type d'article),
+    // puis le tri choisi. Lecture de toute la table une fois, puis cache partagé de 6 h.
+    const { results } = await env.DB.prepare(
+      `SELECT id, title_en, title_zh, shop_name, category, popularity, first_seen, price_cny FROM items ${w.sql} ORDER BY popularity DESC LIMIT 5000`,
+    ).bind(...w.binds).all();
+    const scored = results.map((r) => ({ ...r, score: relevance(params.groups, r) })).filter((r) => r.score > 0);
+    const sorted = sortRows(scored, params);
+    if (!params.sort || params.sort === 'popular') sorted.sort((a, b) => b.score - a.score || b.popularity - a.popularity || b.first_seen - a.first_seen);
+    // Même produit chez plusieurs vendeurs (titre et prix identiques) : on garde le premier (le plus vendu).
+    const seen = new Set();
+    const unique = sorted.filter((r) => {
+      const key = `${(r.title_en || r.title_zh || r.id).toLowerCase()}|${r.price_cny}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+    return unique.slice(0, MAX_BULK).map((r) => r.id);
+  }
   if (params.category || params.autoCategory) {
     // Avec une catégorie : on lit seulement cette catégorie (index), puis on trie ici.
     const { results } = await env.DB.prepare(

@@ -6,11 +6,12 @@ import { COMPONENTS_V2, container, text, escape, section, thumb } from './compon
 import { panel, update, openModal, later, userId } from './respond.js';
 import { buildAgentLink, canonicalUrl, extractItemRefs } from './links.js';
 import { communityQc, refreshQc, communityPhotos, qcWindow } from './qc.js';
-import { prepareQuery, allResultIds, withoutCache, inferCategory } from './search.js';
+import { allResultIds, withoutCache } from './search.js';
 import { postContext, processQueue, logError, FORUM } from './post.js';
 import { getConfig, setConfig, CURRENCIES, LANGS, ACCENTS } from './config.js';
 import { messageText, collectQc } from './discover.js';
 import { CATEGORY_BY_KEY } from './categories.js';
+import { expandQuery } from './synonyms.js';
 import { homeView, loadSearch, createSearch, resultsView, filtersView, catalogsView } from './ui.js';
 import {
   schedulesView, scheduleView, scheduleModal, statsView, historyView, settingsView, healthView, findView, convertView,
@@ -64,9 +65,8 @@ export async function handlePublicCommand(it, env, ctx) {
   if (it.data.name === 'find') {
     return later(it, env, ctx, async () => {
       const q = String(opts.recherche || '').slice(0, 100);
-      const variants = await prepareQuery(env, q);
       const sid = await createSearch(env, it, {
-        q, variants, category: opts.categorie || null, autoCategory: opts.categorie ? null : inferCategory(variants),
+        q, groups: expandQuery(q), variants: [], category: opts.categorie || null, autoCategory: null,
         max: opts.prix_max != null ? opts.prix_max : null, includePosted: true, sort: 'popular', public: true,
       });
       return findView(env, sid, 0);

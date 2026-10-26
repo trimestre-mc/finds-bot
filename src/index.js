@@ -8,7 +8,7 @@ import { modalValues, escape, fmtInt } from './components.js';
 import {
   parseItemLink, isValidTemplate, canonicalUrl, buildAgentLink, AGENT_PRESETS, isValidCode, presetTemplate,
 } from './links.js';
-import { prepareQuery, idsToPost, withoutCache, inferCategory } from './search.js';
+import { idsToPost, withoutCache, allResultIds, itemsByIds } from './search.js';
 import { getRate, refreshRate, formatPrice, postItem, processQueue, postContext } from './post.js';
 import {
   triggerIndexer, handleGo, handlePublicCommand, handlePublicComponent, handleFeatureComponent, handleFeatureModal,
@@ -20,6 +20,7 @@ import { popularItemStatements } from './items.js';
 import { budget } from './budget.js';
 import { withDb } from './turso.js';
 import { searchByImage } from './imagesearch.js';
+import { expandQuery } from './synonyms.js';
 import { watchChannels } from './watch.js';
 import { translatePending, rewriteTitles, titleWait } from './translate.js';
 import { fetchWeidianItem } from './weidian.js';
@@ -357,8 +358,7 @@ async function onModal(it, env, ctx) {
   if (kind === 'search') {
     return later(it, env, ctx, async () => {
       const q = (v.q || '').slice(0, 100);
-      const variants = await prepareQuery(env, q);
-      const fields = { q, variants, autoCategory: inferCategory(variants), min: parseNumber(v.min), max: parseNumber(v.max), latest: false, trending: false };
+      const fields = { q, groups: expandQuery(q), variants: [], autoCategory: null, min: parseNumber(v.min), max: parseNumber(v.max), latest: false, trending: false };
       const existing = sid ? await loadSearch(env, sid) : null;
       if (existing) {
         const params = withoutCache({ ...existing.params, ...fields });
@@ -574,6 +574,15 @@ async function handleApi(request, env, url) {
     } catch (err) {
       return json({ ok: false, error: String(err.message || err).slice(0, 200) });
     }
+  }
+
+  // Diagnostic : résultats d'une recherche (nombre et 10 premiers titres), comme dans /find.
+  if (path === '/api/search-preview' && request.method === 'GET') {
+    const q = url.searchParams.get('q') || '';
+    const groups = expandQuery(q);
+    const ids = await allResultIds(env, { q, groups, variants: [], includePosted: true, sort: 'popular' }, { rate: 1 });
+    const top = await itemsByIds(env, ids.slice(0, 10));
+    return json({ q, groups, count: ids.length, top: top.map((i) => `${i.title_en || i.title_zh} · ${i.category || '?'} · 🔥${i.popularity}`) });
   }
 
   // Diagnostic : la source QC répond-elle au bot ? (écran Santé et dépannage)
