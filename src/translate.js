@@ -59,7 +59,7 @@ async function rewriteInHalves(env, titles) {
 // Traduit un lot d'items sans titre anglais. Renvoie le nombre traduit.
 export async function translatePending(env, limit) {
   const { results } = await env.DB.prepare(
-    `SELECT id, title_zh FROM items
+    `SELECT id, title_zh, translate_failed FROM items
      WHERE title_en IS NULL AND translate_failed < 3 AND title_zh IS NOT NULL
      ORDER BY first_seen DESC LIMIT ?`,
   ).bind(limit).all();
@@ -74,8 +74,10 @@ export async function translatePending(env, limit) {
       console.log('titres (modèle de langage)', msg.slice(0, 200));
       // Quota épuisé : on réessaiera plus tard sans pénaliser les items.
       if (/limit|quota|neuron|429|capacity|unavailable/i.test(msg)) break;
-      // Sinon, secours : traduction mot à mot, item par item.
-      const out = await Promise.allSettled(batch.map((it) => translate(env, it.title_zh, 'zh', 'en')));
+      // Sinon on réessaie au prochain passage ; traduction mot à mot seulement après 2 échecs.
+      const out = await Promise.allSettled(batch.map((it) => (it.translate_failed >= 2
+        ? translate(env, it.title_zh, 'zh', 'en')
+        : Promise.reject(new Error('à réessayer')))));
       titles = out.map((r) => (r.status === 'fulfilled' ? tidyTitle(r.value) : null));
     }
     const stmts = batch.map((it, j) => (titles[j]
