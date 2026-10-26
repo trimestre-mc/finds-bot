@@ -569,6 +569,14 @@ try {
   console.error(err);
   console.log(devLog.slice(-3000));
 } finally {
+  // Journaux du Worker (console.log), gardés par wrangler dans son API locale.
+  try {
+    const q = await fetch(WORKER + '/cdn-cgi/local/explorer/api/local/observability/query', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sql: 'SELECT * FROM logs ORDER BY rowid LIMIT 2000' }),
+    });
+    devLog += '\n--- logs Worker ---\n' + await q.text();
+  } catch {}
   writeFileSync(ROOT + '.wrangler/e2e-dev.log', devLog);
   const workerErrors = devLog.split('\n').filter((l) => /envoi échoué|traduction échouée|tâche|erreur|Error/.test(l));
   if (workerErrors.length) console.log('Logs Worker :\n' + workerErrors.slice(0, 15).join('\n'));
