@@ -13,7 +13,7 @@ Une seule commande : **`/menu`**. Elle ouvre un panneau privé (visible par toi 
 
 | Bouton | Rôle |
 |---|---|
-| 🔎 **Rechercher** | Mots-clés et prix, puis : choisir le salon, poster les items sélectionnés ou 📤 tout poster (8/min) |
+| 🔎 **Rechercher** | Mots-clés et prix, puis : choisir le salon, poster les items sélectionnés ou 📤 tout poster (~45/min, démarre tout de suite) |
 | ✨ **Nouveautés** | Les derniers items indexés |
 | 📚 **Catalogues** | Ajouter une boutique Weidian, voir ses items, réindexer, retirer |
 | 🏷️ **Agents** | Tes liens d'affiliation (un bouton « Acheter sur … » par agent sous chaque item) |
@@ -46,9 +46,9 @@ Par défaut, un nouveau catalogue est indexé au prochain passage (10 à 20 min,
 
 ## Limites
 
-- Taobao et 1688 exigent une connexion : pas d'indexation automatique, seulement `/item ajouter`.
+- Taobao et 1688 exigent une connexion : pas d'indexation automatique, seulement ➕ Ajouter un item.
 - Si Weidian demande une vérification, l'indexeur s'arrête (rien n'est contourné) et réessaie au passage suivant.
-- Traduction : ~10 titres/min (quota gratuit Workers AI). Les items sont cherchables en chinois en attendant.
+- Traduction : ~40 titres/min (quota gratuit Workers AI). Les items sont cherchables en chinois en attendant.
 
 ## Tests
 
