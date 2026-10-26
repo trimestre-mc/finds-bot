@@ -88,7 +88,7 @@ export default {
         translatePending(env, TRANSLATE_PER_MINUTE).catch((e) => console.log('traduction', String(e))),
         refreshRate(env).catch((e) => console.log('taux', String(e))),
         autoIndex(env).catch((e) => console.log('indexeur', String(e))),
-        categorizePending(env, 60, titleWait(env)).catch((e) => console.log('catégories', String(e))),
+        categorizePending(env, 400, titleWait(env)).catch((e) => console.log('catégories', String(e))),
       ]);
       await env.DB.prepare('DELETE FROM searches WHERE created_at < ?').bind(Date.now() - 24 * 3600 * 1000).run().catch(() => {});
       await env.DB.prepare('DELETE FROM search_cache WHERE at < ?').bind(Date.now() - 6 * 3600 * 1000).run().catch(() => {});
