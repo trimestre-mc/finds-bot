@@ -25,6 +25,45 @@ export function parseItemLink(input) {
   return null;
 }
 
+export function canonicalUrl(platform, itemId) {
+  if (platform === 'weidian') return `https://weidian.com/item.html?itemID=${itemId}`;
+  if (platform === 'taobao') return `https://item.taobao.com/item.htm?id=${itemId}`;
+  if (platform === '1688') return `https://detail.1688.com/offer/${itemId}.html`;
+  return null;
+}
+
+function normPlatform(p) {
+  const s = String(p).toLowerCase();
+  if (s === 'wd' || s === 'weidian') return 'weidian';
+  if (s === 'tb' || s === 'taobao' || s === 'tmall') return 'taobao';
+  if (s === '1688' || s === 'ali_1688' || s === 'alibaba') return '1688';
+  return null;
+}
+
+// Tous les items cités dans un texte (liens directs ou liens d'agents), sans doublon, dans l'ordre.
+export function extractItemRefs(text) {
+  let s = String(text || '');
+  for (let i = 0; i < 3; i++) {
+    try { const n = decodeURIComponent(s.replace(/\+/g, ' ')); if (n === s) break; s = n; } catch { break; }
+  }
+  const found = [];
+  const add = (platform, id, at) => { const p = normPlatform(platform); if (p && id) found.push({ platform: p, itemId: id, at }); };
+  const P = '(weidian|taobao|tmall|1688|ali_1688|wd|tb)';
+  for (const m of s.matchAll(/weidian\.com\/item\.html\?[^\s"'<>]*?itemI[dD]=(\d{6,14})/g)) add('weidian', m[1], m.index);
+  for (const m of s.matchAll(/(?:item\.taobao\.com|detail\.tmall\.com|world\.taobao\.com)\/item\.htm\?[^\s"'<>]*?\bid=(\d{6,14})/g)) add('taobao', m[1], m.index);
+  for (const m of s.matchAll(/detail\.1688\.com\/offer\/(\d{6,14})/g)) add('1688', m[1], m.index);
+  for (const m of s.matchAll(new RegExp(`/(?:goods|product|products|item)/${P}/(\\d{6,14})`, 'gi'))) add(m[1], m[2], m.index);
+  for (const m of s.matchAll(new RegExp(`[?&](?:id|itemId|itemID|goodsId|goods_id)=(\\d{6,14})[^\\s"'<>]*?[?&](?:shop_type|platform|channel|source|shopType)=${P}\\b`, 'gi'))) add(m[2], m[1], m.index);
+  for (const m of s.matchAll(new RegExp(`[?&](?:shop_type|platform|channel|source|shopType)=${P}[^\\s"'<>]*?[?&](?:id|itemId|itemID|goodsId|goods_id)=(\\d{6,14})`, 'gi'))) add(m[1], m[2], m.index);
+  const seen = new Set();
+  return found.sort((a, b) => a.at - b.at).filter((r) => {
+    const k = `${r.platform}:${r.itemId}`;
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  }).map(({ platform, itemId }) => ({ platform, itemId, url: canonicalUrl(platform, itemId) }));
+}
+
 // Agents préréglés : il suffit de donner son code d'affiliation.
 // Formats vérifiés sur les sites (BBDBuy garde inviteCode même s'il redirige vers la connexion).
 export const AGENT_PRESETS = {

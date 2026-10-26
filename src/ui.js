@@ -6,7 +6,9 @@ import {
 } from './components.js';
 import { getRate, getAgents, formatPrice, itemTitle, POSTS_PER_MINUTE, PLATFORM_NAMES } from './post.js';
 import { buildAgentLink, AGENT_PRESETS } from './links.js';
-import { countResults, pageResults, PAGE_SIZE, MAX_BULK } from './search.js';
+import { countResults, pageResults, PAGE_SIZE, MAX_BULK, SORTS } from './search.js';
+import { CATEGORIES, CATEGORY_BY_KEY } from './categories.js';
+import { formatMoney, getConfig } from './config.js';
 
 export const QUEUE_PER_MINUTE = POSTS_PER_MINUTE;
 const SHOPS_PER_PAGE = 6;
@@ -20,44 +22,53 @@ const backHome = () => emojiBtn('🏠', 'Menu', 'home');
 // ---------------------------------------------------------------- Accueil
 
 export async function homeView(env, it, msg) {
-  const [items, shops, agents, pending, queue] = await Promise.all([
-    env.DB.prepare('SELECT COUNT(*) AS n FROM items').first(),
+  const [items, shops, agents, pending, queue, drops, schedules] = await Promise.all([
+    env.DB.prepare('SELECT COUNT(*) AS n FROM items WHERE hidden = 0').first(),
     env.DB.prepare('SELECT COUNT(*) AS n FROM shops').first(),
     env.DB.prepare('SELECT COUNT(*) AS n FROM agents').first(),
-    env.DB.prepare('SELECT COUNT(*) AS n FROM items WHERE title_en IS NULL AND translate_failed < 3').first(),
+    env.DB.prepare("SELECT COUNT(*) AS n FROM items WHERE title_en IS NULL AND translate_failed < 3").first(),
     env.DB.prepare('SELECT COUNT(*) AS n FROM post_queue').first(),
+    env.DB.prepare('SELECT COUNT(*) AS n FROM items WHERE hidden = 0 AND prev_price > price_cny AND price_changed_at > ?')
+      .bind(Date.now() - 14 * 86400000).first(),
+    env.DB.prepare('SELECT COUNT(*) AS n FROM schedules WHERE enabled = 1').first(),
   ]);
-  const rate = await getRate(env);
+  const money = await getRate(env);
 
   const tips = [];
-  if (!shops.n) tips.push('👉 Commence par ajouter une boutique Weidian dans **Catalogues**.');
-  if (!agents.n) tips.push('👉 Ajoute ton lien d\'affiliation dans **Agents** pour que les boutons « Acheter » apparaissent.');
+  if (!shops.n) tips.push('👉 Commence par ajouter des boutiques dans **📚 Catalogues**.');
+  if (!agents.n) tips.push('👉 Ajoute ton code d\'affiliation dans **🏷️ Agents** pour que les boutons « Acheter » apparaissent.');
 
   const sub = [];
-  if (pending.n) sub.push(`🌐 ${fmtInt(pending.n)} titres en cours de traduction`);
+  if (pending.n) sub.push(`🌐 ${fmtInt(pending.n)} titres en traduction`);
   if (queue.n) sub.push(`📨 ${fmtInt(queue.n)} posts en file (~${Math.ceil(queue.n / QUEUE_PER_MINUTE)} min)`);
-  sub.push(`💱 1 € = ${(1 / rate).toFixed(2).replace('.', ',')} ¥`);
+  if (schedules.n) sub.push(`⏰ ${schedules.n} drop${schedules.n > 1 ? 's' : ''} actif${schedules.n > 1 ? 's' : ''}`);
+  sub.push(`💱 ¥100 = ${formatMoney(100, money)}`);
 
   return [container([
     notice(msg),
     text('# 🛍️ Finds\n-# Ton catalogue de finds, prêt à poster en un clic.'),
     sep(),
-    text(`**${fmtInt(items.n)}** items  ·  **${fmtInt(shops.n)}** catalogue${shops.n > 1 ? 's' : ''}  ·  **${fmtInt(agents.n)}** agent${agents.n > 1 ? 's' : ''}\n-# ${sub.join('  ·  ')}`),
+    text(`**${fmtInt(items.n)}** items  ·  **${fmtInt(shops.n)}** boutiques  ·  **${fmtInt(agents.n)}** agent${agents.n > 1 ? 's' : ''}\n-# ${sub.join('  ·  ')}`),
     tips.length ? text(tips.join('\n')) : null,
     sep(),
     row(
       emojiBtn('🔎', 'Rechercher', 'search:new', Style.PRIMARY),
       emojiBtn('🔥', 'Tendances', 'search:trending'),
       emojiBtn('✨', 'Nouveautés', 'search:latest'),
+      emojiBtn('📉', `Baisses de prix${drops.n ? ` (${fmtInt(drops.n)})` : ''}`, 'search:drops'),
     ),
     row(
       emojiBtn('📚', 'Catalogues', 'cat:list:0'),
+      emojiBtn('⏰', 'Drops auto', 'sch:list'),
       emojiBtn('🏷️', 'Agents', 'ag:list'),
       emojiBtn('➕', 'Ajouter un item', 'item:add'),
     ),
     row(
+      emojiBtn('📊', 'Stats', 'stats:7'),
+      emojiBtn('🧾', 'Historique', 'hist:0'),
+      emojiBtn('⚙️', 'Réglages', 'set'),
       emojiBtn('👥', 'Accès', 'acc'),
-      emojiBtn('🔄', null, 'home'),
+      emojiBtn('🩺', 'Santé', 'health'),
     ),
   ])];
 }
@@ -80,9 +91,12 @@ export async function loadSearch(env, sid) {
 export async function createSearch(env, it, params) {
   const sid = crypto.randomUUID().replaceAll('-', '').slice(0, 12);
   const uid = (it.member && it.member.user.id) || (it.user && it.user.id);
-  const type = it.channel && it.channel.type === 15 ? 15 : 0;
+  // Salon de publication : celui des ⚙️ Réglages s'il existe, sinon celui où le panneau est ouvert.
+  const cfg = await getConfig(env);
+  const channel = cfg.defaultChannel || it.channel_id;
+  const type = cfg.defaultChannel ? cfg.defaultChannelType : (it.channel && it.channel.type === 15 ? 15 : 0);
   await env.DB.prepare('INSERT INTO searches (id, guild_id, user_id, params, channel_id, channel_type, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
-    .bind(sid, it.guild_id, uid, JSON.stringify(params), it.channel_id, type, Date.now()).run();
+    .bind(sid, it.guild_id, uid, JSON.stringify(params), channel, type, Date.now()).run();
   return sid;
 }
 
@@ -90,18 +104,21 @@ export async function resultsView(env, sid, page, msg) {
   const s = await loadSearch(env, sid);
   if (!s) return expiredView();
   const { params, channelId } = s;
-  const rate = await getRate(env);
-  const total = await countResults(env, params, rate);
+  const money = await getRate(env);
+  const total = await countResults(env, params, money);
   const pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
   page = Math.min(Math.max(0, page), pages - 1);
-  const items = total ? await pageResults(env, params, rate, page) : [];
+  const items = total ? await pageResults(env, params, money, page) : [];
 
   const filters = [];
   if (params.shopName) filters.push(`🏪 ${escape(params.shopName)}`);
-  if (params.min != null) filters.push(`≥ ${params.min} €`);
-  if (params.max != null) filters.push(`≤ ${params.max} €`);
+  if (params.category && CATEGORY_BY_KEY[params.category]) filters.push(`${CATEGORY_BY_KEY[params.category].emoji} ${CATEGORY_BY_KEY[params.category].label}`);
+  if (params.min != null) filters.push(`≥ ${params.min}`);
+  if (params.max != null) filters.push(`≤ ${params.max}`);
+  if (params.sort && SORTS[params.sort]) filters.push(`${SORTS[params.sort].emoji} ${SORTS[params.sort].label}`);
   filters.push(params.includePosted ? 'déjà postés inclus' : 'non postés');
-  const title = params.q ? `« ${escape(params.q)} »` : params.trending ? '🔥 Tendances' : params.latest ? 'Nouveautés' : 'Tous les items';
+  const title = params.q ? `« ${escape(params.q)} »` : params.drops ? '📉 Baisses de prix'
+    : params.trending ? '🔥 Tendances' : params.latest ? '✨ Nouveautés' : 'Tous les items';
 
   const head = [
     notice(msg),
@@ -112,55 +129,78 @@ export async function resultsView(env, sid, page, msg) {
   if (!total) {
     return [container([
       ...head,
-      text('Aucun item trouvé.\n-# Essaie d\'autres mots (l\'anglais marche le mieux), élargis les prix, ou ajoute des catalogues.'),
+      text('Aucun item trouvé.\n-# Essaie d\'autres mots (l\'anglais marche le mieux), une autre catégorie, ou élargis les prix.'),
       sep(),
       row(
         emojiBtn('✏️', 'Modifier la recherche', `s:edit:${sid}`, Style.PRIMARY),
-        emojiBtn(params.includePosted ? '🙈' : '👁️', params.includePosted ? 'Masquer postés' : 'Inclure postés', `s:posted:${sid}`),
+        emojiBtn('🎛️', 'Filtres', `s:filt:${sid}`),
         backHome(),
       ),
     ])];
   }
 
   const cards = items.map((item, i) => {
+    const dropped = item.prev_price > item.price_cny;
     const line = `**${page * PAGE_SIZE + i + 1}. [${escape(itemTitle(item).slice(0, 90))}](${item.url})**\n` +
-      `${formatPrice(item.price_cny, rate)}  ·  🏪 ${escape((item.shop_name || PLATFORM_NAMES[item.platform] || '—').slice(0, 40))}` +
-      (item.popularity ? `  ·  🔥 ${fmtInt(item.popularity)} ventes` : '') +
+      `${formatPrice(item.price_cny, money)}${dropped ? ` 📉 ~~${formatMoney(item.prev_price, money)}~~` : ''}` +
+      `  ·  🏪 ${escape((item.shop_name || PLATFORM_NAMES[item.platform] || '—').slice(0, 40))}` +
+      (item.popularity ? `  ·  🔥 ${fmtInt(item.popularity)}` : '') +
       (item.posted_count ? '  ·  ✅ posté' : '');
     return item.image ? section(line, thumb(item.image)) : text(line);
   });
+  const options = items.map((item, i) => ({
+    label: `${page * PAGE_SIZE + i + 1}. ${itemTitle(item)}`.slice(0, 100),
+    description: formatPrice(item.price_cny, money).slice(0, 100),
+    value: item.id,
+  }));
 
   return [container([
     ...head,
     ...cards,
     sep(),
     row({
-      type: 8,
-      custom_id: `s:ch:${sid}:${page}`,
-      placeholder: 'Salon ou forum où poster',
-      channel_types: [0, 5, 15],
-      default_values: [{ id: channelId, type: 'channel' }],
+      type: 8, custom_id: `s:ch:${sid}:${page}`, placeholder: 'Salon ou forum où poster',
+      channel_types: [0, 5, 15], default_values: [{ id: channelId, type: 'channel' }],
     }),
-    row({
-      type: 3,
-      custom_id: `s:sel:${sid}:${page}`,
-      placeholder: '📤 Choisis les items à poster…',
-      min_values: 1,
-      max_values: items.length,
-      options: items.map((item, i) => ({
-        label: `${page * PAGE_SIZE + i + 1}. ${itemTitle(item)}`.slice(0, 100),
-        description: formatPrice(item.price_cny, rate).slice(0, 100),
-        value: item.id,
-      })),
-    }),
+    row({ type: 3, custom_id: `s:sel:${sid}:${page}`, placeholder: '📤 Poster les items choisis…', min_values: 1, max_values: items.length, options }),
+    row({ type: 3, custom_id: `s:hide:${sid}:${page}`, placeholder: '🚫 Masquer des items (n\'apparaîtront plus)…', min_values: 1, max_values: items.length, options }),
     row(
       emojiBtn('◀️', null, `s:pg:${sid}:${page - 1}`, Style.SECONDARY, { disabled: page === 0 }),
       emojiBtn('▶️', null, `s:pg:${sid}:${page + 1}`, Style.SECONDARY, { disabled: page >= pages - 1 }),
       emojiBtn('📤', `Tout poster (${fmtInt(Math.min(total, MAX_BULK))})`, `s:all:${sid}:${page}`, Style.SUCCESS),
-      emojiBtn('✏️', null, `s:edit:${sid}`),
-      emojiBtn(params.includePosted ? '🙈' : '👁️', null, `s:posted:${sid}`),
+      emojiBtn('🎛️', 'Filtres', `s:filt:${sid}`),
+      emojiBtn('⏰', 'Programmer', `s:sched:${sid}`),
     ),
-    row(backHome()),
+    row(emojiBtn('✏️', 'Modifier', `s:edit:${sid}`), backHome()),
+  ])];
+}
+
+// Filtres d'une recherche : catégorie, tri, déjà postés.
+export async function filtersView(env, sid) {
+  const s = await loadSearch(env, sid);
+  if (!s) return expiredView();
+  const p = s.params;
+  return [container([
+    text('## 🎛️ Filtres\n-# Les changements s\'appliquent tout de suite.'),
+    sep(),
+    row({
+      type: 3, custom_id: `s:cat:${sid}`, placeholder: 'Catégorie',
+      options: [{ label: 'Toutes les catégories', value: 'all', emoji: { name: '🗂️' }, default: !p.category },
+        ...CATEGORIES.map((c) => ({ label: c.label, value: c.key, emoji: { name: c.emoji }, default: p.category === c.key })),
+        { label: 'Autres', value: 'other', emoji: { name: '📦' }, default: p.category === 'other' }],
+    }),
+    row({
+      type: 3, custom_id: `s:sort:${sid}`, placeholder: 'Tri',
+      options: Object.entries(SORTS).map(([k, v]) => ({
+        label: v.label, value: k, emoji: { name: v.emoji },
+        default: (p.sort || (p.latest ? 'recent' : 'popular')) === k,
+      })),
+    }),
+    row(
+      emojiBtn(p.includePosted ? '🙈' : '👁️', p.includePosted ? 'Masquer les déjà postés' : 'Inclure les déjà postés', `s:posted:${sid}`),
+      emojiBtn('💶', 'Prix', `s:edit:${sid}`),
+      emojiBtn('✅', 'Voir les résultats', `s:pg:${sid}:0`, Style.PRIMARY),
+    ),
   ])];
 }
 
@@ -275,8 +315,12 @@ export async function shopView(env, shopId, msg) {
     sep(),
     row(
       emojiBtn('🔎', 'Voir ses items', `cat:items:${s.id}`, Style.PRIMARY, { disabled: !s.item_count }),
+      emojiBtn('🔥', 'Ses meilleurs', `cat:best:${s.id}`, Style.SECONDARY, { disabled: !s.item_count }),
       emojiBtn('🔁', 'Réindexer', `cat:reidx:${s.id}`),
+    ),
+    row(
       emojiBtn('🗑️', 'Retirer', `cat:del:${s.id}`, Style.DANGER),
+      emojiBtn('🚫', 'Bannir (ne plus jamais l\'ajouter)', `cat:ban:${s.id}`, Style.DANGER),
     ),
     row(emojiBtn('↩️', 'Catalogues', 'cat:list:0'), backHome()),
   ])];

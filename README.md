@@ -1,55 +1,62 @@
 # finds-bot
 
-Bot Discord qui indexe automatiquement des boutiques Weidian, permet de chercher dans les items et de les poster avec tes liens d'affiliation d'agents.
+Bot Discord de finds : il indexe automatiquement des milliers d'items Weidian (et des items Taobao / 1688 populaires),
+les traduit, les classe, et les poste en belles cartes avec tes liens d'affiliation, à la main ou automatiquement.
 
-- **Bot** : Cloudflare Worker (gratuit, 24h/24) — `https://finds-bot.wheatenmoon5861.workers.dev`
-- **Base** : Cloudflare D1
-- **Traduction des titres** : Workers AI (chinois → anglais)
-- **Indexeur** : GitHub Actions toutes les 10 min (Chromium sans fenêtre, ouvre les boutiques comme un visiteur)
+- **Bot** : Cloudflare Worker (gratuit, 24 h/24) — `https://finds-bot.wheatenmoon5861.workers.dev`
+- **Base** : Cloudflare D1 · **IA** : Workers AI (titres, recherche multilingue)
+- **Indexeur** : GitHub Actions, 4 jobs en parallèle, lancés par le bot dès qu'il y a du travail
 
-## Utilisation
+## Commandes
 
-Une seule commande : **`/menu`**. Elle ouvre un panneau privé (visible par toi seul), et tout se fait avec des boutons, des menus et des formulaires :
+| Commande | Pour qui | Rôle |
+|---|---|---|
+| `/menu` | admins + membres ajoutés | Panneau complet (tout en boutons) |
+| `/find recherche: categorie: prix_max:` | tout le monde | Chercher un item et l'acheter avec le bon lien |
+| `/convert lien:` | tout le monde | Transformer n'importe quel lien Weidian / Taobao / 1688 / d'agent en boutons d'achat avec ton code |
 
-| Bouton | Rôle |
-|---|---|
-| 🔎 **Rechercher** | Mots-clés et prix, puis : choisir le salon, poster les items sélectionnés ou 📤 tout poster (~45/min, démarre tout de suite) |
-| ✨ **Nouveautés** | Les derniers items indexés |
-| 📚 **Catalogues** | Ajouter une boutique Weidian, voir ses items, réindexer, retirer |
-| 🏷️ **Agents** | Tes liens d'affiliation (un bouton « Acheter sur … » par agent sous chaque item) |
-| ➕ **Ajouter un item** | À la main (Taobao, 1688, ou Weidian rempli tout seul) |
-| 👥 **Accès** | Donner l'accès à d'autres membres |
+## Le panneau `/menu`
 
-Accès : le propriétaire et les membres avec la permission **Administrateur**, plus les membres ajoutés dans 👥 Accès.
+**Trouver**
+- 🔎 **Rechercher** (anglais, français ou chinois, prix min/max) · 🔥 **Tendances** (les plus vendus) · ✨ **Nouveautés** · 📉 **Baisses de prix**
+- 🎛️ **Filtres** : catégorie (chaussures, hoodies, t-shirts, vestes, pantalons, sacs, bijoux, accessoires…), tri (ventes, récents, prix ↑/↓), déjà postés
+- 🚫 **Masquer** des items qui ne doivent plus apparaître
 
-Agents : choisis BBDBuy ou Kakobuy et colle juste ton code. « Autre agent » accepte un lien complet avec `{url}` (lien produit encodé), `{url_raw}`, `{id}`, `{platform}` ou `{PLATFORM}`. Seul `AGENTS_OWNER_ID` peut modifier les agents.
+**Poster**
+- Choisir le salon ou le **forum** (1 item = 1 post, tag de forum choisi automatiquement selon la catégorie)
+- Poster des items choisis, ou 📤 **tout poster** (~45/min, sans spam)
+- ⏰ **Drops automatiques** : une recherche postée toute seule à intervalle régulier, avec 🔔 ping de rôle, jamais deux fois le même item dans un salon
+- 🧾 **Historique** des posts, avec lien vers le message et suppression en un clic
+- ♻️ **Anti-doublon** réglable
+
+**Données**
+- 📚 **Catalogues** : ajout en masse de liens, 📡 sources Discord surveillées, boutiques Jadeship (⭐ Trusted / 💎 High Tier), meilleurs items d'une boutique, 🚫 bannir une boutique
+- Indexation de **toutes les catégories** de chaque boutique, photos et **titres anglais** récupérés automatiquement, **suivi des prix**
+
+**Piloter**
+- 📊 **Stats** : clics par jour, par agent, items et salons qui convertissent le mieux (chaque bouton passe par `/go`, qui compte le clic puis redirige ; aucune donnée personnelle gardée)
+- ⚙️ **Réglages** : devise (€, $, £, CA$, A$, CHF), langue des cartes (FR/EN), couleur, salon par défaut, anti-doublon, 🔄 salons de **conversion automatique** des liens
+- 🏷️ **Agents** : BBDBuy / Kakobuy avec juste ton code (seul `AGENTS_OWNER_ID` peut les modifier)
+- 👥 **Accès** · 🩺 **Santé** (indexeur, files, erreurs récentes)
 
 ## Installation Discord
 
-1. Sur https://discord.com/developers/applications → **New Application**.
-2. Copie l'**Application ID** et la **Public Key** (onglet General Information) dans `wrangler.toml` (`DISCORD_APP_ID`, `DISCORD_PUBLIC_KEY`).
-3. Onglet **Bot** → **Reset Token**, puis dans un terminal :
-   `npx wrangler secret put DISCORD_BOT_TOKEN` (colle le token quand c'est demandé — jamais dans le chat ni dans le code).
-4. `npx wrangler deploy`
-5. Onglet General Information → **Interactions Endpoint URL** :
-   `https://finds-bot.wheatenmoon5861.workers.dev/interactions` → Save.
-6. Enregistrer les commandes :
-   `curl -X POST -H "Authorization: Bearer $(cat .secrets)" https://finds-bot.wheatenmoon5861.workers.dev/api/register-commands`
-7. Inviter le bot (remplace APP_ID) :
-   `https://discord.com/oauth2/authorize?client_id=APP_ID&scope=bot+applications.commands&permissions=19456`
-   (Voir les salons, Envoyer des messages, Intégrer des liens.)
+1. Portail développeur → **New Application** ; copie l'Application ID et la Public Key dans `wrangler.toml`.
+2. Onglet **Bot** → Reset Token → `npx wrangler secret put DISCORD_BOT_TOKEN` ; active **Message Content Intent** (sources et conversion automatique).
+3. `npx wrangler deploy`, puis : `curl -X POST -H "Authorization: Bearer $(cat .secrets)" https://finds-bot.wheatenmoon5861.workers.dev/api/setup` (URL des interactions + commandes).
+4. Invitation : `https://discord.com/oauth2/authorize?client_id=APP_ID&scope=bot+applications.commands&permissions=216064`
+   (voir les salons, envoyer des messages, intégrer des liens, lire l'historique, mentionner les rôles des drops).
 
-## Indexation immédiate (optionnel)
+## Base de données
 
-Par défaut, un nouveau catalogue est indexé au prochain passage (10 à 20 min, GitHub retarde parfois). Pour lancer l'indexeur tout de suite, crée un token GitHub *fine-grained* limité à ce repo avec la permission **Actions: write**, puis :
-`npx wrangler secret put GITHUB_TOKEN` et décommente `GITHUB_REPO` dans `wrangler.toml`.
+Nouvelle installation : `npm run db:init`. Le schéma complet est dans `schema.sql`.
 
 ## Limites
 
-- Taobao et 1688 exigent une connexion : pas d'indexation automatique, seulement ➕ Ajouter un item.
-- Si Weidian demande une vérification, l'indexeur s'arrête (rien n'est contourné) et réessaie au passage suivant.
-- Traduction : ~40 titres/min (quota gratuit Workers AI). Les items sont cherchables en chinois en attendant.
+- Taobao et 1688 exigent une connexion : pas d'indexation de boutiques, mais les items populaires arrivent via Jadeship et tout lien se convertit avec `/convert`.
+- Si Weidian ralentit ou demande une vérification, l'indexeur s'arrête (rien n'est contourné) et reprend au passage suivant.
+- Quotas gratuits : Workers AI (~3 000 titres réécrits / jour ; la plupart des titres arrivent déjà en anglais), 50 requêtes externes par exécution du Worker.
 
 ## Tests
 
-`npm test` (liens) · `npm run test:e2e` (Worker local + faux Discord + vraie indexation Weidian)
+`npm test` (liens, catégories, découverte) · `npm run test:e2e` (Worker local + faux Discord + vraie indexation Weidian)

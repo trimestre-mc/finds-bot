@@ -33,6 +33,10 @@ CREATE TABLE IF NOT EXISTS items (
   translate_failed INTEGER NOT NULL DEFAULT 0,
   posted_count INTEGER NOT NULL DEFAULT 0,
   popularity INTEGER NOT NULL DEFAULT 0,     -- ventes connues (Jadeship)
+  category TEXT,                             -- shoes, hoodies… (voir categories.js)
+  prev_price REAL,                           -- ancien prix si le prix a baissé
+  price_changed_at INTEGER,
+  hidden INTEGER NOT NULL DEFAULT 0,         -- masqué des recherches (liste noire)
   source TEXT,                               -- shop, jadeship, manuel
   last_posted INTEGER,
   first_seen INTEGER,
@@ -40,6 +44,8 @@ CREATE TABLE IF NOT EXISTS items (
 );
 CREATE INDEX IF NOT EXISTS items_shop ON items(shop_id);
 CREATE INDEX IF NOT EXISTS items_untranslated ON items(title_en) WHERE title_en IS NULL;
+CREATE INDEX IF NOT EXISTS items_popularity ON items(popularity DESC, first_seen DESC);
+CREATE INDEX IF NOT EXISTS items_category ON items(category);
 
 -- Liens d'affiliation des agents. template contient {url}, {url_raw}, {id} ou {platform}
 CREATE TABLE IF NOT EXISTS agents (
@@ -75,6 +81,7 @@ CREATE TABLE IF NOT EXISTS post_queue (
   item_id TEXT NOT NULL,
   channel_id TEXT NOT NULL,
   channel_type INTEGER NOT NULL DEFAULT 0,
+  ping TEXT,                                 -- annonce (ping de rôle) envoyée avant l'item
   created_at INTEGER
 );
 
@@ -101,4 +108,69 @@ CREATE TABLE IF NOT EXISTS link_queue (
 CREATE TABLE IF NOT EXISTS settings (
   key TEXT PRIMARY KEY,
   value TEXT
+);
+
+-- Historique des posts (anti-doublon, statistiques, suppression)
+CREATE TABLE IF NOT EXISTS posts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  item_id TEXT NOT NULL,
+  channel_id TEXT NOT NULL,
+  message_id TEXT,
+  thread_id TEXT,
+  posted_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS posts_item_channel ON posts(item_id, channel_id, posted_at);
+CREATE INDEX IF NOT EXISTS posts_at ON posts(posted_at);
+
+-- Clics sur les boutons des cartes (redirection /go)
+CREATE TABLE IF NOT EXISTS clicks (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  item_id TEXT NOT NULL,
+  agent TEXT NOT NULL,
+  channel_id TEXT,
+  at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS clicks_at ON clicks(at);
+
+-- Drops automatiques : une recherche postée régulièrement dans un salon
+CREATE TABLE IF NOT EXISTS schedules (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  guild_id TEXT,
+  name TEXT,
+  params TEXT NOT NULL,
+  channel_id TEXT NOT NULL,
+  channel_type INTEGER NOT NULL DEFAULT 0,
+  per_run INTEGER NOT NULL DEFAULT 3,
+  every_minutes INTEGER NOT NULL DEFAULT 120,
+  ping_role TEXT,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  next_at INTEGER NOT NULL DEFAULT 0,
+  last_run INTEGER,
+  runs INTEGER NOT NULL DEFAULT 0,
+  created_by TEXT,
+  created_at INTEGER
+);
+
+-- Liste noire : boutiques bannies (jamais réajoutées par la découverte)
+CREATE TABLE IF NOT EXISTS blacklist (
+  shop_id TEXT PRIMARY KEY,
+  name TEXT,
+  added_at INTEGER
+);
+
+-- Salons où les liens postés par les membres sont convertis automatiquement en liens d'agents
+CREATE TABLE IF NOT EXISTS convert_channels (
+  channel_id TEXT PRIMARY KEY,
+  guild_id TEXT,
+  last_message_id TEXT,
+  converted INTEGER NOT NULL DEFAULT 0,
+  added_at INTEGER
+);
+
+-- Journal des erreurs (écran Santé)
+CREATE TABLE IF NOT EXISTS logs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  at INTEGER NOT NULL,
+  kind TEXT,
+  message TEXT
 );

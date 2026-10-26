@@ -62,8 +62,8 @@ export function messageText(m) {
 export async function addShopQuiet(env, shopId, name, source, by) {
   const r = await env.DB.prepare(
     `INSERT OR IGNORE INTO shops (id, platform, name, url, status, source, added_by, added_at)
-     VALUES (?, 'weidian', ?, ?, 'pending', ?, ?, ?)`,
-  ).bind(shopId, name || null, `https://weidian.com/?userid=${shopId}`, source, by || null, Date.now()).run();
+     SELECT ?, 'weidian', ?, ?, 'pending', ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM blacklist WHERE shop_id = ?)`,
+  ).bind(shopId, name || null, `https://weidian.com/?userid=${shopId}`, source, by || null, Date.now(), shopId).run();
   return r.meta.changes > 0;
 }
 

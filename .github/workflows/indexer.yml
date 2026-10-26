@@ -5,21 +5,25 @@ on:
     - cron: '*/10 * * * *'
   workflow_dispatch:
 
-concurrency:
-  group: indexer
-  cancel-in-progress: false
-
 jobs:
   index:
     runs-on: ubuntu-latest
     timeout-minutes: 50
+    # 4 jobs en parallèle, chacun avec sa part des boutiques et des items (et sa propre adresse IP).
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
+    concurrency:
+      group: indexer-${{ matrix.shard }}
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v4
 
       - name: Vérifier s'il y a du travail
         id: jobs
         run: |
-          n=$(curl -sf -H "Authorization: Bearer ${{ secrets.INDEXER_SECRET }}" "${{ secrets.WORKER_URL }}/api/indexer/jobs" | python3 -c "import sys,json; d=json.load(sys.stdin); print(len(d['shops']) + d.get('missingImages', 0) + d.get('linkQueue', 0) + (1 if d.get('jadeship') else 0))")
+          n=$(curl -sf -H "Authorization: Bearer ${{ secrets.INDEXER_SECRET }}" "${{ secrets.WORKER_URL }}/api/indexer/jobs?shard=${{ matrix.shard }}&shards=4" | python3 -c "import sys,json; d=json.load(sys.stdin); print(len(d['shops']) + d.get('missingImages', 0) + d.get('linkQueue', 0) + (1 if d.get('jadeship') else 0))")
           echo "count=$n" >> "$GITHUB_OUTPUT"
           echo "$n catalogue(s) ou photos à traiter"
 
@@ -41,4 +45,6 @@ jobs:
         env:
           WORKER_URL: ${{ secrets.WORKER_URL }}
           INDEXER_SECRET: ${{ secrets.INDEXER_SECRET }}
+          SHARD: ${{ matrix.shard }}
+          SHARDS: 4
         run: node index.mjs

@@ -1,27 +1,32 @@
 // Bot Discord "finds" : Worker Cloudflare (interactions HTTP + cron + API indexeur).
 // Une seule commande, /menu, ouvre un panneau ; tout le reste passe par boutons, menus et formulaires.
 
-import { InteractionType, Reply, EPHEMERAL, verifyRequest, discordApi, editOriginal, json, reply } from './discord.js';
+import { InteractionType, Reply, verifyRequest, discordApi, json, reply } from './discord.js';
+import { panel, update, openModal, later, userId } from './respond.js';
 import { COMMANDS } from './commands.js';
-import { COMPONENTS_V2, modalValues, escape, fmtInt } from './components.js';
+import { modalValues, escape, fmtInt } from './components.js';
 import {
-  parseWeidianShop, parseItemLink, isValidTemplate, buildAgentLink, AGENT_PRESETS, isValidCode, presetTemplate,
+  parseItemLink, isValidTemplate, buildAgentLink, AGENT_PRESETS, isValidCode, presetTemplate,
 } from './links.js';
 import { prepareQuery, allResultIds } from './search.js';
-import { getRate, refreshRate, formatPrice, getAgents, postItem, processQueue } from './post.js';
-import { translatePending, rewriteTitles } from './translate.js';
+import { getRate, refreshRate, formatPrice, postItem, processQueue, postContext } from './post.js';
+import {
+  triggerIndexer, handleGo, handlePublicCommand, handlePublicComponent, handleFeatureComponent, handleFeatureModal,
+  runSchedules, runAutoConvert,
+} from './features.js';
+import { categorizePending } from './categories.js';
+import { translatePending, rewriteTitles, titleWait } from './translate.js';
 import { fetchWeidianItem } from './weidian.js';
 import { extractWeidian, ingest, resolveQueue, scanSource, runDiscovery, addShopQuiet } from './discover.js';
 import {
   QUEUE_PER_MINUTE, homeView, searchModal, loadSearch, createSearch, resultsView, confirmAllView,
   catalogsView, addShopModal, shopView, confirmDeleteShopView, agentsView, agentModal, presetModal, itemModal,
-  accessView, hasAdminPermission, deniedView, errorView, sourcesView,
+  accessView, hasAdminPermission, deniedView, sourcesView,
 } from './ui.js';
 
 const REINDEX_HOURS = 24;
 const TRANSLATE_PER_MINUTE = 40;
 const MODAL_SUBMIT = 5;
-const MODAL = 9;
 
 export default {
   async fetch(request, env, ctx) {
@@ -29,6 +34,7 @@ export default {
     try {
       if (request.method === 'POST' && url.pathname === '/interactions') return await handleInteraction(request, env, ctx);
       if (url.pathname.startsWith('/api/')) return await handleApi(request, env, url);
+      if (request.method === 'GET' && url.pathname.startsWith('/go/')) return await handleGo(url, env, ctx);
       if (url.pathname === '/') return new Response('finds-bot en ligne');
       return new Response('Not found', { status: 404 });
     } catch (err) {
@@ -42,45 +48,25 @@ export default {
       ctx.waitUntil(runDiscovery(env).catch((e) => console.log('découverte', String(e))));
       return;
     }
+    if (event.cron === '*/2 * * * *') {
+      ctx.waitUntil(runAutoConvert(env).catch((e) => console.log('conversion', String(e))));
+      return;
+    }
     ctx.waitUntil((async () => {
+      await runSchedules(env).catch((e) => console.log('drops', String(e)));
       await Promise.all([
         processQueue(env, 50000).catch((e) => console.log('file', String(e))),
         translatePending(env, TRANSLATE_PER_MINUTE).catch((e) => console.log('traduction', String(e))),
         refreshRate(env).catch((e) => console.log('taux', String(e))),
         autoIndex(env).catch((e) => console.log('indexeur', String(e))),
+        categorizePending(env, 400, titleWait(env)).catch((e) => console.log('catégories', String(e))),
       ]);
       await env.DB.prepare('DELETE FROM searches WHERE created_at < ?').bind(Date.now() - 24 * 3600 * 1000).run();
     })());
   },
 };
 
-// ---------------------------------------------------------------- Réponses
-
-const panel = (components) => json({
-  type: Reply.MESSAGE,
-  data: { flags: EPHEMERAL | COMPONENTS_V2, components, allowed_mentions: { parse: [] } },
-});
-const update = (components) => json({
-  type: Reply.UPDATE_MESSAGE,
-  data: { flags: COMPONENTS_V2, components, allowed_mentions: { parse: [] } },
-});
-const openModal = (m) => json({ type: MODAL, data: m });
-
-// Répond tout de suite, puis remplace le panneau quand la tâche (lente) est finie.
-function later(it, env, ctx, task) {
-  ctx.waitUntil((async () => {
-    let components;
-    try {
-      components = await task();
-    } catch (err) {
-      console.log('tâche', err && err.stack ? err.stack : String(err));
-      components = errorView(err.message || err);
-    }
-    await editOriginal(env, it.token, { flags: COMPONENTS_V2, components, allowed_mentions: { parse: [] } })
-      .catch((e) => console.log('édition', String(e)));
-  })());
-  return json({ type: Reply.DEFERRED_UPDATE });
-}
+// Réponses : voir respond.js.
 
 // ---------------------------------------------------------------- Interactions
 
@@ -92,6 +78,14 @@ async function handleInteraction(request, env, ctx) {
   if (it.type === InteractionType.PING) return json({ type: Reply.PONG });
   if (!it.guild_id) return reply('Ce bot s\'utilise uniquement dans un serveur.');
 
+  // Commandes et boutons publics (/find, /convert) : ouverts à tous les membres.
+  if (it.type === InteractionType.COMMAND && it.data.name !== 'menu') {
+    return (await handlePublicCommand(it, env, ctx)) || reply('Commande inconnue.');
+  }
+  if (it.type === InteractionType.COMPONENT && it.data.custom_id.startsWith('pub:')) {
+    return (await handlePublicComponent(it, env)) || reply('Action inconnue.');
+  }
+
   if (!(await isAdmin(env, it))) {
     return it.type === InteractionType.COMMAND ? panel(deniedView()) : update(deniedView());
   }
@@ -100,10 +94,6 @@ async function handleInteraction(request, env, ctx) {
   if (it.type === InteractionType.COMPONENT) return onComponent(it, env, ctx);
   if (it.type === MODAL_SUBMIT) return onModal(it, env, ctx);
   return reply('Action inconnue.');
-}
-
-function userId(it) {
-  return (it.member && it.member.user && it.member.user.id) || (it.user && it.user.id);
 }
 
 const AGENTS_LOCKED = '🔒 Seul le propriétaire du bot peut modifier les agents.';
@@ -125,6 +115,8 @@ async function isAdmin(env, it) {
 async function onComponent(it, env, ctx) {
   const [a, b, c, d] = it.data.custom_id.split(':');
   const values = it.data.values || [];
+  const handled = await handleFeatureComponent(it, env, ctx, a, b, c, d, values);
+  if (handled) return handled;
 
   switch (`${a}:${b || ''}`) {
     case 'home:': return update(await homeView(env, it));
@@ -271,15 +263,14 @@ async function onComponent(it, env, ctx) {
 async function postSelected(env, sid, page, ids) {
   const s = await loadSearch(env, sid);
   if (!s) return resultsView(env, sid, page);
-  const agents = await getAgents(env);
-  const rate = await getRate(env);
+  const pctx = await postContext(env);
   let ok = 0;
   let error = null;
   for (const id of ids) {
     const item = await env.DB.prepare('SELECT * FROM items WHERE id = ?').bind(id).first();
     if (!item) continue;
     try {
-      await postItem(env, item, s.channelId, agents, rate, true, s.channelType);
+      await postItem(env, item, s.channelId, pctx, true, s.channelType);
       ok++;
     } catch (err) {
       error = String(err.message || err);
@@ -306,6 +297,8 @@ function parseNumber(v) {
 async function onModal(it, env, ctx) {
   const v = modalValues(it.data);
   const [, kind, sid] = it.data.custom_id.split(':');
+  const handled = await handleFeatureModal(it, env, kind, it.data.custom_id.split(':').slice(2), v);
+  if (handled) return handled;
   const count = () => env.DB.prepare('SELECT COUNT(*) AS n FROM agents').first();
 
   if (kind === 'search') {
@@ -423,40 +416,39 @@ function indexerDelay(env) {
   return env.GITHUB_TOKEN && env.GITHUB_REPO ? 'démarre maintenant (2-3 min)' : 'démarre au prochain passage de l\'indexeur (10 à 20 min)';
 }
 
-// Lance l'indexeur tout de suite si un token GitHub est configuré (optionnel).
-async function triggerIndexer(env) {
-  if (!env.GITHUB_TOKEN || !env.GITHUB_REPO) return;
-  await env.DB.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('last_dispatch', ?)").bind(String(Date.now())).run();
-  const res = await fetch(`https://api.github.com/repos/${env.GITHUB_REPO}/actions/workflows/indexer.yml/dispatches`, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${env.GITHUB_TOKEN}`,
-      Accept: 'application/vnd.github+json',
-      'User-Agent': 'finds-bot',
-    },
-    body: JSON.stringify({ ref: 'main' }),
-  }).catch((e) => ({ ok: false, status: String(e) }));
-  if (!res.ok) console.log('dispatch GitHub refusé', res.status);
-}
-
 // Boutiques à indexer : nouvelles, à rafraîchir (24 h) ou bloquées en cours d'indexation.
-async function dueShops(env, limit) {
+async function dueShops(env, limit, shard = { n: 1, i: 0 }) {
   const now = Date.now();
   const { results } = await env.DB.prepare(
     `SELECT id, name FROM shops
-     WHERE status = 'pending'
+     WHERE (status = 'pending'
         OR (status IN ('ok', 'error') AND (last_indexed IS NULL OR last_indexed < ?))
-        OR (status = 'indexing' AND (last_indexed IS NULL OR last_indexed < ?))
+        OR (status = 'indexing' AND (last_indexed IS NULL OR last_indexed < ?)))
+       AND CAST(id AS INTEGER) % ? = ?
      ORDER BY CASE status WHEN 'pending' THEN 0 ELSE 1 END, last_indexed LIMIT ?`,
-  ).bind(now - REINDEX_HOURS * 3600 * 1000, now - 3 * 3600 * 1000, limit).all();
+  ).bind(now - REINDEX_HOURS * 3600 * 1000, now - 3 * 3600 * 1000, shard.n, shard.i, limit).all();
   return results;
+}
+
+// Part du travail d'un job d'indexation (plusieurs jobs GitHub en parallèle).
+function shardOf(url) {
+  const n = Math.max(1, Math.min(16, Number(url.searchParams.get('shards')) || 1));
+  return { n, i: Math.max(0, Number(url.searchParams.get('shard')) || 0) % n };
+}
+
+// Titre anglais fourni par Weidian (visiteurs étrangers) : gardé s'il est surtout en caractères latins.
+function englishTitle(t) {
+  if (!t) return null;
+  const clean = String(t).replace(/\\u[0-9a-f]{4}/gi, '').replace(/\s+/g, ' ').trim();
+  const cjk = (clean.match(/[\u3400-\u9fff]/g) || []).length;
+  return clean.length >= 4 && cjk / clean.length < 0.15 ? clean.slice(0, 200) : null;
 }
 
 // Appelé chaque minute : le planificateur de GitHub étant peu fiable, le bot lance l'indexeur lui-même.
 async function autoIndex(env) {
   if (!env.GITHUB_TOKEN || !env.GITHUB_REPO) return;
   const last = await env.DB.prepare("SELECT value FROM settings WHERE key = 'last_dispatch'").first();
-  if (last && Date.now() - Number(last.value) < 12 * 60 * 1000) return;
+  if (last && Date.now() - Number(last.value) < 8 * 60 * 1000) return;
   if ((await dueShops(env, 1)).length || await jadeshipDue(env)) await triggerIndexer(env);
 }
 
@@ -495,9 +487,15 @@ async function handleApi(request, env, url) {
   }
 
   if (path === '/api/indexer/jobs' && request.method === 'GET') {
-    const missing = await env.DB.prepare("SELECT COUNT(*) AS n FROM items WHERE platform = 'weidian' AND images IS NULL").first();
-    const links = await env.DB.prepare('SELECT COUNT(*) AS n FROM link_queue').first();
-    return json({ shops: await dueShops(env, 10), missingImages: missing.n, linkQueue: links.n, jadeship: await jadeshipDue(env) });
+    const sh = shardOf(url);
+    const missing = await env.DB.prepare(
+      "SELECT COUNT(*) AS n FROM items WHERE platform = 'weidian' AND images IS NULL AND CAST(item_id AS INTEGER) % ? = ?",
+    ).bind(sh.n, sh.i).first();
+    const links = await env.DB.prepare('SELECT COUNT(*) AS n FROM link_queue WHERE CAST(item_id AS INTEGER) % ? = ?').bind(sh.n, sh.i).first();
+    return json({
+      shops: await dueShops(env, 10, sh), missingImages: missing.n, linkQueue: links.n,
+      jadeship: sh.i === 0 && await jadeshipDue(env),
+    });
   }
 
   const body = request.method === 'POST' ? await request.json() : {};
@@ -518,6 +516,9 @@ async function handleApi(request, env, url) {
        VALUES (?, 'weidian', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
          title_en = CASE WHEN items.title_zh IS excluded.title_zh THEN items.title_en ELSE NULL END,
+         prev_price = CASE WHEN excluded.price_cny < items.price_cny THEN items.price_cny
+                           WHEN excluded.price_cny > items.price_cny THEN NULL ELSE items.prev_price END,
+         price_changed_at = CASE WHEN excluded.price_cny != items.price_cny THEN excluded.first_seen ELSE items.price_changed_at END,
          title_zh = excluded.title_zh, price_cny = excluded.price_cny, image = excluded.image,
          stock = excluded.stock, shop_id = excluded.shop_id, shop_name = excluded.shop_name,
          last_seen_run = excluded.last_seen_run`,
@@ -531,20 +532,23 @@ async function handleApi(request, env, url) {
 
   // Items Weidian dont il faut trouver la boutique : l'indexeur lit leur page (boutique + photos).
   if (path === '/api/indexer/link-queue' && request.method === 'GET') {
-    const { results } = await env.DB.prepare('SELECT item_id FROM link_queue ORDER BY added_at LIMIT ?')
-      .bind(Math.min(Number(url.searchParams.get('limit')) || 500, 2000)).all();
+    const sh = shardOf(url);
+    const { results } = await env.DB.prepare('SELECT item_id FROM link_queue WHERE CAST(item_id AS INTEGER) % ? = ? ORDER BY added_at LIMIT ?')
+      .bind(sh.n, sh.i, Math.min(Number(url.searchParams.get('limit')) || 500, 2000)).all();
     return json({ items: results.map((r) => r.item_id) });
   }
 
   if (path === '/api/indexer/resolved') {
     let added = 0;
-    for (const r of (body.items || []).slice(0, 200)) {
+    for (const r of (body.items || []).slice(0, 300)) {
       const id = String(r.itemId);
       const q = await env.DB.prepare('SELECT source FROM link_queue WHERE item_id = ?').bind(id).first();
       if (r.shopId && /^\d{5,12}$/.test(String(r.shopId))) {
         if (await addShopQuiet(env, String(r.shopId), r.shopName, q ? q.source : 'jadeship', null)) added++;
-        await env.DB.prepare('UPDATE items SET shop_id = ?, shop_name = COALESCE(shop_name, ?), images = COALESCE(images, ?) WHERE id = ?')
-          .bind(String(r.shopId), r.shopName || null, JSON.stringify((r.images || []).slice(0, 8)), `weidian:${id}`).run();
+        await env.DB.prepare(
+          `UPDATE items SET shop_id = ?, shop_name = COALESCE(shop_name, ?), images = COALESCE(images, ?), title_en = COALESCE(title_en, ?),
+             category = CASE WHEN category = 'other' AND title_en IS NULL THEN NULL ELSE category END WHERE id = ?`,
+        ).bind(String(r.shopId), r.shopName || null, JSON.stringify((r.images || []).slice(0, 8)), englishTitle(r.title), `weidian:${id}`).run();
       }
       await env.DB.prepare('DELETE FROM link_queue WHERE item_id = ?').bind(id).run();
     }
@@ -580,8 +584,8 @@ async function handleApi(request, env, url) {
       if (!/^\d{5,12}$/.test(String(s.id))) continue;
       stmts.push(env.DB.prepare(
         `INSERT OR IGNORE INTO shops (id, platform, name, url, status, source, tier, added_at)
-         VALUES (?, 'weidian', ?, ?, 'pending', 'jadeship', ?, ?)`,
-      ).bind(String(s.id), s.name || null, `https://weidian.com/?userid=${s.id}`, s.tier || null, now));
+         SELECT ?, 'weidian', ?, ?, 'pending', 'jadeship', ?, ? WHERE NOT EXISTS (SELECT 1 FROM blacklist WHERE shop_id = ?)`,
+      ).bind(String(s.id), s.name || null, `https://weidian.com/?userid=${s.id}`, s.tier || null, now, String(s.id)));
       if (s.tier) stmts.push(env.DB.prepare('UPDATE shops SET tier = ? WHERE id = ?').bind(s.tier, String(s.id)));
     }
     for (let i = 0; i < stmts.length; i += 100) await env.DB.batch(stmts.slice(i, i + 100));
@@ -590,15 +594,19 @@ async function handleApi(request, env, url) {
   }
 
   if (path === '/api/indexer/missing-images' && request.method === 'GET') {
+    const sh = shardOf(url);
     const { results } = await env.DB.prepare(
-      "SELECT item_id FROM items WHERE platform = 'weidian' AND images IS NULL ORDER BY first_seen DESC LIMIT ?",
-    ).bind(Math.min(Number(url.searchParams.get('limit')) || 500, 3000)).all();
+      `SELECT item_id FROM items WHERE platform = 'weidian' AND images IS NULL AND CAST(item_id AS INTEGER) % ? = ?
+       ORDER BY popularity DESC, first_seen DESC LIMIT ?`,
+    ).bind(sh.n, sh.i, Math.min(Number(url.searchParams.get('limit')) || 500, 8000)).all();
     return json({ items: results.map((r) => r.item_id) });
   }
 
   if (path === '/api/indexer/images') {
-    const stmts = (body.items || []).slice(0, 200).map((i) => env.DB.prepare('UPDATE items SET images = ? WHERE id = ?')
-      .bind(JSON.stringify((i.images || []).filter((u) => /^https:\/\//.test(u)).slice(0, 8)), `weidian:${i.itemId}`));
+    const stmts = (body.items || []).slice(0, 300).map((i) => env.DB.prepare(
+      `UPDATE items SET images = ?, title_en = COALESCE(title_en, ?),
+         category = CASE WHEN category = 'other' AND title_en IS NULL THEN NULL ELSE category END WHERE id = ?`,
+    ).bind(JSON.stringify((i.images || []).filter((u) => /^https:\/\//.test(u)).slice(0, 8)), englishTitle(i.title), `weidian:${i.itemId}`));
     if (stmts.length) await env.DB.batch(stmts);
     return json({ ok: true, saved: stmts.length });
   }

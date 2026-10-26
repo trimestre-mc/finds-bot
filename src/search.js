@@ -34,9 +34,18 @@ export async function prepareQuery(env, q) {
   return variants;
 }
 
+export const SORTS = {
+  popular: { label: 'Les plus vendus', emoji: '🔥', sql: 'popularity DESC, first_seen DESC, id' },
+  recent: { label: 'Les plus récents', emoji: '✨', sql: 'first_seen DESC, id' },
+  price_asc: { label: 'Prix croissant', emoji: '⬆️', sql: 'price_cny IS NULL, price_cny ASC, id' },
+  price_desc: { label: 'Prix décroissant', emoji: '⬇️', sql: 'price_cny DESC, id' },
+};
+export const DROP_WINDOW_DAYS = 14;
+
 // Construit la clause WHERE à partir des paramètres enregistrés d'une recherche.
-function where(params, rate) {
-  const clauses = [];
+// money.rate convertit les prix min/max (dans la devise choisie) en ¥.
+function where(params, money) {
+  const clauses = ['hidden = 0'];
   const binds = [];
   if (params.variants && params.variants.length) {
     const ors = params.variants.map((words) => {
@@ -50,24 +59,33 @@ function where(params, rate) {
   }
   if (params.min != null) {
     clauses.push('price_cny >= ?');
-    binds.push(params.min / rate);
+    binds.push(params.min / money.rate);
   }
   if (params.max != null) {
     clauses.push('price_cny <= ?');
-    binds.push(params.max / rate);
+    binds.push(params.max / money.rate);
   }
   if (params.shop) {
     clauses.push('shop_id = ?');
     binds.push(params.shop);
   }
+  if (params.category) {
+    clauses.push('category = ?');
+    binds.push(params.category);
+  }
   if (!params.includePosted) clauses.push('posted_count = 0');
   if (params.trending) clauses.push('popularity > 0');
-  return { sql: clauses.length ? `WHERE ${clauses.join(' AND ')}` : '', binds };
+  if (params.drops) {
+    clauses.push('prev_price > price_cny AND price_changed_at > ?');
+    binds.push(Date.now() - DROP_WINDOW_DAYS * 86400000);
+  }
+  return { sql: `WHERE ${clauses.join(' AND ')}`, binds };
 }
 
-// Nouveautés : les plus récents d'abord. Sinon : les plus vendus d'abord.
+// Tri choisi, sinon : nouveautés = récents d'abord, le reste = plus vendus d'abord.
 function order(params) {
-  return params.latest ? 'first_seen DESC, id' : 'popularity DESC, first_seen DESC, id';
+  if (params.sort && SORTS[params.sort]) return SORTS[params.sort].sql;
+  return params.latest ? SORTS.recent.sql : SORTS.popular.sql;
 }
 
 export async function countResults(env, params, rate) {

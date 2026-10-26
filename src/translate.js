@@ -56,23 +56,45 @@ async function rewriteInHalves(env, titles) {
   }
 }
 
+// Budget quotidien du grand modèle (quota gratuit Workers AI : 10 000 neurons/jour, ~5 par titre).
+// On en garde pour la recherche multilingue.
+const TITLES_PER_DAY = 1200;
+
+async function aiBudget(env) {
+  const day = new Date().toISOString().slice(0, 10);
+  const row = await env.DB.prepare("SELECT value FROM settings WHERE key = 'ai_titles'").first();
+  let used = 0;
+  try { const v = JSON.parse(row ? row.value : '{}'); used = v.day === day ? v.used : 0; } catch {}
+  return {
+    left: Math.max(0, TITLES_PER_DAY - used),
+    add: (n) => env.DB.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('ai_titles', ?)")
+      .bind(JSON.stringify({ day, used: Math.min(TITLES_PER_DAY, used + n) })).run(),
+  };
+}
+
 // Traduit un lot d'items sans titre anglais. Renvoie le nombre traduit.
 export async function translatePending(env, limit) {
+  const budget = await aiBudget(env);
+  if (!budget.left) return 0;
   const { results } = await env.DB.prepare(
     `SELECT id, title_zh, translate_failed FROM items
      WHERE title_en IS NULL AND translate_failed < 3 AND title_zh IS NOT NULL
-     ORDER BY first_seen DESC LIMIT ?`,
-  ).bind(limit).all();
+       -- d'abord le titre anglais gratuit de la page produit ; sans elle au bout d'un moment, l'IA traduit quand même
+       AND (platform != 'weidian' OR images IS NOT NULL OR first_seen < ?)
+     ORDER BY popularity DESC, first_seen DESC LIMIT ?`,
+  ).bind(Date.now() - titleWait(env), Math.min(limit, budget.left)).all();
   let done = 0;
   for (let i = 0; i < results.length; i += BATCH) {
     const batch = results.slice(i, i + BATCH);
     let titles;
     try {
       titles = await rewriteInHalves(env, batch.map((it) => it.title_zh));
+      await budget.add(batch.length);
     } catch (err) {
       const msg = String(err);
       console.log('titres (modèle de langage)', msg.slice(0, 200));
-      // Quota épuisé : on réessaiera plus tard sans pénaliser les items.
+      // Quota épuisé : plus d'essai aujourd'hui, sans pénaliser les items.
+      if (/4006|daily free allocation/i.test(msg)) { await budget.add(TITLES_PER_DAY); break; }
       if (/limit|quota|neuron|429|capacity|unavailable/i.test(msg)) break;
       // Sinon on réessaie au prochain passage ; traduction mot à mot seulement après 2 échecs.
       const out = await Promise.allSettled(batch.map((it) => (it.translate_failed >= 2
@@ -80,11 +102,17 @@ export async function translatePending(env, limit) {
         : Promise.reject(new Error('à réessayer')))));
       titles = out.map((r) => (r.status === 'fulfilled' ? tidyTitle(r.value) : null));
     }
+    // Un item classé « autre » faute de titre anglais est recatégorisé avec le nouveau titre.
     const stmts = batch.map((it, j) => (titles[j]
-      ? env.DB.prepare('UPDATE items SET title_en = ? WHERE id = ?').bind(titles[j], it.id)
+      ? env.DB.prepare("UPDATE items SET title_en = ?, category = CASE WHEN category = 'other' THEN NULL ELSE category END WHERE id = ?").bind(titles[j], it.id)
       : env.DB.prepare('UPDATE items SET translate_failed = translate_failed + 1 WHERE id = ?').bind(it.id)));
     await env.DB.batch(stmts);
     done += titles.filter(Boolean).length;
   }
   return done;
+}
+
+// Délai pendant lequel on attend le titre anglais gratuit de la page produit (réglable pour les tests).
+export function titleWait(env) {
+  return Number(env.TITLE_WAIT_MS ?? 30 * 60000);
 }

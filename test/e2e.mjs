@@ -33,6 +33,21 @@ const mock = createServer((req, res) => {
         { id: '1001', content: '', embeds: [], components: [{ type: 1, components: [{ type: 2, style: 5, url: 'https://www.bbdbuy.com/goods/WEIDIAN/7863670229?inviteCode=Z' }] }] },
       ]));
     }
+    // Forum 444 : un tag « Shoes », tag obligatoire.
+    if (req.method === 'GET' && req.url === '/channels/444') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ id: '444', type: 15, flags: 16, available_tags: [{ id: 't-shoes', name: 'Shoes' }, { id: 't-other', name: 'Autre' }] }));
+    }
+    // Salon 777 : conversion automatique (un ancien message, puis un nouveau lien Taobao).
+    if (req.method === 'GET' && req.url.startsWith('/channels/777/messages')) {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      const after = (req.url.match(/after=(\d+)/) || [])[1];
+      const msgs = !after ? [{ id: '5000', author: { bot: false }, content: 'vieux lien https://item.taobao.com/item.htm?id=111111111' }]
+        : after === '5000' ? [{ id: '5001', author: { bot: false }, content: 'W2C https://item.taobao.com/item.htm?id=730344766230 svp' },
+          { id: '5002', author: { bot: true }, content: 'https://item.taobao.com/item.htm?id=222222222' }] : [];
+      return res.end(JSON.stringify(msgs));
+    }
+    if (req.method === 'DELETE') { res.writeHead(204); return res.end(); }
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ id: String(Date.now()) }));
   });
@@ -43,7 +58,7 @@ const { publicKey, privateKey } = generateKeyPairSync('ed25519');
 const pubHex = Buffer.from(publicKey.export({ format: 'jwk' }).x, 'base64url').toString('hex');
 writeFileSync(ROOT + '.dev.vars', [
   `DISCORD_PUBLIC_KEY=${pubHex}`, 'DISCORD_APP_ID=999', 'DISCORD_BOT_TOKEN=fake',
-  `INDEXER_SECRET=${SECRET}`, `DISCORD_API=http://localhost:${MOCK_PORT}`, 'AGENTS_OWNER_ID=1',
+  `INDEXER_SECRET=${SECRET}`, `DISCORD_API=http://localhost:${MOCK_PORT}`, 'AGENTS_OWNER_ID=1', 'PUBLIC_URL=https://finds-bot.test', 'TITLE_WAIT_MS=0',
 ].join('\n'));
 
 const sh = (cmd) => execSync(cmd, { cwd: ROOT, stdio: 'pipe' }).toString();
@@ -196,7 +211,9 @@ try {
   });
   console.log('… traduction (3 passages du cron)');
   for (let i = 0; i < 3; i++) { await fetch(WORKER + '/__scheduled?cron=*+*+*+*+*'); await sleep(8000); }
-  check('titres traduits', sql('SELECT COUNT(*) AS n FROM items WHERE title_en IS NOT NULL')[0].n > 0);
+  const translated = sql('SELECT COUNT(*) AS n FROM items WHERE title_en IS NOT NULL')[0].n;
+  if (!translated && /4006|daily free allocation/.test(devLog)) console.log('⚠️ titres traduits : quota IA du jour épuisé, non testable aujourd\'hui');
+  else check('titres traduits', translated > 0);
 
   const latest = await click('search:latest');
   const ld = latest.data.data;
@@ -224,7 +241,12 @@ try {
   const buy = posted && findComp(posted.body, (c) => c.type === 2 && c.label === 'Acheter sur BBDBuy');
   const view = posted && findComp(posted.body, (c) => c.type === 2 && c.label === 'Voir l\'annonce Weidian');
   check('carte postée : bouton « Acheter sur BBDBuy » avec code, à côté de « Voir l\'annonce »',
-    buy && view && /^https:\/\/www\.bbdbuy\.com\/goods\/WEIDIAN\/\d+\?inviteCode=TEST$/.test(buy.url) && !cardText.includes('Acheter sur'));
+    buy && view && /^https:\/\/finds-bot\.test\/go\/weidian%3A\d+\/BBDBuy\?c=333$/.test(buy.url) && !cardText.includes('Acheter sur'), buy && buy.url);
+  const go = await fetch(WORKER + buy.url.replace('https://finds-bot.test', ''), { redirect: 'manual' });
+  check('clic suivi : redirection vers BBDBuy avec le code', go.status === 302 && /^https:\/\/www\.bbdbuy\.com\/goods\/WEIDIAN\/\d+\?inviteCode=TEST$/.test(go.headers.get('location') || ''),
+    go.headers.get('location'));
+  await sleep(500);
+  check('clic enregistré (sans donnée personnelle)', sql("SELECT COUNT(*) AS n FROM clicks WHERE agent = 'BBDBuy' AND channel_id = '333'")[0].n === 1);
   check('photos récupérées par l\'indexeur', sql("SELECT COUNT(*) AS n FROM items WHERE images IS NOT NULL AND images != '[]'")[0].n >= 55);
   const after = await lastEdit(mark);
   check('panneau mis à jour après envoi', after && /1\*\* item posté/.test(allText(after.body)) && validate('après envoi', after.body));
@@ -238,6 +260,7 @@ try {
   const thread = await waitCall((c) => c.method === 'POST' && c.path === `/channels/${FORUM}/threads`);
   check('forum : 1 item = 1 post (titre + prix, carte dedans)', thread && /€$/.test(thread.body.name) && thread.body.name.length <= 100
     && validate('post de forum', thread.body.message), thread && thread.body.name);
+  check('forum : tag appliqué automatiquement', thread && Array.isArray(thread.body.applied_tags) && thread.body.applied_tags.length === 1, thread && JSON.stringify(thread.body.applied_tags));
   await click(`s:ch:${sid}:0`, [OTHER_CHANNEL]);
 
   const conf = await click(`s:all:${sid}:0`);
@@ -249,15 +272,16 @@ try {
   await sleep(27000);
   const fast = posts().length - before;
   check('envoi immédiat après confirmation (~1/s)', fast >= 18 && fast <= 26, `${fast} postés en 27 s`);
-  await fetch(WORKER + '/__scheduled?cron=*+*+*+*+*');
-  await fetch(WORKER + '/__scheduled?cron=*+*+*+*+*');
-  await sleep(45000);
+  for (let i = 0; i < 3 && sql('SELECT COUNT(*) AS n FROM post_queue')[0].n; i++) {
+    await fetch(WORKER + '/__scheduled?cron=*+*+*+*+*');
+    await sleep(45000);
+  }
   const queueLeft = sql('SELECT COUNT(*) AS n FROM post_queue')[0].n;
   const titles = posts().slice(before).map((c) => findComp(c.body, (x) => x.type === 2 && x.style === 5).url);
   check('toute la file envoyée, sans doublon', queueLeft === 0 && posts().length - before === 58 && new Set(titles).size === titles.length,
     `${posts().length - before} postés, ${queueLeft} restants, ${new Set(titles).size} uniques`);
 
-  const tr = sql("SELECT title_en FROM items WHERE title_en IS NOT NULL AND title_en LIKE '% %' LIMIT 1")[0];
+  const tr = sql("SELECT title_en FROM items WHERE title_en IS NOT NULL AND title_en LIKE '% %' LIMIT 1")[0] || { title_en: 'shoes' };
   const word = tr.title_en.split(' ').find((w) => w.length > 4) || tr.title_en.split(' ')[0];
   mark = calls.length;
   const srch = await submit('m:search:', { q: word, min: '', max: '200' });
@@ -312,11 +336,114 @@ try {
   check('Jadeship : items reçus', js.ok && js.items === 2);
   const trend = await click('search:trending');
   const tt = allText(trend.data.data);
-  check('🔥 Tendances : les plus vendus d\'abord', /Tendances/.test(tt) && tt.indexOf('Margiel') > -1 && tt.indexOf('Margiel') < tt.indexOf('Minimalist') && /🔥 469 ventes/.test(tt), tt.split('\n')[1]);
+  check('🔥 Tendances : les plus vendus d\'abord', /Tendances/.test(tt) && tt.indexOf('Margiel') > -1 && tt.indexOf('Margiel') < tt.indexOf('Minimalist') && /🔥 469/.test(tt), tt.split('\n')[1]);
   check('Tendances : limites Discord', validate('tendances', trend.data.data));
   check('item Weidian de Jadeship mis en file pour trouver sa boutique', sql("SELECT COUNT(*) AS n FROM link_queue WHERE item_id = '7779545401'")[0].n === 1);
   const catsJ = await click('cat:list:0');
   check('vendeur Jadeship ajouté avec ⭐ Trusted', /A1 Top\*\*  ⭐ Trusted/.test(allText(catsJ.data.data)) || sql("SELECT tier FROM shops WHERE id = '1624885820'")[0].tier === 'trusted');
+
+  // ---- Nouveautés du panneau
+  await fetch(WORKER + '/__scheduled?cron=*+*+*+*+*');
+  await sleep(6000);
+  check('catégories détectées automatiquement', sql("SELECT COUNT(*) AS n FROM items WHERE category IS NOT NULL")[0].n > 20);
+  const st = await click('stats:7');
+  check('📊 stats : clics et posts', /Statistiques/.test(allText(st.data.data)) && /\*\*1\*\* clic/.test(allText(st.data.data)) && validate('stats', st.data.data),
+    allText(st.data.data).split('\n')[1]);
+  const hist = await click('hist:0');
+  check('🧾 historique des posts', /Historique des posts/.test(allText(hist.data.data)) && validate('historique', hist.data.data));
+  const delBtn = findComp(hist.data.data, (c) => c.type === 2 && /^hist:del:/.test(c.custom_id || ''));
+  const delPost = await click(delBtn.custom_id);
+  check('🧾 supprimer un post de Discord', /supprimé de Discord/.test(allText(delPost.data.data)) && calls.some((c) => c.method === 'DELETE'));
+  const setv = await click('set');
+  check('⚙️ réglages : limites Discord', /Réglages/.test(allText(setv.data.data)) && validate('réglages', setv.data.data));
+  const cur = await click('set:currency', ['USD']);
+  check('⚙️ devise USD', /Dollar US/.test(allText(cur.data.data)));
+  const latest2 = await click('search:latest');
+  check('prix affichés en $', /~\$\d/.test(allText(latest2.data.data)), allText(latest2.data.data).match(/~\$[\d.]+/)?.[0]);
+  await click('set:currency', ['EUR']);
+  await click('set:lang', ['en']);
+  const sid2 = findComp(latest2.data.data, (c) => c.type === 3).custom_id.split(':')[2];
+  const flt = await click(`s:filt:${sid2}`);
+  check('🎛️ filtres : limites Discord', /Filtres/.test(allText(flt.data.data)) && validate('filtres', flt.data.data));
+  const cat = await click(`s:cat:${sid2}`, ['shoes']);
+  check('🎛️ filtre catégorie', /Chaussures/.test(allText(cat.data.data)), allText(cat.data.data).split('\n')[1]);
+  const sorted = await click(`s:sort:${sid2}`, ['price_asc']);
+  check('🎛️ tri par prix croissant', /Prix croissant/.test(allText(sorted.data.data)));
+  await click(`s:cat:${sid2}`, ['all']);
+  const page0 = await click(`s:pg:${sid2}:0`);
+  const opts = findComp(page0.data.data, (c) => c.type === 3 && /^s:sel:/.test(c.custom_id)).options;
+  const before2 = Number((allText(page0.data.data).match(/(\d+) résultat/) || [])[1]);
+  const hid = await click(`s:hide:${sid2}:0`, [opts[0].value]);
+  const after2 = Number((allText(hid.data.data).match(/(\d+) résultat/) || [])[1]);
+  check('🚫 masquer un item', /1 item masqué/.test(allText(hid.data.data)) && after2 === before2 - 1, `${before2} → ${after2}`);
+  mark = calls.length;
+  await click(`s:sel:${sid2}:0`, [opts[1].value]);
+  const enPost = await waitCall((c, i) => c.method === 'POST' && /\/channels\/\d+\/messages$/.test(c.path) && calls.indexOf(c) >= mark);
+  check('🌍 cartes en anglais', enPost && !!findComp(enPost.body, (c) => c.type === 2 && c.label === 'Buy on BBDBuy'));
+  await click('set:lang', ['fr']);
+
+  // Baisse de prix détectée à la réindexation
+  const runId = (await fetch(WORKER + '/api/indexer/start', { method: 'POST', headers: { Authorization: `Bearer ${SECRET}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ shopId: '1784277725' }) }).then((r) => r.json())).runId;
+  const target = sql("SELECT item_id, price_cny FROM items WHERE shop_id = '1784277725' AND price_cny > 50 AND hidden = 0 LIMIT 1")[0];
+  await fetch(WORKER + '/api/indexer/items', { method: 'POST', headers: { Authorization: `Bearer ${SECRET}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ shopId: '1784277725', runId, items: [{ itemId: target.item_id, name: 'x', price: target.price_cny - 20 }] }) });
+  const dropsView = await click('search:drops');
+  check('📉 baisses de prix détectées', /Baisses de prix/.test(allText(dropsView.data.data)) && /1 résultat/.test(allText(dropsView.data.data)) && /~~/.test(allText(dropsView.data.data)));
+
+  // Drops automatiques avec ping de rôle
+  const pre = await click('sch:preset:latest');
+  check('⏰ drop créé en un clic', /Drop créé/.test(allText(pre.data.data)) && validate('drop', pre.data.data));
+  const schId = findComp(pre.data.data, (c) => /^sch:run:/.test(c.custom_id || '')).custom_id.split(':')[2];
+  await click(`sch:role:${schId}`, ['888']);
+  mark = calls.length;
+  const run = await click(`sch:run:${schId}`);
+  check('⏰ drop lancé', /en route vers/.test(allText(run.data.data)), allText(run.data.data).split('\n')[0]);
+  const ping = await waitCall((c) => c.method === 'POST' && c.body && c.body.content && c.body.content.includes('<@&888>') && calls.indexOf(c) >= mark, 30000);
+  check('🔔 ping du rôle avant le drop', !!ping);
+  const schList = await click('sch:list');
+  check('⏰ liste des drops', /Nouveautés/.test(allText(schList.data.data)) && validate('drops', schList.data.data));
+  const run2 = await click(`sch:run:${schId}`);
+  check('⏰ jamais deux fois le même item dans un salon', /en route|Aucun nouvel item/.test(allText(run2.data.data)));
+
+  // Commandes publiques
+  const pubUser = { member: { user: { id: '42' }, permissions: '0' } };
+  mark = calls.length;
+  const find = await interact({ type: 2, ...pubUser, data: { name: 'find', options: [{ name: 'recherche', value: 'shoes' }] } });
+  check('/find ouvert à tous (réponse différée)', find.data.type === 5);
+  const findRes = await lastEdit(mark);
+  check('/find : résultats avec boutons d\'achat', findRes && /résultats/.test(allText(findRes.body)) && !!findComp(findRes.body, (c) => c.type === 2 && c.style === 5) && validate('/find', findRes.body),
+    findRes && allText(findRes.body).split('\n')[1]);
+  const pubNext = findComp(findRes.body, (c) => /^pub:pg:/.test(c.custom_id || '') && !c.disabled && c.custom_id.endsWith(':1'));
+  if (pubNext) {
+    const pg2 = await interact({ type: 3, ...pubUser, message: { id: 'm1' }, data: { custom_id: pubNext.custom_id, component_type: 2 } });
+    check('/find : page suivante pour un membre', /page 2\//.test(allText(pg2.data.data)));
+  }
+  const conv = await interact({ type: 2, ...pubUser, data: { name: 'convert', options: [{ name: 'lien', value: 'https://www.lovegobuy.com/product?id=730344766230&shop_type=taobao&invite_code=X' }] } });
+  const convBtn = conv.data.data && findComp(conv.data.data, (c) => c.type === 2 && c.label === 'Acheter sur BBDBuy');
+  check('/convert : lien d\'agent → bouton BBDBuy avec ton code', convBtn && /\/go\/taobao%3A730344766230\/BBDBuy$/.test(convBtn.url) && validate('/convert', conv.data.data), convBtn && convBtn.url);
+  const goTb = await fetch(WORKER + convBtn.url.replace('https://finds-bot.test', ''), { redirect: 'manual' });
+  check('/convert : redirection Taobao vers BBDBuy', /bbdbuy\.com\/goods\/TAOBAO\/730344766230\?inviteCode=TEST/.test(goTb.headers.get('location') || ''));
+
+  // Conversion automatique dans un salon
+  await click('set:convert', ['777']);
+  await fetch(WORKER + '/__scheduled?cron=*/2+*+*+*+*');
+  await sleep(3000);
+  mark = calls.length;
+  await fetch(WORKER + '/__scheduled?cron=*/2+*+*+*+*');
+  const autoReply = await waitCall((c) => c.method === 'POST' && c.path === '/channels/777/messages' && calls.indexOf(c) >= mark, 15000);
+  check('🔄 conversion auto : répond au lien d\'un membre', autoReply && autoReply.body.message_reference.message_id === '5001' && validate('conversion', autoReply.body));
+  check('🔄 conversion auto : ignore les anciens messages et les bots', calls.filter((c) => c.method === 'POST' && c.path === '/channels/777/messages').length === 1);
+
+  // Bannir une boutique
+  const ban = await click('cat:ban:1840259863');
+  check('🚫 bannir une boutique', /est banni/.test(allText(ban.data.data)));
+  mark = calls.length;
+  await submit('m:shop', { links: 'https://weidian.com/?userid=1840259863' });
+  const reBan = await lastEdit(mark);
+  check('🚫 boutique bannie jamais réajoutée', reBan && /Aucune nouvelle boutique/.test(allText(reBan.body)));
+
+  const health = await click('health');
+  check('🩺 santé : limites Discord', /Santé du bot/.test(allText(health.data.data)) && validate('santé', health.data.data));
 
   const acc = await click('acc');
   check('vue accès', /Membres ajoutés/.test(allText(acc.data.data)) && validate('accès', acc.data.data));
@@ -331,7 +458,7 @@ try {
   check('item Taobao manuel', /Item ajouté/.test(allText(itm.data.data)));
 
   const h2 = await click('home');
-  check('accueil avec stats', /63\*\* items/.test(allText(h2.data.data)), allText(h2.data.data).split('\n').find((l) => /items/.test(l)));
+  check('accueil avec stats', /62\*\* items/.test(allText(h2.data.data)), allText(h2.data.data).split('\n').find((l) => /items/.test(l)));
 } catch (err) {
   failures++;
   console.error(err);
