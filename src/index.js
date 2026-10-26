@@ -377,6 +377,15 @@ async function handleApi(request, env, url) {
     return json({ ok: true, commands: data.map((c) => c.name) });
   }
 
+  // Configure l'application Discord : URL des interactions + commandes.
+  if (path === '/api/setup' && request.method === 'POST') {
+    const app = await discordApi(env, 'PATCH', '/applications/@me', {
+      interactions_endpoint_url: `${url.origin}/interactions`,
+    });
+    const cmds = await discordApi(env, 'PUT', `/applications/${env.DISCORD_APP_ID}/commands`, COMMANDS);
+    return json({ ok: true, app: app.name, endpoint: app.interactions_endpoint_url, commands: cmds.map((c) => c.name) });
+  }
+
   if (path === '/api/indexer/jobs' && request.method === 'GET') {
     const now = Date.now();
     const { results } = await env.DB.prepare(

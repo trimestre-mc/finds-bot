@@ -14,8 +14,8 @@ database_id = "491d8592-7575-4b7e-8858-ccba2b5a3e7b"
 binding = "AI"
 
 [vars]
-DISCORD_APP_ID = "REMPLACER_PAR_APP_ID"
-DISCORD_PUBLIC_KEY = "REMPLACER_PAR_PUBLIC_KEY"
+DISCORD_APP_ID = "1564065839194448043"
+DISCORD_PUBLIC_KEY = "d10bd37d232a95ebe948df712c3f68b7eeb8d5e70af9986852beb1112e89f871"
 # GITHUB_REPO = "trimestre-mc/finds-bot"  # avec le secret GITHUB_TOKEN : indexation immédiate à l'ajout d'un catalogue
 
 # Secrets (wrangler secret put ...) : DISCORD_BOT_TOKEN, INDEXER_SECRET, GITHUB_TOKEN (optionnel)
