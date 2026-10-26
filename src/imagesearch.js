@@ -20,10 +20,15 @@ export const isImage = (a) => /^image\/(jpeg|png|webp|gif)/.test(a.content_type 
 export async function searchByImage(imageUrl, filename = 'image.jpg') {
   const img = await fetch(imageUrl);
   if (!img.ok) throw new Error(`image ${img.status}`);
+  const type = img.headers.get('content-type') || '';
+  if (!/^image\//.test(type)) throw new Error(`pas une image (${type || 'type inconnu'})`);
   const blob = await img.blob();
-  if (blob.size > MAX_BYTES) return [];
+  if (blob.size > MAX_BYTES || blob.size < 1000) throw new Error(`image de ${blob.size} octets`);
   const form = new FormData();
-  form.append('file', blob, filename.replace(/[^\w.-]/g, '_').slice(0, 60) || 'image.jpg');
+  // Nom unique : FinderQC garde en cache les recherches par nom de fichier (« image.png » renverrait toujours
+  // les résultats d'une autre photo).
+  const ext = (String(filename).match(/\.(jpe?g|png|webp|gif)$/i) || ['.jpg'])[0].toLowerCase();
+  form.append('file', blob, `${crypto.randomUUID()}${ext}`);
   const res = await fetch(`${API}/search`, { method: 'POST', body: form, headers: { 'User-Agent': UA } });
   if (!res.ok) throw new Error(`FinderQC ${res.status}`);
   const data = await res.json();

@@ -552,6 +552,7 @@ async function handleApi(request, env, url) {
       photos: (s.match(/https:\/\/(img\.finderqc\.com|cdn\.repfind\.ai)[^"]+/g) || []).length,
       firstPhoto: (s.match(/https:\/\/(img\.finderqc\.com|cdn\.repfind\.ai)[^"]+/) || [null])[0],
       externalLinks: (s.match(/"url":"https:\/\/(www\.)?(uufinds|finderqc)/g) || []).length,
+      text: (s.match(/"content":"[^"]{0,160}/g) || []).map((t) => t.slice(11)).join(' | ').slice(0, 600),
       platform, itemId,
     });
   }

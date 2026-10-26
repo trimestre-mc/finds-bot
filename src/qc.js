@@ -2,7 +2,7 @@
 // - QC des agents via l'API FinderQC (avec l'accord de son propriétaire), mises en cache ;
 // - QC postées par la communauté dans les salons QC.
 
-import { COMPONENTS_V2, container, gallery, row, text, sep, escape } from './components.js';
+import { COMPONENTS_V2, container, gallery, row, text, sep, escape, section, thumb } from './components.js';
 import { discordApi, discordUpload } from './discord.js';
 import { popularItemStatements } from './items.js';
 import { canonicalUrl } from './links.js';
@@ -83,7 +83,11 @@ export async function fetchQc(item, page = 1, opts = {}) {
     try {
       const r = await fetchRepfindPage(item.item_id, page);
       if (r.count || r.running) qc = { ...r, similar: qc.similar || [], source: 'repfind' };
-    } catch (err) { failed = true; console.log('repfind', String(err).slice(0, 100)); }
+    } catch (err) {
+      // Repfind injoignable : « on ne sait pas » seulement s'il est la source connue de l'item (sinon FinderQC a répondu).
+      if (preferRepfind) failed = true;
+      console.log('repfind', String(err).slice(0, 100));
+    }
   }
   // Source injoignable (et rien ailleurs) : « on ne sait pas », surtout pas « aucune QC ».
   if (failed && !qc.count && !qc.running) qc.failed = true;
@@ -191,6 +195,19 @@ function batchCaption(b, en) {
   return parts.join('  ·  ');
 }
 
+// Article qui ressemble (recherche par image FinderQC), de la même catégorie, avec des QC. { item, photos } ou null.
+async function lookAlikeQc(item) {
+  const { searchByImage } = await import('./imagesearch.js');
+  const cat = item.category || detectCategory(`${item.title_en || ''} ${item.title_zh || ''}`);
+  if (!cat || cat === 'other') return null;
+  const found = await searchByImage(item.image, 'item.jpg');
+  const x = found.find((f) => f.qc > 0 && f.id !== String(item.item_id) && detectCategory(f.title) === cat && /^https:\/\//.test(f.image || ''));
+  if (!x) return null;
+  const page = await fetchQcPage(x.id, 1);
+  const photos = page.batches.flatMap((b) => b.photos);
+  return photos.length ? { item: x, photos } : null;
+}
+
 // Fenêtre QC (dans Discord) : page `view` des lots d'agents, et les QC de la communauté en première page.
 export async function qcWindow(env, item, view = 0, opts = {}) {
   const en = opts.lang === 'en';
@@ -231,14 +248,29 @@ export async function qcWindow(env, item, view = 0, opts = {}) {
         : '⏳ La source des QC est surchargée en ce moment. Réessaie dans une minute.'));
     }
   }
+  // Aucune QC pour cet item : les QC d'un article qui ressemble (même catégorie), vendu par un autre vendeur.
+  let similarBtn = null;
+  if (!blocks.length && !qc.failed && view === 0 && /^https:\/\//.test(item.image || '')) {
+    const look = await lookAlikeQc(item).catch((err) => { console.log('qc similaire', String(err).slice(0, 120)); return null; });
+    if (look) {
+      const x = look.item;
+      blocks.push(text(en ? '### 🔍 QC of a look-alike item (other seller)\n-# No QC for this exact item yet. Compare with the photo before buying.'
+        : '### 🔍 QC d\'un article qui ressemble (autre vendeur)\n-# Pas encore de QC pour cet item précis : compare bien avec sa photo avant d\'acheter.'));
+      blocks.push(section(`**${escape(String(x.title || '').slice(0, 80))}**\n-# ${en ? `${fmt(x.qc)} QC photos` : `${fmt(x.qc)} photos QC`}${x.price != null ? `  ·  ¥${x.price}` : ''}`, thumb(x.image)));
+      blocks.push(gallery(look.photos.slice(0, 8)));
+      similarBtn = { type: 2, style: 2, emoji: { name: '📸' }, label: en ? 'All its QC' : 'Toutes ses QC', custom_id: `pub:qc:${x.platform}:${x.id}`.slice(0, 100) };
+    }
+  }
   let ask = null;
-  if (!blocks.length) {
-    blocks.push(text(opts.qcChannel
+  if (!blocks.length || similarBtn) {
+    if (!similarBtn) blocks.push(text(opts.qcChannel
       ? (en ? `No QC photos anywhere yet for this item. Bought it? Post your QC photos with the item link in <#${opts.qcChannel}>.`
         : `Aucune photo QC n'existe encore pour cet item. Tu l'as acheté ? Poste tes photos QC avec le lien de l'item dans <#${opts.qcChannel}> : elles apparaîtront ici.`)
       : (en ? 'Nobody has shared QC photos for this item yet.' : 'Personne n\'a encore partagé de QC pour cet item.')));
     // Pas de QC nulle part : on peut les demander à la communauté.
-    if (opts.qcChannel) ask = row({ type: 2, style: 1, emoji: { name: '🙋' }, label: en ? 'Ask for QC' : 'Demander un QC', custom_id: `pub:qcreq:${item.id}`.slice(0, 100) });
+    const askBtn = opts.qcChannel
+      ? { type: 2, style: 1, emoji: { name: '🙋' }, label: en ? 'Ask for QC' : 'Demander un QC', custom_id: `pub:qcreq:${item.id}`.slice(0, 100) } : null;
+    if (askBtn || similarBtn) ask = row(...[similarBtn, askBtn].filter(Boolean));
   }
   const retry = qc.failed && !batches.length
     ? row({ type: 2, style: 1, emoji: { name: '🔄' }, label: en ? 'Retry' : 'Réessayer', custom_id: `pub:qcp:${item.id}:${view}` }) : null;

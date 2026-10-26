@@ -35,7 +35,7 @@ function fakeWeb(messages) {
       const after = BigInt((url.match(/after=(\d+)/) || [])[1] || '0');
       return json(messages.filter((m) => BigInt(m.id) > after));
     }
-    if (url.startsWith('https://cdn.discordapp.com/')) return new Response(new Uint8Array([1, 2, 3]), { headers: { 'Content-Type': 'image/jpeg' } });
+    if (url.startsWith('https://cdn.discordapp.com/')) return new Response(new Uint8Array(2000), { headers: { 'Content-Type': 'image/jpeg' } });
     if (url.endsWith('/api/searchImage/search')) return json({ code: 0, data: { search_id: 'abc' } });
     if (url.includes('/api/searchImage/results/abc')) {
       return json({ code: 0, data: { results: [result('7561755071', 'Weidian', 293), result('868034409365', 'Taobao', 0), result('x', 'Weidian', 1)] } });

@@ -102,3 +102,32 @@ test('source QC indisponible : la fenêtre montre les photos déjà enregistrée
   assert.match(view, /15 photos QC/);
   assert.doesNotMatch(view, /Aucune photo QC|pub:qcreq/);
 });
+
+test('item sans QC : la fenêtre montre les QC d\'un article qui ressemble, de la même catégorie', async () => {
+  const item = { id: 'weidian:7566776165', item_id: '7566776165', platform: 'weidian', qc_count: 0, title_zh: '麦步伦搭扣平底软木拖鞋', image: 'https://si.geilicdn.com/x.jpg' };
+  const json = (v) => new Response(JSON.stringify(v), { headers: { 'Content-Type': 'application/json' } });
+  globalThis.fetch = async (url) => {
+    url = String(url);
+    if (url.includes('webSpuInfo') && url.includes('id=7566776165')) return json({ code: 0, data: { spuInfo: { qcPhotosCount: 0, spuQcName: [] } } });
+    if (url.includes('webSpuInfo')) {
+      return json({ code: 0, data: { spuInfo: { qcPhotosCount: 295, spuQcName: [{ name: 'Mulebuy', spuImg: [{ url: 'https://img.finderqc.com/1/qc/a.webp' }, { url: 'https://img.finderqc.com/1/qc/b.webp' }] }] } } });
+    }
+    if (url.includes('repfind')) return json({ code: 500 });
+    if (url.startsWith('https://si.geilicdn.com/')) return new Response(new Uint8Array(5000), { headers: { 'Content-Type': 'image/jpeg' } });
+    if (url.endsWith('/searchImage/search')) return json({ code: 0, data: { search_id: 's1' } });
+    if (url.includes('/searchImage/results/s1')) {
+      return json({ code: 0, data: { results: [
+        { itemId: '7000000002', mallType: 'Weidian', enTitle: 'Down Jacket', qcPhotosCount: 50, picUrl: 'https://img.finderqc.com/j.webp' },
+        { itemId: '7000000001', mallType: 'Weidian', enTitle: 'Cork Slippers Sandals', cnPrice: 80, qcPhotosCount: 295, picUrl: 'https://img.finderqc.com/s.webp' },
+      ] } });
+    }
+    return json({});
+  };
+  const view = allText(await qcWindow({ DB: memoryDb() }, item, 0, { community: [], qcChannel: '555' }));
+  assert.match(view, /article qui ressemble/);
+  assert.match(view, /Cork Slippers Sandals/, 'même catégorie (chaussures), pas la doudoune');
+  assert.match(view, /img\.finderqc\.com\/1\/qc\/a\.webp/);
+  assert.match(view, /pub:qc:weidian:7000000001/);
+  assert.match(view, /pub:qcreq:weidian:7566776165/, 'on peut toujours demander des QC de cet item précis');
+  assert.doesNotMatch(view, /Aucune photo QC n'existe/);
+});
