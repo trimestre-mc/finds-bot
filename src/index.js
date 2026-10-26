@@ -8,13 +8,15 @@ import { modalValues, escape, fmtInt } from './components.js';
 import {
   parseItemLink, isValidTemplate, buildAgentLink, AGENT_PRESETS, isValidCode, presetTemplate,
 } from './links.js';
-import { prepareQuery, allResultIds } from './search.js';
+import { prepareQuery, idsToPost, withoutCache } from './search.js';
 import { getRate, refreshRate, formatPrice, postItem, processQueue, postContext } from './post.js';
 import {
   triggerIndexer, handleGo, handlePublicCommand, handlePublicComponent, handleFeatureComponent, handleFeatureModal,
   runSchedules, runAutoConvert, runQcChannels,
 } from './features.js';
-import { categorizePending } from './categories.js';
+import { categorizePending, detectCategory } from './categories.js';
+import { fetchQcPage, runQcChecks } from './qc.js';
+import { popularItemStatements } from './items.js';
 import { translatePending, rewriteTitles, titleWait } from './translate.js';
 import { fetchWeidianItem } from './weidian.js';
 import { extractWeidian, ingest, resolveQueue, scanSource, runDiscovery, addShopQuiet } from './discover.js';
@@ -24,7 +26,8 @@ import {
   accessView, hasAdminPermission, deniedView, sourcesView,
 } from './ui.js';
 
-const REINDEX_HOURS = 24;
+// Une boutique est relue tous les 3 jours (quota gratuit D1 : 100 000 lignes écrites par jour).
+const REINDEX_HOURS = 72;
 const TRANSLATE_PER_MINUTE = 40;
 const MODAL_SUBMIT = 5;
 
@@ -45,7 +48,10 @@ export default {
 
   async scheduled(event, env, ctx) {
     if (event.cron === '*/5 * * * *') {
-      ctx.waitUntil(runDiscovery(env).catch((e) => console.log('découverte', String(e))));
+      ctx.waitUntil((async () => {
+        await runDiscovery(env).catch((e) => console.log('découverte', String(e)));
+        await runQcChecks(env, 15).catch((e) => console.log('qc', String(e)));
+      })());
       return;
     }
     if (event.cron === '*/2 * * * *') {
@@ -229,7 +235,7 @@ async function onComponent(it, env, ctx) {
       const s = await loadSearch(env, c);
       if (s) {
         s.params.includePosted = !s.params.includePosted;
-        await env.DB.prepare('UPDATE searches SET params = ? WHERE id = ?').bind(JSON.stringify(s.params), c).run();
+        await env.DB.prepare('UPDATE searches SET params = ? WHERE id = ?').bind(JSON.stringify(withoutCache(s.params)), c).run();
       }
       return update(await resultsView(env, c, 0));
     }
@@ -247,7 +253,7 @@ async function onComponent(it, env, ctx) {
     case 's:ok': {
       const s = await loadSearch(env, c);
       if (!s) return update(await homeView(env, it));
-      const ids = await allResultIds(env, s.params, await getRate(env));
+      const ids = await idsToPost(env, c, s.params, await getRate(env));
       const now = Date.now();
       for (let i = 0; i < ids.length; i += 50) {
         await env.DB.batch(ids.slice(i, i + 50).map((id) =>
@@ -310,7 +316,7 @@ async function onModal(it, env, ctx) {
       const fields = { q, variants: await prepareQuery(env, q), min: parseNumber(v.min), max: parseNumber(v.max), latest: false, trending: false };
       const existing = sid ? await loadSearch(env, sid) : null;
       if (existing) {
-        const params = { ...existing.params, ...fields };
+        const params = withoutCache({ ...existing.params, ...fields });
         await env.DB.prepare('UPDATE searches SET params = ? WHERE id = ?').bind(JSON.stringify(params), sid).run();
         return resultsView(env, sid, 0);
       }
@@ -452,17 +458,9 @@ async function autoIndex(env) {
   if (!env.GITHUB_TOKEN || !env.GITHUB_REPO) return;
   const last = await env.DB.prepare("SELECT value FROM settings WHERE key = 'last_dispatch'").first();
   if (last && Date.now() - Number(last.value) < 8 * 60 * 1000) return;
-  if ((await dueShops(env, 1)).length || await jadeshipDue(env) || await qcDue(env)) await triggerIndexer(env);
+  if ((await dueShops(env, 1)).length || await jadeshipDue(env)) await triggerIndexer(env);
 }
 
-// Items qui comptent dont les QC sont à vérifier (voir /api/indexer/qc-needed).
-async function qcDue(env) {
-  const row = await env.DB.prepare(
-    `SELECT COUNT(*) AS n FROM items WHERE hidden = 0 AND (popularity > 0 OR posted_count > 0 OR manual = 1)
-       AND (qc_checked_at IS NULL OR qc_checked_at < ?)`,
-  ).bind(Date.now() - 3 * 86400000).first();
-  return row.n;
-}
 
 // Collecte Jadeship (Best Items, Live Feed, vendeurs) : toutes les 6 heures.
 async function jadeshipDue(env) {
@@ -489,6 +487,16 @@ async function handleApi(request, env, url) {
     return json({ titles: await rewriteTitles(env, (titles || []).slice(0, 20)) });
   }
 
+  // Diagnostic : la source QC répond-elle au bot ? (écran Santé et dépannage)
+  if (path === '/api/qc-check' && request.method === 'GET') {
+    try {
+      const qc = await fetchQcPage(url.searchParams.get('id') || '7779545401', 1);
+      return json({ ok: true, count: qc.count, batches: qc.batches.length });
+    } catch (err) {
+      return json({ ok: false, error: String(err.message || err) });
+    }
+  }
+
   // Configure l'application Discord : URL des interactions + commandes.
   if (path === '/api/setup' && request.method === 'POST') {
     const app = await discordApi(env, 'PATCH', '/applications/@me', {
@@ -507,7 +515,6 @@ async function handleApi(request, env, url) {
     return json({
       shops: await dueShops(env, 10, sh), missingImages: missing.n, linkQueue: links.n,
       jadeship: sh.i === 0 && await jadeshipDue(env),
-      qcNeeded: sh.i === 0 ? await qcDue(env) : 0,
     });
   }
 
@@ -525,22 +532,40 @@ async function handleApi(request, env, url) {
     const shop = await env.DB.prepare('SELECT run_id FROM shops WHERE id = ?').bind(body.shopId).first();
     if (!shop || shop.run_id !== body.runId) return json({ error: 'run inconnu' }, 409);
     const stmts = (body.items || []).slice(0, 200).map((i) => env.DB.prepare(
-      `INSERT INTO items (id, platform, item_id, shop_id, shop_name, title_zh, price_cny, image, url, stock, first_seen, last_seen_run)
-       VALUES (?, 'weidian', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `INSERT INTO items (id, platform, item_id, shop_id, shop_name, title_zh, price_cny, image, url, stock, first_seen, last_seen_run, category)
+       VALUES (?, 'weidian', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
          title_en = CASE WHEN items.title_zh IS excluded.title_zh THEN items.title_en ELSE NULL END,
          prev_price = CASE WHEN excluded.price_cny < items.price_cny THEN items.price_cny
                            WHEN excluded.price_cny > items.price_cny THEN NULL ELSE items.prev_price END,
          price_changed_at = CASE WHEN excluded.price_cny != items.price_cny THEN excluded.first_seen ELSE items.price_changed_at END,
          title_zh = excluded.title_zh, price_cny = excluded.price_cny, image = excluded.image,
-         stock = excluded.stock, shop_id = excluded.shop_id, shop_name = excluded.shop_name,
-         last_seen_run = excluded.last_seen_run`,
+         stock = excluded.stock, shop_id = excluded.shop_id, shop_name = excluded.shop_name`,
     ).bind(`weidian:${i.itemId}`, String(i.itemId), body.shopId, body.shopName || null, i.name || null,
       i.price != null ? Number(i.price) : null, i.img || null, `https://weidian.com/item.html?itemID=${i.itemId}`,
-      i.stock != null ? Number(i.stock) : null, now, body.runId));
+      i.stock != null ? Number(i.stock) : null, now, body.runId, detectCategory(i.name)));
     if (stmts.length) await env.DB.batch(stmts);
     if (body.shopName) await env.DB.prepare('UPDATE shops SET name = ? WHERE id = ?').bind(body.shopName, body.shopId).run();
     return json({ ok: true, saved: stmts.length });
+  }
+
+  // État actuel d'une boutique : l'indexeur n'envoie ensuite que les items nouveaux, modifiés ou disparus.
+  if (path === '/api/indexer/shop-state' && request.method === 'GET') {
+    const { results } = await env.DB.prepare('SELECT item_id, price_cny, title_zh FROM items WHERE shop_id = ? AND manual = 0')
+      .bind(url.searchParams.get('shopId') || '').all();
+    return json({ items: results.map((r) => [r.item_id, r.price_cny, r.title_zh]) });
+  }
+
+  if (path === '/api/indexer/removed') {
+    const shop = await env.DB.prepare('SELECT run_id FROM shops WHERE id = ?').bind(body.shopId).first();
+    if (!shop || shop.run_id !== body.runId) return json({ error: 'run inconnu' }, 409);
+    const ids = (body.ids || []).filter((x) => /^\d{6,14}$/.test(String(x))).slice(0, 500);
+    for (let i = 0; i < ids.length; i += 90) {
+      const chunk = ids.slice(i, i + 90);
+      await env.DB.prepare(`DELETE FROM items WHERE shop_id = ? AND manual = 0 AND item_id IN (${chunk.map(() => '?').join(',')})`)
+        .bind(body.shopId, ...chunk).run();
+    }
+    return json({ ok: true, removed: ids.length });
   }
 
   // Items Weidian dont il faut trouver la boutique : l'indexeur lit leur page (boutique + photos).
@@ -568,65 +593,10 @@ async function handleApi(request, env, url) {
     return json({ ok: true, shopsAdded: added });
   }
 
-  // QC : items dont le nombre de photos QC est à (re)vérifier, les plus vendus d'abord.
-  if (path === '/api/indexer/qc-needed') {
-    if (!body.keys) {
-      // Items qui comptent (populaires, déjà postés ou ajoutés à la main) dont les QC sont inconnues ou vieilles de 3 jours.
-      const { results } = await env.DB.prepare(
-        `SELECT id FROM items WHERE hidden = 0 AND (popularity > 0 OR posted_count > 0 OR manual = 1)
-           AND (qc_checked_at IS NULL OR qc_checked_at < ?)
-         ORDER BY qc_checked_at IS NOT NULL, popularity DESC, posted_count DESC LIMIT ?`,
-      ).bind(Date.now() - 3 * 86400000, Math.min(Number(body.limit) || 300, 1000)).all();
-      return json({ items: results.map((r) => r.id) });
-    }
-    const keys = (body.keys || []).filter((k) => /^(weidian|taobao|1688):\d{6,14}$/.test(k)).slice(0, 2000);
-    const out = [];
-    for (let i = 0; i < keys.length; i += 90) {
-      const chunk = keys.slice(i, i + 90);
-      const { results } = await env.DB.prepare(
-        `SELECT id, popularity FROM items WHERE id IN (${chunk.map(() => '?').join(',')})
-           AND (qc_checked_at IS NULL OR qc_checked_at < ?)`,
-      ).bind(...chunk, Date.now() - 7 * 86400000).all();
-      out.push(...results);
-    }
-    out.sort((a, b) => b.popularity - a.popularity);
-    return json({ items: out.slice(0, Math.min(Number(body.limit) || 180, 500)).map((r) => r.id) });
-  }
-
-  if (path === '/api/indexer/qc') {
-    const stmts = (body.items || []).slice(0, 100).filter((i) => /^(weidian|taobao|1688):\d{6,14}$/.test(i.key)).map((i) => env.DB.prepare(
-      'UPDATE items SET qc_count = ?, qc_preview = ?, qc_checked_at = ? WHERE id = ?',
-    ).bind(Math.max(0, Number(i.count) || 0),
-      JSON.stringify((i.preview || []).filter((u) => /^https:\/\/img\.finderqc\.com\//.test(u)).slice(0, 8)), Date.now(), i.key));
-    if (stmts.length) await env.DB.batch(stmts);
-    return json({ ok: true, saved: stmts.length });
-  }
-
   // Items et vendeurs collectés sur Jadeship par l'indexeur.
   if (path === '/api/indexer/jadeship') {
     const now = Date.now();
-    const PLATFORM_URL = {
-      weidian: (id) => `https://weidian.com/item.html?itemID=${id}`,
-      taobao: (id) => `https://item.taobao.com/item.htm?id=${id}`,
-      1688: (id) => `https://detail.1688.com/offer/${id}.html`,
-    };
-    const items = (body.items || []).filter((i) => PLATFORM_URL[i.platform] && /^\d{6,14}$/.test(String(i.id))).slice(0, 300);
-    const stmts = items.map((i) => env.DB.prepare(
-      `INSERT INTO items (id, platform, item_id, title_en, price_cny, image, url, popularity, source, first_seen)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'jadeship', ?)
-       ON CONFLICT(id) DO UPDATE SET popularity = MAX(items.popularity, excluded.popularity),
-         title_en = COALESCE(items.title_en, excluded.title_en), price_cny = COALESCE(items.price_cny, excluded.price_cny),
-         image = COALESCE(items.image, excluded.image)`,
-    ).bind(`${i.platform}:${i.id}`, i.platform, String(i.id), i.title ? String(i.title).slice(0, 200) : null,
-      i.price != null ? Number(i.price) : null, /^https:\/\//.test(i.image || '') ? i.image : null,
-      PLATFORM_URL[i.platform](i.id), Math.max(0, Number(i.sold) || 0), now));
-    // Les items Weidian sans boutique connue : on retrouve leur boutique (puis toute la boutique est indexée).
-    for (const i of items.filter((x) => x.platform === 'weidian')) {
-      stmts.push(env.DB.prepare(
-        `INSERT OR IGNORE INTO link_queue (item_id, source, added_at)
-         SELECT ?, 'jadeship', ? WHERE NOT EXISTS (SELECT 1 FROM items WHERE id = ? AND shop_id IS NOT NULL)`,
-      ).bind(String(i.id), now, `weidian:${i.id}`));
-    }
+    const { stmts, count } = popularItemStatements(env, body.items || [], 'jadeship');
     for (const s of (body.shops || []).slice(0, 300)) {
       if (!/^\d{5,12}$/.test(String(s.id))) continue;
       stmts.push(env.DB.prepare(
@@ -637,7 +607,7 @@ async function handleApi(request, env, url) {
     }
     for (let i = 0; i < stmts.length; i += 100) await env.DB.batch(stmts.slice(i, i + 100));
     if (body.done) await env.DB.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('jadeship_at', ?)").bind(String(now)).run();
-    return json({ ok: true, items: items.length });
+    return json({ ok: true, items: count });
   }
 
   if (path === '/api/indexer/missing-images' && request.method === 'GET') {
@@ -662,8 +632,6 @@ async function handleApi(request, env, url) {
     const shop = await env.DB.prepare('SELECT run_id FROM shops WHERE id = ?').bind(body.shopId).first();
     if (!shop || shop.run_id !== body.runId) return json({ error: 'run inconnu' }, 409);
     if (body.ok) {
-      await env.DB.prepare('DELETE FROM items WHERE shop_id = ? AND manual = 0 AND last_seen_run IS NOT ?')
-        .bind(body.shopId, body.runId).run();
       const c = await env.DB.prepare('SELECT COUNT(*) AS n FROM items WHERE shop_id = ?').bind(body.shopId).first();
       await env.DB.prepare("UPDATE shops SET status = 'ok', item_count = ?, last_indexed = ?, last_error = NULL WHERE id = ?")
         .bind(c.n, Date.now(), body.shopId).run();

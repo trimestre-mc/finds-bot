@@ -4,6 +4,7 @@
 
 import { COMPONENTS_V2, container, gallery, row, text, sep, escape } from './components.js';
 import { discordApi, discordUpload } from './discord.js';
+import { popularItemStatements } from './items.js';
 
 const UA = 'finds-bot/1.0 (+https://github.com/trimestre-mc/finds-bot)';
 const API = 'https://server.finderqc.com/api/spu/webSpuInfo';
@@ -20,14 +21,46 @@ export async function fetchQcPage(itemId, page = 1) {
   if (!res.ok) throw new Error(`FinderQC ${res.status}`);
   const data = await res.json();
   const s = data && data.code === 0 && data.data && data.data.spuInfo;
-  if (!s) return { count: 0, batches: [] };
+  if (!s) return { count: 0, batches: [], similar: [] };
   const batches = (s.spuQcName || []).map((b) => ({
     agent: b.name || '',
     date: b.CreatedAt ? Date.parse(b.CreatedAt) : null,
     attrs: ((b.spuImg || []).find((i) => i.attributes) || {}).attributes || '',
     photos: (b.spuImg || []).map((i) => i.url).filter(isImg),
   })).filter((b) => b.photos.length);
-  return { count: Number(s.qcPhotosCount) || 0, batches };
+  // Items similaires qui ont des QC : de nouvelles découvertes pour le catalogue.
+  const similar = (s.similarSpuList || []).map((x) => ({
+    platform: PLATFORMS[x.mallType], id: String(x.originItemId || x.itemId || ''), title: x.enTitle || x.originalTitle,
+    price: x.cnPrice, image: x.originalThubnaiURL || x.picUrl, sold: x.oneYear || 0, qc: Number(x.qcPhotosCount) || 0,
+  })).filter((x) => x.platform && /^\d{6,14}$/.test(x.id) && x.qc >= 10);
+  return { count: Number(s.qcPhotosCount) || 0, batches, similar };
+}
+
+const PLATFORMS = { Weidian: 'weidian', Taobao: 'taobao', Ali1688: '1688' };
+
+// Toutes les 5 minutes : QC des items qui comptent (populaires, déjà postés, ajoutés à la main), revérifiées tous
+// les 3 jours, et découverte de leurs items similaires. Renvoie le nombre de requêtes externes faites.
+export async function runQcChecks(env, limit) {
+  const { results } = await env.DB.prepare(
+    `SELECT * FROM items WHERE hidden = 0 AND (popularity > 0 OR posted_count > 0 OR manual = 1)
+       AND (qc_checked_at IS NULL OR qc_checked_at < ?)
+     ORDER BY qc_checked_at IS NOT NULL, popularity DESC, posted_count DESC LIMIT ?`,
+  ).bind(Date.now() - RECHECK_MS, limit).all();
+  const stmts = [];
+  const found = [];
+  let calls = 0;
+  for (const item of results) {
+    calls++;
+    let qc;
+    try { qc = await fetchQcPage(item.item_id, 1); } catch (err) { console.log('qc', String(err).slice(0, 100)); break; }
+    const preview = qc.batches.flatMap((b) => b.photos).slice(0, 8);
+    stmts.push(env.DB.prepare('UPDATE items SET qc_count = ?, qc_preview = ?, qc_checked_at = ? WHERE id = ?')
+      .bind(qc.count, JSON.stringify(preview), Date.now(), item.id));
+    found.push(...qc.similar.slice(0, 10));
+  }
+  if (found.length) stmts.push(...popularItemStatements(env, found, 'finderqc').stmts);
+  for (let i = 0; i < stmts.length; i += 100) await env.DB.batch(stmts.slice(i, i + 100));
+  return calls;
 }
 
 // Met à jour le nombre de QC et l'aperçu d'un item (une requête, au plus tous les 3 jours). Renvoie l'item à jour.

@@ -1,10 +1,10 @@
 // Écrans : drops automatiques, statistiques, historique, réglages, santé, et vues publiques (/find, /convert).
 
 import {
-  Style, container, section, text, sep, row, thumb, gallery, btn, emojiBtn, modal, escape, fmtInt, ago,
+  Style, container, section, text, sep, row, thumb, btn, emojiBtn, modal, escape, fmtInt, ago,
 } from './components.js';
 import { formatPrice, itemTitle, PLATFORM_NAMES, postContext, agentButtons } from './post.js';
-import { countResults, pageResults } from './search.js';
+import { searchIds, itemsByIds } from './search.js';
 import { CATEGORY_BY_KEY } from './categories.js';
 import { getConfig, CURRENCIES, ACCENTS, LANGS } from './config.js';
 import { loadSearch } from './ui.js';
@@ -270,14 +270,11 @@ export async function findView(env, sid, page) {
   if (!s) return [container([text('⌛ Recherche expirée, relance `/find`.')])];
   const ctx = await postContext(env);
   const params = { ...s.params };
-  const total = await countResults(env, params, ctx.money);
+  const ids = await searchIds(env, sid, params, ctx.money);
+  const total = ids.length;
   const pages = Math.max(1, Math.ceil(total / FIND_PAGE));
   page = Math.min(Math.max(0, page), pages - 1);
-  // pageResults travaille par pages de 5 : on prend la bonne tranche de 3.
-  const start = page * FIND_PAGE;
-  const a = await pageResults(env, params, ctx.money, Math.floor(start / 5));
-  const b = (start % 5) + FIND_PAGE > 5 ? await pageResults(env, params, ctx.money, Math.floor(start / 5) + 1) : [];
-  const items = [...a, ...b].slice(start % 5, (start % 5) + FIND_PAGE);
+  const items = await itemsByIds(env, ids.slice(page * FIND_PAGE, (page + 1) * FIND_PAGE));
   const communities = Object.fromEntries(await Promise.all(items.map(async (i) => [i.id, await communityQc(env, i.id)])));
   if (!total) {
     return [container([text(`## 🔎 ${escape(s.params.q || 'Recherche')}\nAucun item trouvé. Essaie en anglais (ex : *hoodie*, *jordan 4*, *bag*).`)])];

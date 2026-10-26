@@ -6,7 +6,7 @@ import { COMPONENTS_V2, container, text, escape } from './components.js';
 import { panel, update, openModal, later, userId } from './respond.js';
 import { buildAgentLink, canonicalUrl, extractItemRefs } from './links.js';
 import { communityQc, refreshQc, communityPhotos, qcWindow } from './qc.js';
-import { prepareQuery, allResultIds } from './search.js';
+import { prepareQuery, allResultIds, withoutCache } from './search.js';
 import { postContext, processQueue, logError, FORUM } from './post.js';
 import { getConfig, setConfig, CURRENCIES, LANGS, ACCENTS } from './config.js';
 import { messageText, collectQc } from './discover.js';
@@ -131,7 +131,7 @@ async function openQc(env, key, platform, itemId, view = 0) {
 async function saveParams(env, sid, change) {
   const s = await loadSearch(env, sid);
   if (!s) return false;
-  await env.DB.prepare('UPDATE searches SET params = ? WHERE id = ?').bind(JSON.stringify({ ...s.params, ...change }), sid).run();
+  await env.DB.prepare('UPDATE searches SET params = ? WHERE id = ?').bind(JSON.stringify(withoutCache({ ...s.params, ...change })), sid).run();
   return true;
 }
 
@@ -178,6 +178,7 @@ export async function handleFeatureComponent(it, env, ctx, a, b, c, d, values) {
     case 's:hide': {
       if (values.length) {
         await env.DB.batch(values.map((id) => env.DB.prepare('UPDATE items SET hidden = 1 WHERE id = ?').bind(id)));
+        await saveParams(env, c, {});
       }
       return update(await resultsView(env, c, Number(d) || 0, `🚫 ${values.length} item${values.length > 1 ? 's' : ''} masqué${values.length > 1 ? 's' : ''} : ils n'apparaîtront plus.`));
     }
@@ -347,7 +348,7 @@ export async function handleFeatureModal(it, env, kind, rest, v) {
 export async function runSchedule(env, s) {
   const ctx = await postContext(env);
   const params = JSON.parse(s.params);
-  const ids = await allResultIds(env, { ...params, includePosted: true }, ctx.money);
+  const ids = await allResultIds(env, { ...withoutCache(params), includePosted: true }, ctx.money);
   const picked = [];
   for (let i = 0; i < ids.length && picked.length < s.per_run; i += 50) {
     const chunk = ids.slice(i, i + 50);

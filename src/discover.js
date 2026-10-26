@@ -159,7 +159,7 @@ export async function runDiscovery(env) {
         .bind(String(err.message || err).slice(0, 200), Date.now(), s.channel_id).run();
     }
   }
-  await resolveQueue(env, Math.max(0, 40 - calls));
+  await resolveQueue(env, Math.max(0, 25 - calls));
 }
 
 // QC de la communauté : un message avec au moins une photo et un lien d'item devient un QC de cet item.

@@ -89,24 +89,49 @@ function order(params) {
   return params.latest ? SORTS.recent.sql : SORTS.popular.sql;
 }
 
-export async function countResults(env, params, rate) {
-  const w = where(params, rate);
-  const row = await env.DB.prepare(`SELECT COUNT(*) AS n FROM items ${w.sql}`).bind(...w.binds).first();
-  return row ? row.n : 0;
-}
-
-export async function pageResults(env, params, rate, page) {
-  const w = where(params, rate);
-  const { results } = await env.DB.prepare(
-    `SELECT * FROM items ${w.sql} ORDER BY ${order(params)} LIMIT ? OFFSET ?`,
-  ).bind(...w.binds, PAGE_SIZE, page * PAGE_SIZE).all();
-  return results;
-}
-
 export async function allResultIds(env, params, rate) {
   const w = where(params, rate);
   const { results } = await env.DB.prepare(
     `SELECT id FROM items ${w.sql} ORDER BY ${order(params)} LIMIT ?`,
   ).bind(...w.binds, MAX_BULK).all();
   return results.map((r) => r.id);
+}
+
+// Résultats d'une recherche enregistrée, mis en cache dans ses paramètres (_ids) : une seule lecture de la table
+// par recherche, puis pagination, « tout poster » et /find réutilisent la liste (quota de lectures D1).
+export async function searchIds(env, sid, params, money) {
+  if (Array.isArray(params._ids)) return params._ids;
+  const { _ids, ...clean } = params;
+  const ids = await allResultIds(env, clean, money);
+  params._ids = ids;
+  await env.DB.prepare('UPDATE searches SET params = ? WHERE id = ?').bind(JSON.stringify(params), sid).run();
+  return ids;
+}
+
+// Items d'une tranche de la liste, dans l'ordre de la liste (sans les items masqués entre-temps).
+export async function itemsByIds(env, ids) {
+  if (!ids.length) return [];
+  const { results } = await env.DB.prepare(`SELECT * FROM items WHERE hidden = 0 AND id IN (${ids.map(() => '?').join(',')})`).bind(...ids).all();
+  const byId = new Map(results.map((r) => [r.id, r]));
+  return ids.map((id) => byId.get(id)).filter(Boolean);
+}
+
+// Paramètres sans le cache (à utiliser dès qu'un filtre change).
+export function withoutCache(params) {
+  const { _ids, ...clean } = params;
+  return clean;
+}
+
+// Liste à poster : sans les items postés depuis la création du cache (si la recherche exclut les déjà postés).
+export async function idsToPost(env, sid, params, money) {
+  const ids = await searchIds(env, sid, params, money);
+  if (params.includePosted || !ids.length) return ids;
+  const keep = new Set();
+  for (let i = 0; i < ids.length; i += 90) {
+    const chunk = ids.slice(i, i + 90);
+    const { results } = await env.DB.prepare(`SELECT id FROM items WHERE posted_count = 0 AND hidden = 0 AND id IN (${chunk.map(() => '?').join(',')})`)
+      .bind(...chunk).all();
+    results.forEach((r) => keep.add(r.id));
+  }
+  return ids.filter((id) => keep.has(id));
 }

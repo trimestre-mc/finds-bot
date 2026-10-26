@@ -6,7 +6,7 @@ import {
 } from './components.js';
 import { getRate, getAgents, formatPrice, itemTitle, POSTS_PER_MINUTE, PLATFORM_NAMES } from './post.js';
 import { buildAgentLink, AGENT_PRESETS } from './links.js';
-import { countResults, pageResults, PAGE_SIZE, MAX_BULK, SORTS } from './search.js';
+import { searchIds, itemsByIds, idsToPost, PAGE_SIZE, MAX_BULK, SORTS } from './search.js';
 import { CATEGORIES, CATEGORY_BY_KEY } from './categories.js';
 import { formatMoney, getConfig } from './config.js';
 import { communityQc, qcSummary } from './qc.js';
@@ -106,10 +106,11 @@ export async function resultsView(env, sid, page, msg) {
   if (!s) return expiredView();
   const { params, channelId } = s;
   const money = await getRate(env);
-  const total = await countResults(env, params, money);
+  const ids = await searchIds(env, sid, params, money);
+  const total = ids.length;
   const pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
   page = Math.min(Math.max(0, page), pages - 1);
-  const items = total ? await pageResults(env, params, money, page) : [];
+  const items = await itemsByIds(env, ids.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE));
   const qcLine = Object.fromEntries(await Promise.all(items.map(async (i) => [i.id, qcSummary(i, await communityQc(env, i.id))])));
 
   const filters = [];
@@ -125,7 +126,7 @@ export async function resultsView(env, sid, page, msg) {
 
   const head = [
     notice(msg),
-    text(`## 🔎 ${title}\n-# ${fmtInt(total)} résultat${total > 1 ? 's' : ''}  ·  ${filters.join('  ·  ')}${total ? `  ·  page ${page + 1}/${pages}` : ''}`),
+    text(`## 🔎 ${title}\n-# ${fmtInt(total)}${total >= MAX_BULK ? '+' : ''} résultat${total > 1 ? 's' : ''}  ·  ${filters.join('  ·  ')}${total ? `  ·  page ${page + 1}/${pages}` : ''}`),
     sep(),
   ];
 
@@ -212,7 +213,7 @@ export async function filtersView(env, sid) {
 export async function confirmAllView(env, sid, page) {
   const s = await loadSearch(env, sid);
   if (!s) return expiredView();
-  const total = Math.min(await countResults(env, s.params, await getRate(env)), MAX_BULK);
+  const total = (await idsToPost(env, sid, s.params, await getRate(env))).length;
   return [container([
     text(`## 📤 Tout poster ?\n**${fmtInt(total)}** items vont partir dans <#${s.channelId}>${s.channelType === 15 ? ' (1 post de forum par item)' : ''}, environ ${QUEUE_PER_MINUTE} par minute (~${Math.ceil(total / QUEUE_PER_MINUTE)} min).`),
     text('-# Ils partent un par un pour ne pas spammer le salon. Tu peux suivre l\'avancement depuis le menu.'),

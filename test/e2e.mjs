@@ -365,8 +365,7 @@ try {
   check('Tendances : limites Discord', validate('tendances', trend.data.data));
   check('item Weidian de Jadeship mis en file pour trouver sa boutique', sql("SELECT COUNT(*) AS n FROM link_queue WHERE item_id = '7779545401'")[0].n === 1);
   // ---- QC
-  await fetch(WORKER + '/api/indexer/qc', { method: 'POST', headers: { Authorization: `Bearer ${SECRET}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ items: [{ key: 'weidian:7779545401', count: 4278, preview: ['https://img.finderqc.com/7779545401/qc/uploads/x.webp'] }] }) });
+  sql(`UPDATE items SET qc_count = 4278, qc_checked_at = ${Date.now()} WHERE id = 'weidian:7779545401'`);
   await click('set:qc', ['999']);
   await fetch(WORKER + '/__scheduled?cron=*/2+*+*+*+*');
   await sleep(4000);
@@ -538,7 +537,7 @@ try {
   check('item Taobao manuel', /Item ajouté/.test(allText(itm.data.data)));
 
   const h2 = await click('home');
-  check('accueil avec stats', /62\*\* items/.test(allText(h2.data.data)), allText(h2.data.data).split('\n').find((l) => /items/.test(l)));
+  check('accueil avec stats (+ items similaires découverts via les QC)', Number((allText(h2.data.data).match(/\*\*(\d+)\*\* items/) || [])[1]) >= 62, allText(h2.data.data).split('\n').find((l) => /items/.test(l)));
 } catch (err) {
   failures++;
   console.error(err);

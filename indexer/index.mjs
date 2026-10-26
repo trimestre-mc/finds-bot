@@ -6,7 +6,6 @@
 
 import { chromium } from 'playwright';
 import { collectJadeship } from './jadeship.mjs';
-import { collectQc } from './finderqc.mjs';
 
 const WORKER_URL = (process.env.WORKER_URL || '').replace(/\/$/, '');
 const SECRET = process.env.INDEXER_SECRET || '';
@@ -235,7 +234,6 @@ async function main() {
         console.log(`Jadeship : ${err.message}`);
       }
     }
-    if (SHARD === 0 && !process.env.SKIP_QC) await collectQc(api).catch((err) => console.log(`📸 ${err.message}`));
     await resolveLinks();
     const { shops } = await api(`/api/indexer/jobs?x=1${SHARD_QS}`);
     console.log(`${shops.length} catalogue(s) à indexer`);
@@ -244,13 +242,26 @@ async function main() {
       if (Date.now() - started > TIME_BUDGET_MS) { console.log('Temps écoulé, la suite au prochain passage.'); break; }
       const { runId } = await api('/api/indexer/start', { shopId: shop.id });
       try {
-        const res = await crawlShop(page, shop.id, async (items, shopName) => {
-          for (let i = 0; i < items.length; i += 200) {
-            await api('/api/indexer/items', { shopId: shop.id, runId, shopName, items: items.slice(i, i + 200) });
-          }
+        // On compare avec ce qui est déjà en base : seuls les items nouveaux, modifiés ou disparus sont envoyés.
+        const state = new Map((await api(`/api/indexer/shop-state?shopId=${shop.id}`)).items.map(([id, price, name]) => [String(id), [price, name]]));
+        const found = [];
+        let shopName = null;
+        const res = await crawlShop(page, shop.id, async (items, name) => { found.push(...items); shopName = name || shopName; });
+        const changed = found.filter((i) => {
+          const old = state.get(String(i.itemId));
+          return !old || Number(old[0]) !== Number(i.price) || (old[1] || '') !== (i.name || '');
         });
+        for (let i = 0; i < changed.length; i += 200) {
+          await api('/api/indexer/items', { shopId: shop.id, runId, shopName, items: changed.slice(i, i + 200) });
+        }
+        // Items disparus de la boutique (seulement si la lecture est complète).
+        const seen = new Set(found.map((i) => String(i.itemId)));
+        const gone = res.count && res.count < MAX_ITEMS ? [...state.keys()].filter((id) => !seen.has(id)) : [];
+        for (let i = 0; i < gone.length; i += 500) {
+          await api('/api/indexer/removed', { shopId: shop.id, runId, ids: gone.slice(i, i + 500) });
+        }
         const done = await api('/api/indexer/finish', { shopId: shop.id, runId, ok: res.count > 0, error: res.count ? null : 'aucun item trouvé' });
-        console.log(`✅ ${shop.id} (${res.shopName || shop.name || '?'}) : ${res.count} items lus, ${done.items ?? 0} en base`);
+        console.log(`✅ ${shop.id} (${res.shopName || shop.name || '?'}) : ${res.count} items lus, ${changed.length} nouveaux ou modifiés, ${gone.length} disparus, ${done.items ?? 0} en base`);
       } catch (err) {
         console.log(`❌ ${shop.id} : ${err.message}`);
         await api('/api/indexer/finish', { shopId: shop.id, runId, ok: false, error: err.message }).catch(() => {});
