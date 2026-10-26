@@ -63,6 +63,7 @@ export default {
       return;
     }
     ctx.waitUntil((async () => {
+      await ensureIndexes(env).catch((e) => console.log('index', String(e).slice(0, 120)));
       await runSchedules(env).catch((e) => console.log('drops', String(e)));
       await Promise.all([
         processQueue(env, 50000).catch((e) => console.log('file', String(e))),
@@ -75,6 +76,25 @@ export default {
     })());
   },
 };
+
+// Index partiels (tâches de fond qui ne lisent que les items concernés). Créés par le bot dès que le quota
+// d'écritures D1 le permet, puis plus rien à faire. Essai au plus toutes les 10 min.
+const INDEXES = [
+  'CREATE INDEX IF NOT EXISTS items_nocat ON items(id) WHERE category IS NULL',
+  'CREATE INDEX IF NOT EXISTS items_noimg ON items(item_id) WHERE images IS NULL',
+  'CREATE INDEX IF NOT EXISTS items_qcdue ON items(qc_checked_at) WHERE popularity > 0 OR posted_count > 0 OR manual = 1',
+];
+let indexesReady = false;
+let indexesTriedAt = 0;
+
+async function ensureIndexes(env) {
+  if (indexesReady || Date.now() - indexesTriedAt < 600000) return;
+  indexesTriedAt = Date.now();
+  const row = await env.DB.prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE type = 'index' AND name IN ('items_nocat', 'items_noimg', 'items_qcdue')").first();
+  if (row.n === INDEXES.length) { indexesReady = true; return; }
+  for (const sql of INDEXES) await env.DB.prepare(sql).run();
+  indexesReady = true;
+}
 
 // Réponses : voir respond.js.
 

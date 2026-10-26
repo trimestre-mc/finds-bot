@@ -49,6 +49,9 @@ CREATE INDEX IF NOT EXISTS items_shop ON items(shop_id);
 CREATE INDEX IF NOT EXISTS items_untranslated ON items(title_en) WHERE title_en IS NULL;
 CREATE INDEX IF NOT EXISTS items_popularity ON items(popularity DESC, first_seen DESC);
 CREATE INDEX IF NOT EXISTS items_category ON items(category);
+CREATE INDEX IF NOT EXISTS items_nocat ON items(id) WHERE category IS NULL;
+CREATE INDEX IF NOT EXISTS items_noimg ON items(item_id) WHERE images IS NULL;
+CREATE INDEX IF NOT EXISTS items_qcdue ON items(qc_checked_at) WHERE popularity > 0 OR posted_count > 0 OR manual = 1;
 
 -- Liens d'affiliation des agents. template contient {url}, {url_raw}, {id} ou {platform}
 CREATE TABLE IF NOT EXISTS agents (
