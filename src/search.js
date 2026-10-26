@@ -1,6 +1,7 @@
 // Recherche dans les items indexés.
 
 import { translate } from './translate.js';
+import { detectCategory } from './categories.js';
 
 export const PAGE_SIZE = 5;
 export const MAX_BULK = 500;
@@ -35,8 +36,10 @@ export async function prepareQuery(env, q) {
 }
 
 export const SORTS = {
-  popular: { label: 'Les plus vendus', emoji: '🔥', sql: 'popularity DESC, first_seen DESC, id' },
-  recent: { label: 'Les plus récents', emoji: '✨', sql: 'first_seen DESC, id' },
+  // Ordres identiques aux index items_popularity / items_recent : la recherche parcourt l'index et s'arrête
+  // dès qu'elle a ses résultats, au lieu de lire toute la table (quota de lectures D1).
+  popular: { label: 'Les plus vendus', emoji: '🔥', sql: 'popularity DESC, first_seen DESC' },
+  recent: { label: 'Les plus récents', emoji: '✨', sql: 'first_seen DESC' },
   price_asc: { label: 'Prix croissant', emoji: '⬆️', sql: 'price_cny IS NULL, price_cny ASC, id' },
   price_desc: { label: 'Prix décroissant', emoji: '⬇️', sql: 'price_cny DESC, id' },
 };
@@ -69,9 +72,10 @@ function where(params, money) {
     clauses.push('shop_id = ?');
     binds.push(params.shop);
   }
-  if (params.category) {
+  const category = params.category || params.autoCategory;
+  if (category) {
     clauses.push('category = ?');
-    binds.push(params.category);
+    binds.push(category);
   }
   if (!params.includePosted) clauses.push('posted_count = 0');
   if (params.trending) clauses.push('popularity > 0');
@@ -89,12 +93,56 @@ function order(params) {
   return params.latest ? SORTS.recent.sql : SORTS.popular.sql;
 }
 
-export async function allResultIds(env, params, rate) {
-  const w = where(params, rate);
+export async function allResultIds(env, params, money) {
+  const w = where(params, money);
+  if (params.category || params.autoCategory) {
+    // Avec une catégorie : on lit seulement cette catégorie (index), puis on trie ici.
+    const { results } = await env.DB.prepare(
+      `SELECT id, popularity, first_seen, price_cny FROM items INDEXED BY items_category ${w.sql}`,
+    ).bind(...w.binds).all();
+    return sortRows(results, params).slice(0, MAX_BULK).map((r) => r.id);
+  }
   const { results } = await env.DB.prepare(
     `SELECT id FROM items ${w.sql} ORDER BY ${order(params)} LIMIT ?`,
   ).bind(...w.binds, MAX_BULK).all();
   return results.map((r) => r.id);
+}
+
+function sortRows(rows, params) {
+  const sort = params.sort || (params.latest ? 'recent' : 'popular');
+  const by = {
+    popular: (a, b) => b.popularity - a.popularity || b.first_seen - a.first_seen,
+    recent: (a, b) => b.first_seen - a.first_seen,
+    price_asc: (a, b) => (a.price_cny ?? Infinity) - (b.price_cny ?? Infinity),
+    price_desc: (a, b) => (b.price_cny ?? -Infinity) - (a.price_cny ?? -Infinity),
+  }[sort] || ((a, b) => b.popularity - a.popularity);
+  return rows.sort(by);
+}
+
+// Catégorie déduite des mots cherchés (« black hoodie » → hoodies), si un seul type d'article est cité.
+export function inferCategory(variants) {
+  for (const words of variants || []) {
+    const c = detectCategory(words.join(' '));
+    if (c !== 'other') return c;
+  }
+  return null;
+}
+
+// Cache partagé entre recherches identiques (6 h) : une même recherche ne relit pas la base.
+const CACHE_MS = 6 * 3600000;
+function cacheKey(params) {
+  const { _ids, public: _p, shopName, ...rest } = params;
+  return JSON.stringify(Object.keys(rest).sort().map((k) => [k, rest[k]]));
+}
+
+async function cachedIds(env, params, money) {
+  const key = cacheKey(params);
+  const row = await env.DB.prepare('SELECT ids, at FROM search_cache WHERE key = ?').bind(key).first().catch(() => null);
+  if (row && Date.now() - row.at < CACHE_MS) return JSON.parse(row.ids);
+  const ids = await allResultIds(env, params, money);
+  await env.DB.prepare('INSERT OR REPLACE INTO search_cache (key, ids, at) VALUES (?, ?, ?)')
+    .bind(key, JSON.stringify(ids), Date.now()).run().catch(() => {});
+  return ids;
 }
 
 // Résultats d'une recherche enregistrée, mis en cache dans ses paramètres (_ids) : une seule lecture de la table
@@ -102,7 +150,7 @@ export async function allResultIds(env, params, rate) {
 export async function searchIds(env, sid, params, money) {
   if (Array.isArray(params._ids)) return params._ids;
   const { _ids, ...clean } = params;
-  const ids = await allResultIds(env, clean, money);
+  const ids = await cachedIds(env, clean, money);
   params._ids = ids;
   await env.DB.prepare('UPDATE searches SET params = ? WHERE id = ?').bind(JSON.stringify(params), sid).run();
   return ids;

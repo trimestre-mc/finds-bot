@@ -115,7 +115,8 @@ export async function resultsView(env, sid, page, msg) {
 
   const filters = [];
   if (params.shopName) filters.push(`🏪 ${escape(params.shopName)}`);
-  if (params.category && CATEGORY_BY_KEY[params.category]) filters.push(`${CATEGORY_BY_KEY[params.category].emoji} ${CATEGORY_BY_KEY[params.category].label}`);
+  const cat = params.category || params.autoCategory;
+  if (cat && CATEGORY_BY_KEY[cat]) filters.push(`${CATEGORY_BY_KEY[cat].emoji} ${CATEGORY_BY_KEY[cat].label}`);
   if (params.min != null) filters.push(`≥ ${params.min}`);
   if (params.max != null) filters.push(`≤ ${params.max}`);
   if (params.sort && SORTS[params.sort]) filters.push(`${SORTS[params.sort].emoji} ${SORTS[params.sort].label}`);

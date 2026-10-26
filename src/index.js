@@ -8,15 +8,16 @@ import { modalValues, escape, fmtInt } from './components.js';
 import {
   parseItemLink, isValidTemplate, buildAgentLink, AGENT_PRESETS, isValidCode, presetTemplate,
 } from './links.js';
-import { prepareQuery, idsToPost, withoutCache } from './search.js';
+import { prepareQuery, idsToPost, withoutCache, inferCategory } from './search.js';
 import { getRate, refreshRate, formatPrice, postItem, processQueue, postContext } from './post.js';
 import {
   triggerIndexer, handleGo, handlePublicCommand, handlePublicComponent, handleFeatureComponent, handleFeatureModal,
   runSchedules, runAutoConvert, runQcChannels,
 } from './features.js';
 import { categorizePending, detectCategory } from './categories.js';
-import { fetchQcPage, runQcChecks } from './qc.js';
+import { fetchQcPage, runQcChecks, refreshQc, qcWindow } from './qc.js';
 import { popularItemStatements } from './items.js';
+import { budget } from './budget.js';
 import { translatePending, rewriteTitles, titleWait } from './translate.js';
 import { fetchWeidianItem } from './weidian.js';
 import { extractWeidian, ingest, resolveQueue, scanSource, runDiscovery, addShopQuiet } from './discover.js';
@@ -51,7 +52,7 @@ export default {
       ctx.waitUntil((async () => {
         await runDiscovery(env).catch((e) => console.log('découverte', String(e)));
         // Toutes les 15 min (la sélection des items à vérifier parcourt une bonne partie de la table).
-        if (new Date().getUTCMinutes() % 15 === 0) await runQcChecks(env, 30).catch((e) => console.log('qc', String(e)));
+        if (new Date().getUTCMinutes() % 15 === 0) await runQcChecks(env, 15).catch((e) => console.log('qc', String(e)));
       })());
       return;
     }
@@ -70,9 +71,10 @@ export default {
         translatePending(env, TRANSLATE_PER_MINUTE).catch((e) => console.log('traduction', String(e))),
         refreshRate(env).catch((e) => console.log('taux', String(e))),
         autoIndex(env).catch((e) => console.log('indexeur', String(e))),
-        categorizePending(env, 400, titleWait(env)).catch((e) => console.log('catégories', String(e))),
+        categorizePending(env, 60, titleWait(env)).catch((e) => console.log('catégories', String(e))),
       ]);
-      await env.DB.prepare('DELETE FROM searches WHERE created_at < ?').bind(Date.now() - 24 * 3600 * 1000).run();
+      await env.DB.prepare('DELETE FROM searches WHERE created_at < ?').bind(Date.now() - 24 * 3600 * 1000).run().catch(() => {});
+      await env.DB.prepare('DELETE FROM search_cache WHERE at < ?').bind(Date.now() - 6 * 3600 * 1000).run().catch(() => {});
     })());
   },
 };
@@ -83,6 +85,8 @@ const INDEXES = [
   'CREATE INDEX IF NOT EXISTS items_nocat ON items(id) WHERE category IS NULL',
   'CREATE INDEX IF NOT EXISTS items_noimg ON items(item_id) WHERE images IS NULL',
   'CREATE INDEX IF NOT EXISTS items_qcdue ON items(qc_checked_at) WHERE popularity > 0 OR posted_count > 0 OR manual = 1',
+  'CREATE INDEX IF NOT EXISTS items_recent ON items(first_seen DESC)',
+  'CREATE TABLE IF NOT EXISTS search_cache (key TEXT PRIMARY KEY, ids TEXT NOT NULL, at INTEGER NOT NULL)',
 ];
 let indexesReady = false;
 let indexesTriedAt = 0;
@@ -90,7 +94,7 @@ let indexesTriedAt = 0;
 async function ensureIndexes(env) {
   if (indexesReady || Date.now() - indexesTriedAt < 600000) return;
   indexesTriedAt = Date.now();
-  const row = await env.DB.prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE type = 'index' AND name IN ('items_nocat', 'items_noimg', 'items_qcdue')").first();
+  const row = await env.DB.prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE name IN ('items_nocat', 'items_noimg', 'items_qcdue', 'items_recent', 'search_cache')").first();
   if (row.n === INDEXES.length) { indexesReady = true; return; }
   for (const sql of INDEXES) await env.DB.prepare(sql).run();
   indexesReady = true;
@@ -334,7 +338,8 @@ async function onModal(it, env, ctx) {
   if (kind === 'search') {
     return later(it, env, ctx, async () => {
       const q = (v.q || '').slice(0, 100);
-      const fields = { q, variants: await prepareQuery(env, q), min: parseNumber(v.min), max: parseNumber(v.max), latest: false, trending: false };
+      const variants = await prepareQuery(env, q);
+      const fields = { q, variants, autoCategory: inferCategory(variants), min: parseNumber(v.min), max: parseNumber(v.max), latest: false, trending: false };
       const existing = sid ? await loadSearch(env, sid) : null;
       if (existing) {
         const params = withoutCache({ ...existing.params, ...fields });
@@ -508,6 +513,25 @@ async function handleApi(request, env, url) {
     return json({ titles: await rewriteTitles(env, (titles || []).slice(0, 20)) });
   }
 
+  // Diagnostic : la fenêtre QC telle qu'un membre la verrait, pour un item du catalogue.
+  if (path === '/api/qc-window' && request.method === 'GET') {
+    const key = url.searchParams.get('item') || '';
+    const [platform, itemId] = key.split(':');
+    let item = await env.DB.prepare('SELECT * FROM items WHERE id = ?').bind(key).first();
+    if (!item) return json({ ok: false, error: 'item inconnu' });
+    item = await refreshQc(env, item);
+    const view = await qcWindow(env, item, 0, {});
+    const s = JSON.stringify(view);
+    return json({
+      ok: true, item: key, title: item.title_en || item.title_zh, qcCount: item.qc_count,
+      galleries: (s.match(/"type":12/g) || []).length,
+      photos: (s.match(/https:\/\/img\.finderqc\.com[^"]+/g) || []).length,
+      firstPhoto: (s.match(/https:\/\/img\.finderqc\.com[^"]+/) || [null])[0],
+      externalLinks: (s.match(/"url":"https:\/\/(www\.)?(uufinds|finderqc)/g) || []).length,
+      platform, itemId,
+    });
+  }
+
   // Diagnostic : la source QC répond-elle au bot ? (écran Santé et dépannage)
   if (path === '/api/qc-check' && request.method === 'GET') {
     try {
@@ -534,7 +558,10 @@ async function handleApi(request, env, url) {
     ).bind(sh.n, sh.i).first();
     const links = await env.DB.prepare('SELECT COUNT(*) AS n FROM link_queue WHERE CAST(item_id AS INTEGER) % ? = ?').bind(sh.n, sh.i).first();
     return json({
-      shops: await dueShops(env, 10, sh), missingImages: missing.n, linkQueue: links.n,
+      // Budget du jour épuisé : rien à faire jusqu'à demain pour ce type de travail.
+      shops: (await budget(env, 'items')).left ? await dueShops(env, 10, sh) : [],
+      missingImages: (await budget(env, 'pages')).left ? missing.n : 0,
+      linkQueue: (await budget(env, 'pages')).left ? links.n : 0,
       jadeship: sh.i === 0 && await jadeshipDue(env),
     });
   }
@@ -552,6 +579,9 @@ async function handleApi(request, env, url) {
     const now = Date.now();
     const shop = await env.DB.prepare('SELECT run_id FROM shops WHERE id = ?').bind(body.shopId).first();
     if (!shop || shop.run_id !== body.runId) return json({ error: 'run inconnu' }, 409);
+    const b = await budget(env, 'items');
+    if (b.left < Math.min(200, (body.items || []).length)) return json({ error: 'budget' }, 429);
+    await b.use(Math.min(200, (body.items || []).length));
     const stmts = (body.items || []).slice(0, 200).map((i) => env.DB.prepare(
       `INSERT INTO items (id, platform, item_id, shop_id, shop_name, title_zh, price_cny, image, url, stock, first_seen, last_seen_run, category)
        VALUES (?, 'weidian', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -640,6 +670,12 @@ async function handleApi(request, env, url) {
     return json({ items: results.map((r) => r.item_id) });
   }
 
+  if ((path === '/api/indexer/images' || path === '/api/indexer/resolved') && (body.items || []).length) {
+    const b = await budget(env, 'pages');
+    if (!b.left) return json({ error: 'budget' }, 429);
+    await b.use(Math.min(300, body.items.length));
+  }
+
   if (path === '/api/indexer/images') {
     const stmts = (body.items || []).slice(0, 300).map((i) => env.DB.prepare(
       `UPDATE items SET images = ?, title_en = COALESCE(title_en, ?),
@@ -652,6 +688,11 @@ async function handleApi(request, env, url) {
   if (path === '/api/indexer/finish') {
     const shop = await env.DB.prepare('SELECT run_id FROM shops WHERE id = ?').bind(body.shopId).first();
     if (!shop || shop.run_id !== body.runId) return json({ error: 'run inconnu' }, 409);
+    if (body.budget) {
+      // Interrompue par le budget du jour : la boutique sera reprise demain.
+      await env.DB.prepare("UPDATE shops SET status = 'pending' WHERE id = ?").bind(body.shopId).run();
+      return json({ ok: true });
+    }
     if (body.ok) {
       const c = await env.DB.prepare('SELECT COUNT(*) AS n FROM items WHERE shop_id = ?').bind(body.shopId).first();
       await env.DB.prepare("UPDATE shops SET status = 'ok', item_count = ?, last_indexed = ?, last_error = NULL WHERE id = ?")

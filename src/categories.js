@@ -25,6 +25,8 @@ export const CATEGORIES = [
 
 export const CATEGORY_BY_KEY = Object.fromEntries(CATEGORIES.map((c) => [c.key, c]));
 
+import { budget } from './budget.js';
+
 // Ordre important : les chaussures avant le reste (« running shoes » ≠ « shorts »), sacs avant accessoires.
 export function detectCategory(title) {
   const t = String(title || '');
@@ -49,6 +51,9 @@ let idleUntil = 0;
 
 export async function categorizePending(env, limit, waitMs = 30 * 60000) {
   if (Date.now() < idleUntil) return 0;
+  const b = await budget(env, 'categorize');
+  if (!b.left) return 0;
+  limit = Math.min(limit, b.left);
   const { results } = await env.DB.prepare(
     `SELECT id, title_en, title_zh FROM items
      WHERE category IS NULL AND (title_en IS NOT NULL OR translate_failed >= 3 OR manual = 1 OR first_seen < ?) LIMIT ?`,
@@ -58,5 +63,6 @@ export async function categorizePending(env, limit, waitMs = 30 * 60000) {
   const stmts = results.map((r) => env.DB.prepare('UPDATE items SET category = ? WHERE id = ?')
     .bind(detectCategory(`${r.title_en || ''} ${r.title_zh || ''}`), r.id));
   for (let i = 0; i < stmts.length; i += 100) await env.DB.batch(stmts.slice(i, i + 100));
+  await b.use(results.length);
   return results.length;
 }

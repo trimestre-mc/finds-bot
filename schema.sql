@@ -52,6 +52,7 @@ CREATE INDEX IF NOT EXISTS items_category ON items(category);
 CREATE INDEX IF NOT EXISTS items_nocat ON items(id) WHERE category IS NULL;
 CREATE INDEX IF NOT EXISTS items_noimg ON items(item_id) WHERE images IS NULL;
 CREATE INDEX IF NOT EXISTS items_qcdue ON items(qc_checked_at) WHERE popularity > 0 OR posted_count > 0 OR manual = 1;
+CREATE INDEX IF NOT EXISTS items_recent ON items(first_seen DESC);
 
 -- Liens d'affiliation des agents. template contient {url}, {url_raw}, {id} ou {platform}
 CREATE TABLE IF NOT EXISTS agents (
@@ -201,4 +202,11 @@ CREATE TABLE IF NOT EXISTS qc_channels (
   last_message_id TEXT,
   collected INTEGER NOT NULL DEFAULT 0,
   added_at INTEGER
+);
+
+-- Cache des recherches identiques (6 h)
+CREATE TABLE IF NOT EXISTS search_cache (
+  key TEXT PRIMARY KEY,
+  ids TEXT NOT NULL,
+  at INTEGER NOT NULL
 );

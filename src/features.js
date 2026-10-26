@@ -6,7 +6,7 @@ import { COMPONENTS_V2, container, text, escape } from './components.js';
 import { panel, update, openModal, later, userId } from './respond.js';
 import { buildAgentLink, canonicalUrl, extractItemRefs } from './links.js';
 import { communityQc, refreshQc, communityPhotos, qcWindow } from './qc.js';
-import { prepareQuery, allResultIds, withoutCache } from './search.js';
+import { prepareQuery, allResultIds, withoutCache, inferCategory } from './search.js';
 import { postContext, processQueue, logError, FORUM } from './post.js';
 import { getConfig, setConfig, CURRENCIES, LANGS, ACCENTS } from './config.js';
 import { messageText, collectQc } from './discover.js';
@@ -62,8 +62,9 @@ export async function handlePublicCommand(it, env, ctx) {
   if (it.data.name === 'find') {
     return later(it, env, ctx, async () => {
       const q = String(opts.recherche || '').slice(0, 100);
+      const variants = await prepareQuery(env, q);
       const sid = await createSearch(env, it, {
-        q, variants: await prepareQuery(env, q), category: opts.categorie || null,
+        q, variants, category: opts.categorie || null, autoCategory: opts.categorie ? null : inferCategory(variants),
         max: opts.prix_max != null ? opts.prix_max : null, includePosted: true, sort: 'popular', public: true,
       });
       return findView(env, sid, 0);
@@ -170,7 +171,7 @@ export async function handleFeatureComponent(it, env, ctx, a, b, c, d, values) {
     }
     case 's:filt': return update(await filtersView(env, c));
     case 's:cat':
-      await saveParams(env, c, { category: values[0] === 'all' ? null : values[0] });
+      await saveParams(env, c, { category: values[0] === 'all' ? null : values[0], autoCategory: null });
       return update(await resultsView(env, c, 0));
     case 's:sort':
       await saveParams(env, c, { sort: values[0] });
@@ -178,6 +179,7 @@ export async function handleFeatureComponent(it, env, ctx, a, b, c, d, values) {
     case 's:hide': {
       if (values.length) {
         await env.DB.batch(values.map((id) => env.DB.prepare('UPDATE items SET hidden = 1 WHERE id = ?').bind(id)));
+        await env.DB.prepare('DELETE FROM search_cache').run().catch(() => {}); // les recherches en cache contenaient ces items
         await saveParams(env, c, {});
       }
       return update(await resultsView(env, c, Number(d) || 0, `🚫 ${values.length} item${values.length > 1 ? 's' : ''} masqué${values.length > 1 ? 's' : ''} : ils n'apparaîtront plus.`));

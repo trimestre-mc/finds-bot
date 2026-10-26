@@ -170,7 +170,11 @@ async function crawlItemPages(itemIds, endpoint, label, budgetMs) {
     if (!batch.length) return;
     const out = batch;
     batch = [];
-    const r = await api(endpoint, { items: out });
+    let r;
+    try { r = await api(endpoint, { items: out }); } catch (err) {
+      if (/-> 429/.test(err.message)) { stop = 'budget d\'écritures du jour atteint'; return; }
+      throw err;
+    }
     sent += out.length;
     shopsAdded += r.shopsAdded || 0;
   };
@@ -263,6 +267,11 @@ async function main() {
         const done = await api('/api/indexer/finish', { shopId: shop.id, runId, ok: res.count > 0, error: res.count ? null : 'aucun item trouvé' });
         console.log(`✅ ${shop.id} (${res.shopName || shop.name || '?'}) : ${res.count} items lus, ${changed.length} nouveaux ou modifiés, ${gone.length} disparus, ${done.items ?? 0} en base`);
       } catch (err) {
+        if (/-> 429/.test(err.message)) {
+          console.log('⏸️ Budget d\'écritures du jour atteint : la suite demain.');
+          await api('/api/indexer/finish', { shopId: shop.id, runId, budget: true }).catch(() => {});
+          break;
+        }
         console.log(`❌ ${shop.id} : ${err.message}`);
         await api('/api/indexer/finish', { shopId: shop.id, runId, ok: false, error: err.message }).catch(() => {});
         if (err instanceof StopAll) { console.log('Arrêt : Weidian demande une vérification. Rien n\'est contourné, on réessaiera plus tard.'); break; }

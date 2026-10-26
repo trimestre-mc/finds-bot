@@ -164,12 +164,13 @@ export async function postItem(env, item, channelId, ctx, allowFetch = true, cha
     const msg = await discordApi(env, 'POST', `/channels/${channelId}/messages`, message);
     messageId = msg && msg.id;
   }
+  // Le message est déjà sur Discord : si la base refuse l'écriture (quota du jour), on ne fait pas échouer le post.
   const now = Date.now();
   await env.DB.batch([
     env.DB.prepare('UPDATE items SET posted_count = posted_count + 1, last_posted = ? WHERE id = ?').bind(now, item.id),
     env.DB.prepare('INSERT INTO posts (item_id, channel_id, message_id, thread_id, posted_at) VALUES (?, ?, ?, ?, ?)')
       .bind(item.id, channelId, messageId || null, threadId, now),
-  ]);
+  ]).catch((err) => console.log('historique', String(err).slice(0, 120)));
   return calls;
 }
 

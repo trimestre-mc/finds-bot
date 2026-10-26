@@ -5,6 +5,7 @@
 import { COMPONENTS_V2, container, gallery, row, text, sep, escape } from './components.js';
 import { discordApi, discordUpload } from './discord.js';
 import { popularItemStatements } from './items.js';
+import { budget } from './budget.js';
 
 const UA = 'finds-bot/1.0 (+https://github.com/trimestre-mc/finds-bot)';
 const API = 'https://server.finderqc.com/api/spu/webSpuInfo';
@@ -58,7 +59,13 @@ export async function runQcChecks(env, limit) {
       .bind(qc.count, JSON.stringify(preview), Date.now(), item.id));
     found.push(...qc.similar.slice(0, 10));
   }
-  if (found.length) stmts.push(...popularItemStatements(env, found, 'finderqc').stmts);
+  // Items similaires : au plus 10 par passage, pris sur le budget quotidien « items » (quota D1 gratuit).
+  const b = await budget(env, 'items');
+  const take = found.slice(0, Math.min(10, b.left));
+  if (take.length) {
+    stmts.push(...popularItemStatements(env, take, 'finderqc').stmts);
+    await b.use(take.length);
+  }
   for (let i = 0; i < stmts.length; i += 100) await env.DB.batch(stmts.slice(i, i + 100));
   return calls;
 }
@@ -74,8 +81,9 @@ export async function refreshQc(env, item) {
     return item;
   }
   const preview = qc.batches.flatMap((b) => b.photos).slice(0, 8);
+  // Le cache est un plus : si la base refuse l'écriture (quota du jour), on affiche quand même les QC.
   await env.DB.prepare('UPDATE items SET qc_count = ?, qc_preview = ?, qc_checked_at = ? WHERE id = ?')
-    .bind(qc.count, JSON.stringify(preview), Date.now(), item.id).run();
+    .bind(qc.count, JSON.stringify(preview), Date.now(), item.id).run().catch((err) => console.log('qc cache', String(err).slice(0, 100)));
   return { ...item, qc_count: qc.count, qc_preview: JSON.stringify(preview), qc_checked_at: Date.now() };
 }
 
@@ -117,7 +125,7 @@ export async function communityPhotos(env, itemId, max = 4) {
     } catch (err) {
       calls++;
       // Message supprimé : on oublie ce QC.
-      if (/-> 404/.test(String(err))) await env.DB.prepare('DELETE FROM qc_posts WHERE id = ?').bind(q.id).run();
+      if (/-> 404/.test(String(err))) await env.DB.prepare('DELETE FROM qc_posts WHERE id = ?').bind(q.id).run().catch(() => {});
     }
   }
   return { photos, calls };
