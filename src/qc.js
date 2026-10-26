@@ -208,6 +208,19 @@ async function lookAlikeQc(item) {
   return photos.length ? { item: x, photos } : null;
 }
 
+// Article qui ressemble, gardé avec l'item (qc_preview) : rouvrir la fenêtre ne coûte aucune requête à FinderQC.
+// La recherche est refaite à la prochaine vérification des QC de l'item (refreshQc remplace qc_preview).
+async function cachedLookAlike(env, item) {
+  let saved = null;
+  try { saved = JSON.parse(item.qc_preview || 'null'); } catch {}
+  if (saved && saved.s === 'similar') return saved.item ? { item: saved.item, photos: (saved.p || []).filter(isImg) } : null;
+  const look = await lookAlikeQc(item).catch((err) => { console.log('qc similaire', String(err).slice(0, 120)); return undefined; });
+  if (look === undefined) return null; // erreur (source surchargée) : on réessaiera
+  const keep = JSON.stringify({ s: 'similar', item: look ? look.item : null, p: look ? look.photos.slice(0, 8) : [] });
+  if (env && env.DB) await env.DB.prepare('UPDATE items SET qc_preview = ? WHERE id = ? AND COALESCE(qc_count, 0) = 0').bind(keep, item.id).run().catch(() => {});
+  return look;
+}
+
 // Fenêtre QC (dans Discord) : page `view` des lots d'agents, et les QC de la communauté en première page.
 export async function qcWindow(env, item, view = 0, opts = {}) {
   const en = opts.lang === 'en';
@@ -251,7 +264,7 @@ export async function qcWindow(env, item, view = 0, opts = {}) {
   // Aucune QC pour cet item : les QC d'un article qui ressemble (même catégorie), vendu par un autre vendeur.
   let similarBtn = null;
   if (!blocks.length && !qc.failed && view === 0 && /^https:\/\//.test(item.image || '')) {
-    const look = await lookAlikeQc(item).catch((err) => { console.log('qc similaire', String(err).slice(0, 120)); return null; });
+    const look = await cachedLookAlike(env, item);
     if (look) {
       const x = look.item;
       blocks.push(text(en ? '### 🔍 QC of a look-alike item (other seller)\n-# No QC for this exact item yet. Compare with the photo before buying.'

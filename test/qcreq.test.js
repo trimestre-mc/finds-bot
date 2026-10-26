@@ -131,3 +131,25 @@ test('item sans QC : la fenêtre montre les QC d\'un article qui ressemble, de l
   assert.match(view, /pub:qcreq:weidian:7566776165/, 'on peut toujours demander des QC de cet item précis');
   assert.doesNotMatch(view, /Aucune photo QC n'existe/);
 });
+
+test('article qui ressemble : gardé avec l\'item, la 2e ouverture ne relance pas la recherche par image', async () => {
+  const DB = memoryDb();
+  DB.raw.exec(`INSERT INTO items (id, platform, item_id, url, title_zh, image, category, qc_count, first_seen)
+    VALUES ('weidian:7566776165', 'weidian', '7566776165', 'https://weidian.com/x', '软木拖鞋', 'https://si.geilicdn.com/x.jpg', 'shoes', 0, 0)`);
+  const json = (v) => new Response(JSON.stringify(v), { headers: { 'Content-Type': 'application/json' } });
+  let searches = 0;
+  globalThis.fetch = async (url) => {
+    url = String(url);
+    if (url.includes('webSpuInfo') && url.includes('id=7566776165')) return json({ code: 0, data: { spuInfo: { qcPhotosCount: 0, spuQcName: [] } } });
+    if (url.includes('webSpuInfo')) return json({ code: 0, data: { spuInfo: { qcPhotosCount: 9, spuQcName: [{ name: 'A', spuImg: [{ url: 'https://img.finderqc.com/1/qc/a.webp' }] }] } } });
+    if (url.startsWith('https://si.geilicdn.com/')) return new Response(new Uint8Array(5000), { headers: { 'Content-Type': 'image/jpeg' } });
+    if (url.endsWith('/searchImage/search')) { searches++; return json({ code: 0, data: { search_id: 's1' } }); }
+    if (url.includes('/searchImage/results/')) return json({ code: 0, data: { results: [{ itemId: '7000000001', mallType: 'Weidian', enTitle: 'Cork Sandals', qcPhotosCount: 9, picUrl: 'https://img.finderqc.com/s.webp' }] } });
+    return json({ code: 500 });
+  };
+  const env = { DB };
+  const load = () => DB.raw.prepare("SELECT * FROM items WHERE id = 'weidian:7566776165'").get();
+  assert.match(allText(await qcWindow(env, load(), 0, {})), /Cork Sandals/);
+  assert.match(allText(await qcWindow(env, load(), 0, {})), /img\.finderqc\.com\/1\/qc\/a\.webp/);
+  assert.equal(searches, 1);
+});
