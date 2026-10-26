@@ -50,7 +50,8 @@ export default {
     if (event.cron === '*/5 * * * *') {
       ctx.waitUntil((async () => {
         await runDiscovery(env).catch((e) => console.log('découverte', String(e)));
-        await runQcChecks(env, 15).catch((e) => console.log('qc', String(e)));
+        // Toutes les 15 min (la sélection des items à vérifier parcourt une bonne partie de la table).
+        if (new Date().getUTCMinutes() % 15 === 0) await runQcChecks(env, 30).catch((e) => console.log('qc', String(e)));
       })());
       return;
     }

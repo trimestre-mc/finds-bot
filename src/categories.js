@@ -44,11 +44,16 @@ export function forumTagFor(tags, category) {
 
 // Catégorise les items qui ne le sont pas encore (quand le titre anglais est connu ou que la traduction a abandonné).
 // Sans titre anglais au bout du délai d'attente, on catégorise avec les mots chinois (recalculé plus tard si « autre »).
+// Quand il n'y a plus rien à catégoriser, on fait une pause d'une heure (la requête lirait toute la table).
+let idleUntil = 0;
+
 export async function categorizePending(env, limit, waitMs = 30 * 60000) {
+  if (Date.now() < idleUntil) return 0;
   const { results } = await env.DB.prepare(
     `SELECT id, title_en, title_zh FROM items
      WHERE category IS NULL AND (title_en IS NOT NULL OR translate_failed >= 3 OR manual = 1 OR first_seen < ?) LIMIT ?`,
   ).bind(Date.now() - waitMs, limit).all();
+  if (results.length < limit) idleUntil = Date.now() + 3600000;
   if (!results.length) return 0;
   const stmts = results.map((r) => env.DB.prepare('UPDATE items SET category = ? WHERE id = ?')
     .bind(detectCategory(`${r.title_en || ''} ${r.title_zh || ''}`), r.id));

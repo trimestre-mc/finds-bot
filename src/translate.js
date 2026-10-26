@@ -81,7 +81,7 @@ export async function translatePending(env, limit) {
      WHERE title_en IS NULL AND translate_failed < 3 AND title_zh IS NOT NULL
        -- d'abord le titre anglais gratuit de la page produit ; sans elle au bout d'un moment, l'IA traduit quand même
        AND (platform != 'weidian' OR images IS NOT NULL OR first_seen < ?)
-     ORDER BY popularity DESC, first_seen DESC LIMIT ?`,
+     LIMIT ?`, // pas de tri : on ne lit que les lignes traitées (quota de lectures D1)
   ).bind(Date.now() - titleWait(env), Math.min(limit, budget.left)).all();
   let done = 0;
   for (let i = 0; i < results.length; i += BATCH) {
