@@ -14,8 +14,8 @@ const MAX_ITEMS = Number(process.env.MAX_ITEMS || 5000);
 const PAGE_DELAY_MS = 400;
 const SHOP_DELAY_MS = 3000;
 const TIME_BUDGET_MS = 40 * 60 * 1000;
-const ITEM_DELAY_MS = 600;
-const CONCURRENCY = 3;
+const ITEM_DELAY_MS = 1500;
+const CONCURRENCY = 1;
 // Plusieurs jobs GitHub tournent en parallèle, chacun avec sa part des boutiques et des items.
 const SHARD = Number(process.env.SHARD || 0);
 const SHARDS = Number(process.env.SHARDS || 1);
