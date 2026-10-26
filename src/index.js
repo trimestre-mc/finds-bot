@@ -11,10 +11,11 @@ import { prepareQuery, allResultIds } from './search.js';
 import { getRate, refreshRate, formatPrice, getAgents, postItem, processQueue } from './post.js';
 import { translatePending, rewriteTitles } from './translate.js';
 import { fetchWeidianItem } from './weidian.js';
+import { extractWeidian, ingest, resolveQueue, scanSource, runDiscovery } from './discover.js';
 import {
   QUEUE_PER_MINUTE, homeView, searchModal, loadSearch, createSearch, resultsView, confirmAllView,
   catalogsView, addShopModal, shopView, confirmDeleteShopView, agentsView, agentModal, presetModal, itemModal,
-  accessView, hasAdminPermission, deniedView, errorView,
+  accessView, hasAdminPermission, deniedView, errorView, sourcesView,
 } from './ui.js';
 
 const REINDEX_HOURS = 24;
@@ -37,6 +38,10 @@ export default {
   },
 
   async scheduled(event, env, ctx) {
+    if (event.cron === '*/5 * * * *') {
+      ctx.waitUntil(runDiscovery(env).catch((e) => console.log('découverte', String(e))));
+      return;
+    }
     ctx.waitUntil((async () => {
       await Promise.all([
         processQueue(env, 50000).catch((e) => console.log('file', String(e))),
@@ -170,6 +175,40 @@ async function onComponent(it, env, ctx) {
 
     case 'item:add': return openModal(itemModal());
 
+    case 'src:': return update(await sourcesView(env, it));
+    case 'src:add': return later(it, env, ctx, async () => {
+      const notes = [];
+      for (const ch of values.slice(0, 5)) {
+        await env.DB.prepare('INSERT OR IGNORE INTO sources (channel_id, guild_id, added_by, added_at) VALUES (?, ?, ?, ?)')
+          .bind(ch, it.guild_id, userId(it), Date.now()).run();
+        const s = await env.DB.prepare('SELECT * FROM sources WHERE channel_id = ?').bind(ch).first();
+        try {
+          const r = await scanSource(env, s, 5);
+          notes.push(r.noContent
+            ? `⚠️ <#${ch}> : messages illisibles. Active **Message Content Intent** (portail Discord → Bot).`
+            : `✅ <#${ch}> : ${fmtInt(r.messages)} messages lus, **${r.shopsAdded}** boutique(s) ajoutée(s), ${fmtInt(r.queued)} item(s) à analyser.`);
+        } catch (err) {
+          const msg = String(err.message || err);
+          await env.DB.prepare('UPDATE sources SET error = ? WHERE channel_id = ?').bind(msg.slice(0, 200), ch).run();
+          notes.push(/-> (403|404)/.test(msg)
+            ? `❌ <#${ch}> : le bot n'y a pas accès. Donne-lui « Voir le salon » et « Voir les anciens messages ».`
+            : `❌ <#${ch}> : ${escape(msg.slice(0, 100))}`);
+        }
+      }
+      await resolveQueue(env, 15);
+      await triggerIndexer(env);
+      return sourcesView(env, it, notes.join('\n'));
+    });
+    case 'src:del': {
+      await env.DB.prepare('DELETE FROM sources WHERE channel_id = ? AND guild_id = ?').bind(c, it.guild_id).run();
+      return update(await sourcesView(env, it, `🗑️ <#${c}> n'est plus surveillé.`));
+    }
+    case 'src:scan': return later(it, env, ctx, async () => {
+      await runDiscovery(env);
+      await triggerIndexer(env);
+      return sourcesView(env, it, '🔄 Scan terminé.');
+    });
+
     case 'acc:': return update(await accessView(env, it));
     case 'acc:add':
     case 'acc:rm': {
@@ -281,20 +320,24 @@ async function onModal(it, env, ctx) {
   }
 
   if (kind === 'shop') {
-    const link = v.link || '';
-    if (/taobao\.com|tmall\.com|1688\.com/.test(link)) {
-      return update(await catalogsView(env, 0, '⚠️ Taobao et 1688 demandent une connexion : impossible de les indexer automatiquement. Ajoute leurs items un par un avec **➕ Ajouter un item**.'));
-    }
-    const shopId = parseWeidianShop(link);
-    if (shopId) return update(await catalogsView(env, 0, await addShop(env, shopId, null, userId(it))));
-    const item = parseItemLink(link);
-    if (!item || item.platform !== 'weidian') {
-      return update(await catalogsView(env, 0, '❌ Lien non reconnu. Exemple : `https://weidian.com/?userid=1784277725` ou le lien d\'un item de la boutique.'));
+    const found = extractWeidian(v.links || '');
+    if (!found.shops.size && !found.items.size) {
+      return update(await catalogsView(env, 0, found.others
+        ? '⚠️ Taobao et 1688 demandent une connexion : impossible de les indexer automatiquement. Ajoute leurs items un par un avec **➕ Ajouter un item**.'
+        : '❌ Aucun lien Weidian trouvé. Exemple : `https://weidian.com/?userid=1784277725` ou le lien d\'un item.'));
     }
     return later(it, env, ctx, async () => {
-      const info = await fetchWeidianItem(item.itemId);
-      if (!info.shopId) return catalogsView(env, 0, '❌ Impossible de trouver la boutique de cet item.');
-      return catalogsView(env, 0, await addShop(env, info.shopId, info.shopName, userId(it)));
+      const res = await ingest(env, found, 'bulk', userId(it));
+      const resolved = await resolveQueue(env, 30);
+      const total = res.shopsAdded + resolved;
+      if (total) await triggerIndexer(env);
+      const left = (await env.DB.prepare('SELECT COUNT(*) AS n FROM link_queue').first()).n;
+      const parts = [total
+        ? `✅ **${total}** nouvelle${total > 1 ? 's' : ''} boutique${total > 1 ? 's' : ''} ajoutée${total > 1 ? 's' : ''}. L'indexation ${indexerDelay(env)}.`
+        : 'ℹ️ Aucune nouvelle boutique : elles sont déjà toutes dans tes catalogues.'];
+      if (left) parts.push(`🔍 ${fmtInt(left)} liens d'items encore en analyse (quelques minutes).`);
+      if (found.others) parts.push(`-# ${found.others} lien(s) Taobao/1688 ignoré(s).`);
+      return catalogsView(env, 0, parts.join('\n'));
     });
   }
 
@@ -371,16 +414,6 @@ async function addItem(it, env, ctx, v) {
 }
 
 // ---------------------------------------------------------------- Catalogues
-
-async function addShop(env, shopId, name, by) {
-  const existing = await env.DB.prepare('SELECT * FROM shops WHERE id = ?').bind(shopId).first();
-  if (existing) return `ℹ️ **${escape(existing.name || shopId)}** est déjà dans tes catalogues (${fmtInt(existing.item_count)} items).`;
-  await env.DB.prepare(
-    "INSERT INTO shops (id, platform, name, url, status, added_by, added_at) VALUES (?, 'weidian', ?, ?, 'pending', ?, ?)",
-  ).bind(shopId, name, `https://weidian.com/?userid=${shopId}`, by, Date.now()).run();
-  await triggerIndexer(env);
-  return `✅ Boutique ${name ? `**${escape(name)}** ` : ''}ajoutée. L'indexation ${indexerDelay(env)}, puis les titres sont traduits petit à petit.`;
-}
 
 function indexerDelay(env) {
   return env.GITHUB_TOKEN && env.GITHUB_REPO ? 'démarre maintenant (2-3 min)' : 'démarre au prochain passage de l\'indexeur (10 à 20 min)';

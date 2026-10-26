@@ -21,6 +21,18 @@ const mock = createServer((req, res) => {
   req.on('data', (c) => (body += c));
   req.on('end', () => {
     calls.push({ method: req.method, path: req.url, body: body ? JSON.parse(body) : null });
+    // Salons « sources » simulés : 555 contient des finds, 403 est interdit au bot.
+    if (req.method === 'GET' && req.url.startsWith('/channels/403/')) {
+      res.writeHead(403, { 'Content-Type': 'application/json' });
+      return res.end('{"message":"Missing Access","code":50001}');
+    }
+    if (req.method === 'GET' && req.url.startsWith('/channels/555/messages')) {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify(req.url.includes('after=') ? [] : [
+        { id: '1002', content: 'W2C ce hoodie https://weidian.com/item.html?itemID=7874663131&spider_token=x', embeds: [] },
+        { id: '1001', content: '', embeds: [], components: [{ type: 1, components: [{ type: 2, style: 5, url: 'https://www.bbdbuy.com/goods/WEIDIAN/7863670229?inviteCode=Z' }] }] },
+      ]));
+    }
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ id: String(Date.now()) }));
   });
@@ -170,10 +182,12 @@ try {
 
   const shopModal = await click('cat:add');
   check('bouton Ajouter boutique → formulaire', shopModal.data.type === 9);
-  const shop = await submit('m:shop', { link: 'https://weidian.com/?userid=1784277725' });
-  check('boutique ajoutée', /Boutique .*ajoutée/.test(allText(shop.data.data)));
-  check('vue catalogues : limites Discord', validate('catalogues', shop.data.data));
-  const tb = await submit('m:shop', { link: 'https://shop123.taobao.com' });
+  let mark = calls.length;
+  await submit('m:shop', { links: 'https://weidian.com/?userid=1784277725' });
+  const shop = await lastEdit(mark);
+  check('boutique ajoutée', shop && /\*\*1\*\* nouvelle boutique ajoutée/.test(allText(shop.body)), shop && allText(shop.body).split('\n')[0]);
+  check('vue catalogues : limites Discord', shop && validate('catalogues', shop.body));
+  const tb = await submit('m:shop', { links: 'https://shop123.taobao.com/item.htm' });
   check('boutique Taobao refusée proprement', /demandent une connexion/.test(allText(tb.data.data)));
 
   console.log('… indexation réelle (60 items max)');
@@ -198,7 +212,7 @@ try {
   const ch = await click(`s:ch:${sid}:0`, [OTHER_CHANNEL]);
   check('choix du salon', /postés dans <#333>/.test(allText(ch.data.data)));
 
-  let mark = calls.length;
+  mark = calls.length;
   const post = await click(`s:sel:${sid}:0`, [sel.options[0].value]);
   check('poster la sélection (réponse différée)', post.data.type === 6);
   const posted = await waitCall((c) => c.method === 'POST' && c.path === `/channels/${OTHER_CHANNEL}/messages`);
@@ -260,6 +274,28 @@ try {
   check('items d\'une boutique', /🏪 4号小店/.test(allText(si.data.data)));
   const del = await click('cat:del:1784277725');
   check('confirmation de suppression', /Retirer 4号小店/.test(allText(del.data.data)));
+
+  // ---- Découverte de boutiques
+  mark = calls.length;
+  const bulk = await submit('m:shop', { links: 'https://weidian.com/?userid=1617411897\nhttps://www.kakobuy.com/item/details?url=https%3A%2F%2Fweidian.com%2Fitem.html%3FitemID%3D7805904567&affcode=x\nhttps://item.taobao.com/item.htm?id=1' });
+  check('ajout en masse (différé)', bulk.data.type === 6);
+  const bulkRes = await lastEdit(mark);
+  check('ajout en masse : boutiques trouvées', bulkRes && /\*\*1\*\* nouvelle boutique/.test(allText(bulkRes.body)) && /Taobao\/1688 ignoré/.test(allText(bulkRes.body)),
+    bulkRes && allText(bulkRes.body).split('\n')[0]);
+  const srcView = await click('src');
+  check('écran Sources', /Sources automatiques/.test(allText(srcView.data.data)) && validate('sources', srcView.data.data));
+  mark = calls.length;
+  await click('src:add', ['555']);
+  const srcRes = await lastEdit(mark);
+  check('source Discord : lit l\'historique et ajoute la boutique d\'un find', srcRes && /<#555> : 2 messages lus/.test(allText(srcRes.body))
+    && sql("SELECT COUNT(*) AS n FROM shops WHERE id = '1840259863' AND source = 'discord:555'")[0].n === 1, srcRes && allText(srcRes.body).split('\n')[0]);
+  mark = calls.length;
+  await click('src:add', ['403']);
+  const srcBad = await lastEdit(mark);
+  check('source sans accès : message clair', srcBad && /n'y a pas accès/.test(allText(srcBad.body)));
+  await fetch(WORKER + '/__scheduled?cron=*/5+*+*+*+*');
+  await sleep(4000);
+  check('cron de découverte : lit seulement les nouveaux messages', calls.some((c) => c.method === 'GET' && c.path.includes('/channels/555/messages?limit=100&after=1002')));
 
   const acc = await click('acc');
   check('vue accès', /Membres ajoutés/.test(allText(acc.data.data)) && validate('accès', acc.data.data));

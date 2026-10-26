@@ -9,6 +9,7 @@ CREATE TABLE IF NOT EXISTS shops (
   last_indexed INTEGER,
   last_error TEXT,
   run_id TEXT,
+  source TEXT,                      -- manuel, bulk, discord:<salon>
   added_by TEXT,
   added_at INTEGER
 );
@@ -72,6 +73,26 @@ CREATE TABLE IF NOT EXISTS post_queue (
   channel_id TEXT NOT NULL,
   channel_type INTEGER NOT NULL DEFAULT 0,
   created_at INTEGER
+);
+
+-- Salons Discord surveillés pour découvrir des boutiques
+CREATE TABLE IF NOT EXISTS sources (
+  channel_id TEXT PRIMARY KEY,
+  guild_id TEXT,
+  added_by TEXT,
+  added_at INTEGER,
+  last_message_id TEXT,
+  scanned_at INTEGER NOT NULL DEFAULT 0,
+  messages INTEGER NOT NULL DEFAULT 0,
+  links INTEGER NOT NULL DEFAULT 0,
+  error TEXT
+);
+
+-- Items Weidian trouvés dont il faut retrouver la boutique
+CREATE TABLE IF NOT EXISTS link_queue (
+  item_id TEXT PRIMARY KEY,
+  source TEXT,
+  added_at INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS settings (

@@ -211,7 +211,8 @@ export async function catalogsView(env, page = 0, msg) {
     ...(cards.length ? cards : [text('Aucune boutique pour l\'instant.\n-# Ajoute une boutique Weidian : tous ses items seront indexés automatiquement.')]),
     sep(),
     row(
-      emojiBtn('➕', 'Ajouter une boutique', 'cat:add', Style.PRIMARY),
+      emojiBtn('➕', 'Ajouter des liens', 'cat:add', Style.PRIMARY),
+      emojiBtn('📡', 'Sources auto', 'src'),
       pages > 1 ? emojiBtn('◀️', null, `cat:list:${page - 1}`, Style.SECONDARY, { disabled: page === 0 }) : null,
       pages > 1 ? emojiBtn('▶️', null, `cat:list:${page + 1}`, Style.SECONDARY, { disabled: page >= pages - 1 }) : null,
       backHome(),
@@ -220,13 +221,40 @@ export async function catalogsView(env, page = 0, msg) {
 }
 
 export function addShopModal() {
-  return modal('m:shop', '➕ Ajouter une boutique', [
+  return modal('m:shop', '➕ Ajouter des boutiques', [
     {
-      id: 'link', label: 'Lien de la boutique Weidian', required: true,
-      description: 'Le lien de la boutique, ou le lien de n\'importe quel item de cette boutique.',
-      placeholder: 'https://weidian.com/?userid=1784277725', max: 300,
+      id: 'links', label: 'Liens Weidian (autant que tu veux)', required: true, long: true, max: 4000,
+      description: 'Boutiques ou items, même des liens d\'agents. Le bot retrouve les boutiques tout seul.',
+      placeholder: 'https://weidian.com/?userid=1784277725\nhttps://weidian.com/item.html?itemID=7863670229\nhttps://www.kakobuy.com/item/details?url=…',
     },
   ]);
+}
+
+// ---------------------------------------------------------------- Sources Discord
+
+export async function sourcesView(env, it, msg) {
+  const { results } = await env.DB.prepare('SELECT * FROM sources WHERE guild_id = ? ORDER BY added_at').bind(it.guild_id).all();
+  const pending = await env.DB.prepare('SELECT COUNT(*) AS n FROM link_queue').first();
+  const cards = results.slice(0, 8).map((s) => section(
+    `<#${s.channel_id}>\n-# ${fmtInt(s.messages)} messages lus  ·  ${fmtInt(s.links)} liens trouvés  ·  scanné ${ago(s.scanned_at)}` +
+      (s.error ? `\n-# ⚠️ ${escape(s.error.slice(0, 120))}` : ''),
+    btn('Retirer', `src:del:${s.channel_id}`, Style.DANGER),
+  ));
+  return [container([
+    notice(msg),
+    text('## 📡 Sources automatiques\n-# Choisis des salons où des gens postent des finds. Toutes les 5 min, le bot lit les nouveaux messages, retrouve les boutiques Weidian des liens et les ajoute à tes catalogues.'),
+    sep(),
+    ...(cards.length ? cards : [text('Aucun salon surveillé.\n-# À l\'ajout, le bot lit aussi les 500 derniers messages du salon.')]),
+    pending.n ? text(`-# 🔍 ${fmtInt(pending.n)} liens d'items en cours d'analyse`) : null,
+    sep(),
+    row({ type: 8, custom_id: 'src:add', placeholder: '➕ Surveiller un salon…', channel_types: [0, 5], min_values: 1, max_values: 5 }),
+    row(
+      emojiBtn('🔄', 'Scanner maintenant', 'src:scan', Style.SECONDARY, { disabled: !results.length }),
+      emojiBtn('↩️', 'Catalogues', 'cat:list:0'),
+      backHome(),
+    ),
+    text('-# Le bot doit pouvoir **voir le salon** et **lire l\'historique**. L\'intent « Message Content » doit être activé dans le portail Discord.'),
+  ])];
 }
 
 export async function shopView(env, shopId, msg) {
