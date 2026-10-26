@@ -4,15 +4,15 @@
 import { discordApi } from './discord.js';
 import { COMPONENTS_V2, container, text, escape } from './components.js';
 import { panel, update, openModal, later, userId } from './respond.js';
-import { buildAgentLink, canonicalUrl, extractItemRefs, finderQcUrl } from './links.js';
-import { communityQc, refreshQc } from './qc.js';
+import { buildAgentLink, canonicalUrl, extractItemRefs } from './links.js';
+import { communityQc, refreshQc, communityPhotos, qcWindow } from './qc.js';
 import { prepareQuery, allResultIds } from './search.js';
 import { postContext, processQueue, logError, FORUM } from './post.js';
 import { getConfig, setConfig, CURRENCIES, LANGS, ACCENTS } from './config.js';
 import { messageText, collectQc } from './discover.js';
 import { homeView, loadSearch, createSearch, resultsView, filtersView, catalogsView } from './ui.js';
 import {
-  schedulesView, scheduleView, scheduleModal, statsView, historyView, settingsView, healthView, findView, convertView, qcView,
+  schedulesView, scheduleView, scheduleModal, statsView, historyView, settingsView, healthView, findView, convertView,
 } from './views.js';
 
 // ---------------------------------------------------------------- Indexeur GitHub
@@ -41,11 +41,10 @@ export async function handleGo(url, env, ctx) {
   const item = known || { id: itemKey, platform, item_id: itemId, url: canonicalUrl(platform, itemId) };
   if (!item.url || !/^\d{6,14}$/.test(String(item.item_id))) return new Response('Lien inconnu', { status: 404 });
   let target = item.url;
-  if (agentName === 'qc') {
-    target = item.qc_url || finderQcUrl(item) || item.url;
-  } else if (agentName === 'qcc') {
+  if (agentName === 'qcc') {
+    // QC de la communauté : le message Discord d'origine.
     const c = await communityQc(env, itemKey);
-    target = c ? c.jump : (finderQcUrl(item) || item.url);
+    if (c) target = c.jump;
   } else if (agentName !== 'source') {
     const agent = await env.DB.prepare('SELECT template FROM agents WHERE name = ?').bind(agentName).first();
     if (agent) target = buildAgentLink(agent.template, item);
@@ -76,12 +75,7 @@ export async function handlePublicCommand(it, env, ctx) {
       return panel([container([text('❌ Je n\'ai trouvé aucun lien Weidian, Taobao ou 1688 (ni de lien d\'agent).')])]);
     }
     const ref = refs[0];
-    return later(it, env, ctx, async () => {
-      const key = `${ref.platform}:${ref.itemId}`;
-      let item = await env.DB.prepare('SELECT * FROM items WHERE id = ?').bind(key).first();
-      item = await refreshQc(env, item || { id: key, item_id: ref.itemId, platform: ref.platform, url: ref.url, popularity: 0 });
-      return qcView(env, item, await communityQcList(env, key));
-    }, true);
+    return later(it, env, ctx, () => openQc(env, `${ref.platform}:${ref.itemId}`, ref.platform, ref.itemId), true);
   }
   if (it.data.name === 'convert') {
     const refs = extractItemRefs(String(opts.lien || ''));
@@ -95,10 +89,41 @@ export async function handlePublicCommand(it, env, ctx) {
   return null;
 }
 
-export async function handlePublicComponent(it, env) {
-  const [, kind, sid, page] = it.data.custom_id.split(':');
+export async function handlePublicComponent(it, env, ctx) {
+  const parts = it.data.custom_id.split(':');
+  const [, kind, sid, page] = parts;
   if (kind === 'pg') return update(await findView(env, sid, Number(page) || 0));
+  if (kind === 'qc') {
+    // Bouton « 📸 Voir les QC » d'une carte : fenêtre privée avec les QC de l'item.
+    const key = parts.slice(2).join(':');
+    const [platform, itemId] = key.split(':');
+    if (!canonicalUrl(platform, itemId)) return null;
+    ctx.waitUntil(env.DB.prepare('INSERT INTO clicks (item_id, agent, channel_id, at) VALUES (?, ?, ?, ?)')
+      .bind(key, 'qc_view', it.channel_id || null, Date.now()).run().catch(() => {}));
+    return later(it, env, ctx, () => openQc(env, key, platform, itemId, 0), true);
+  }
+  if (kind === 'qcp') {
+    // ◀ ▶ dans la fenêtre QC (mise à jour), ou « Plus de QC » sous un post de forum (nouvelle fenêtre privée).
+    const view = Math.max(0, Number(parts[parts.length - 1]) || 0);
+    const key = parts.slice(2, -1).join(':');
+    const [platform, itemId] = key.split(':');
+    if (!canonicalUrl(platform, itemId)) return null;
+    const inWindow = it.message && (it.message.flags & 64) === 64;
+    return later(it, env, ctx, () => openQc(env, key, platform, itemId, view), !inWindow);
+  }
   return null;
+}
+
+// Fenêtre QC d'un item, entièrement dans Discord.
+async function openQc(env, key, platform, itemId, view = 0) {
+  let item = await env.DB.prepare('SELECT * FROM items WHERE id = ?').bind(key).first();
+  item = await refreshQc(env, item || { id: key, item_id: itemId, platform, url: canonicalUrl(platform, itemId), popularity: 0 });
+  const community = view === 0 ? (await communityPhotos(env, key, 10)).photos : [];
+  const { results: qcCh } = await env.DB.prepare('SELECT channel_id FROM qc_channels LIMIT 1').all();
+  const cfg = await getConfig(env);
+  return qcWindow(env, item, view, {
+    community, qcChannel: qcCh[0] && qcCh[0].channel_id, lang: cfg.lang, accent: (ACCENTS[cfg.accent] || ACCENTS.orange).color,
+  });
 }
 
 // ---------------------------------------------------------------- Actions du panneau
@@ -231,6 +256,11 @@ export async function handleFeatureComponent(it, env, ctx, a, b, c, d, values) {
     case 'set:accent':
       await setConfig(env, 'accent', values[0]);
       return update(await settingsView(env, it, `${ACCENTS[values[0]].emoji} Couleur des cartes : ${ACCENTS[values[0]].label}.`));
+    case 'set:forumqc': {
+      const cfg = await getConfig(env);
+      await setConfig(env, 'forumQc', cfg.forumQc ? 0 : 1);
+      return update(await settingsView(env, it, cfg.forumQc ? '📸 Plus de QC automatiques sous les posts de forum.' : '📸 Les posts de forum recevront automatiquement des photos QC.'));
+    }
     case 'set:dedupe':
       await setConfig(env, 'dedupeDays', Number(values[0]));
       return update(await settingsView(env, it, Number(values[0]) ? '♻️ Anti-doublon mis à jour.' : '♻️ Anti-doublon désactivé.'));

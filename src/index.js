@@ -86,7 +86,7 @@ async function handleInteraction(request, env, ctx) {
     return (await handlePublicCommand(it, env, ctx)) || reply('Commande inconnue.');
   }
   if (it.type === InteractionType.COMPONENT && it.data.custom_id.startsWith('pub:')) {
-    return (await handlePublicComponent(it, env)) || reply('Action inconnue.');
+    return (await handlePublicComponent(it, env, ctx)) || reply('Action inconnue.');
   }
 
   if (!(await isAdmin(env, it))) {
@@ -452,7 +452,16 @@ async function autoIndex(env) {
   if (!env.GITHUB_TOKEN || !env.GITHUB_REPO) return;
   const last = await env.DB.prepare("SELECT value FROM settings WHERE key = 'last_dispatch'").first();
   if (last && Date.now() - Number(last.value) < 8 * 60 * 1000) return;
-  if ((await dueShops(env, 1)).length || await jadeshipDue(env)) await triggerIndexer(env);
+  if ((await dueShops(env, 1)).length || await jadeshipDue(env) || await qcDue(env)) await triggerIndexer(env);
+}
+
+// Items qui comptent dont les QC sont à vérifier (voir /api/indexer/qc-needed).
+async function qcDue(env) {
+  const row = await env.DB.prepare(
+    `SELECT COUNT(*) AS n FROM items WHERE hidden = 0 AND (popularity > 0 OR posted_count > 0 OR manual = 1)
+       AND (qc_checked_at IS NULL OR qc_checked_at < ?)`,
+  ).bind(Date.now() - 3 * 86400000).first();
+  return row.n;
 }
 
 // Collecte Jadeship (Best Items, Live Feed, vendeurs) : toutes les 6 heures.
@@ -498,6 +507,7 @@ async function handleApi(request, env, url) {
     return json({
       shops: await dueShops(env, 10, sh), missingImages: missing.n, linkQueue: links.n,
       jadeship: sh.i === 0 && await jadeshipDue(env),
+      qcNeeded: sh.i === 0 ? await qcDue(env) : 0,
     });
   }
 
@@ -560,6 +570,15 @@ async function handleApi(request, env, url) {
 
   // QC : items dont le nombre de photos QC est à (re)vérifier, les plus vendus d'abord.
   if (path === '/api/indexer/qc-needed') {
+    if (!body.keys) {
+      // Items qui comptent (populaires, déjà postés ou ajoutés à la main) dont les QC sont inconnues ou vieilles de 3 jours.
+      const { results } = await env.DB.prepare(
+        `SELECT id FROM items WHERE hidden = 0 AND (popularity > 0 OR posted_count > 0 OR manual = 1)
+           AND (qc_checked_at IS NULL OR qc_checked_at < ?)
+         ORDER BY qc_checked_at IS NOT NULL, popularity DESC, posted_count DESC LIMIT ?`,
+      ).bind(Date.now() - 3 * 86400000, Math.min(Number(body.limit) || 300, 1000)).all();
+      return json({ items: results.map((r) => r.id) });
+    }
     const keys = (body.keys || []).filter((k) => /^(weidian|taobao|1688):\d{6,14}$/.test(k)).slice(0, 2000);
     const out = [];
     for (let i = 0; i < keys.length; i += 90) {
@@ -576,8 +595,9 @@ async function handleApi(request, env, url) {
 
   if (path === '/api/indexer/qc') {
     const stmts = (body.items || []).slice(0, 100).filter((i) => /^(weidian|taobao|1688):\d{6,14}$/.test(i.key)).map((i) => env.DB.prepare(
-      'UPDATE items SET qc_count = ?, qc_url = ?, qc_checked_at = ? WHERE id = ?',
-    ).bind(Math.max(0, Number(i.count) || 0), /^https:\/\/www\.uufinds\.com\//.test(i.url || '') ? i.url : null, Date.now(), i.key));
+      'UPDATE items SET qc_count = ?, qc_preview = ?, qc_checked_at = ? WHERE id = ?',
+    ).bind(Math.max(0, Number(i.count) || 0),
+      JSON.stringify((i.preview || []).filter((u) => /^https:\/\/img\.finderqc\.com\//.test(u)).slice(0, 8)), Date.now(), i.key));
     if (stmts.length) await env.DB.batch(stmts);
     return json({ ok: true, saved: stmts.length });
   }

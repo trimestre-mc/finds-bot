@@ -1,7 +1,7 @@
 // Écrans : drops automatiques, statistiques, historique, réglages, santé, et vues publiques (/find, /convert).
 
 import {
-  Style, container, section, text, sep, row, thumb, btn, emojiBtn, modal, escape, fmtInt, ago,
+  Style, container, section, text, sep, row, thumb, gallery, btn, emojiBtn, modal, escape, fmtInt, ago,
 } from './components.js';
 import { formatPrice, itemTitle, PLATFORM_NAMES, postContext, agentButtons } from './post.js';
 import { countResults, pageResults } from './search.js';
@@ -9,7 +9,6 @@ import { CATEGORY_BY_KEY } from './categories.js';
 import { getConfig, CURRENCIES, ACCENTS, LANGS } from './config.js';
 import { loadSearch } from './ui.js';
 import { communityQc, qcSummary } from './qc.js';
-import { finderQcUrl } from './links.js';
 
 const notice = (msg) => (msg ? text(`> ${msg}`) : null);
 const backHome = () => emojiBtn('🏠', 'Menu', 'home');
@@ -211,6 +210,7 @@ export async function settingsView(env, it, msg) {
       type: 8, custom_id: 'set:convert', placeholder: 'Salons de conversion automatique', channel_types: [0, 5],
       min_values: 0, max_values: 10, default_values: conv.map((c) => ({ id: c.channel_id, type: 'channel' })),
     }),
+    row(emojiBtn('📸', cfg.forumQc ? 'QC sous les posts de forum : activé' : 'QC sous les posts de forum : désactivé', 'set:forumqc', cfg.forumQc ? Style.SUCCESS : Style.SECONDARY)),
     text(`**📸 Salons QC**\n-# Les membres y postent leurs photos QC avec le lien de l'item : chaque item gagne un bouton « QC communauté ».\n${qcCh.length ? qcCh.map((c) => `<#${c.channel_id}> · ${fmtInt(c.collected)} QC récupérés`).join('\n') : '-# Aucun salon.'}`),
     row({
       type: 8, custom_id: 'set:qc', placeholder: 'Salons QC', channel_types: [0, 5],
@@ -315,39 +315,5 @@ export async function convertView(env, ref, known) {
 }
 
 
-
-// /qc : toutes les photos QC connues d'un item.
-export async function qcView(env, item, community) {
-  const ctx = await postContext(env);
-  const platform = PLATFORM_NAMES[item.platform];
-  const head = item.title_en || item.title_zh
-    ? `## 📸 ${escape(itemTitle(item).slice(0, 80))}\n${formatPrice(item.price_cny, ctx.money)}  ·  ${platform}`
-    : `## 📸 QC · ${platform} \`${item.item_id}\``;
-  const lines = [];
-  if (item.qc_count > 0) lines.push(`📸 **${fmtInt(item.qc_count)} photos QC** prises par les agents (galerie UUFinds)`);
-  else lines.push('📸 Aucune galerie de QC d\'agent trouvée pour l\'instant. FinderQC cherche peut-être encore.');
-  const images = community.reduce((n, q) => n + q.images, 0);
-  if (community.length) {
-    lines.push(`🧑‍🤝‍🧑 **${images} photo${images > 1 ? 's' : ''} QC de la communauté**`);
-    for (const q of community) lines.push(`-# [${q.images} photo${q.images > 1 ? 's' : ''}](https://discord.com/channels/${q.guild_id}/${q.channel_id}/${q.message_id}) · ${ago(q.at)}`);
-  }
-  const track = (name, url) => (ctx.base ? `${ctx.base}/go/${encodeURIComponent(item.id)}/${name}` : url);
-  const buttons = [];
-  if (item.qc_url) buttons.push(btnLink(`Galerie (${fmtInt(item.qc_count)})`, track('qc', item.qc_url), '📸'));
-  if (finderQcUrl(item)) buttons.push(btnLink('FinderQC', item.qc_url ? finderQcUrl(item) : track('qc', finderQcUrl(item)), '🔍'));
-  if (community.length) buttons.push(btnLink('Dernier QC communauté', track('qcc', community[0] && `https://discord.com/channels/${community[0].guild_id}/${community[0].channel_id}/${community[0].message_id}`), '🧑‍🤝‍🧑'));
-  return [container([
-    text(head),
-    sep(),
-    text(lines.join('\n')),
-    buttons.length ? row(...buttons) : null,
-    sep(),
-    ...agentButtons(ctx, item, null).slice(0, 1),
-  ], (ACCENTS[ctx.cfg.accent] || ACCENTS.orange).color)];
-}
-
-function btnLink(label, url, emoji) {
-  return { type: 2, style: 5, label, url, emoji: { name: emoji } };
-}
 
 export { qcSummary };

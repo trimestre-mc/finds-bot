@@ -6,7 +6,6 @@ const UA = 'finds-bot/1.0 (+https://github.com/trimestre-mc/finds-bot)';
 const DELAY_MS = 2000;
 const PLATFORMS = ['weidian', 'taobao', '1688'];
 const TIMEFRAMES = ['24-hours', '7-days', '30-days', '3-months', '1-year'];
-const QC_PER_RUN = 180;
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -85,14 +84,6 @@ export function parseFeedItems(html) {
   return items;
 }
 
-// QC d'un item : nombre de photos et lien vers la galerie UUFinds affichés par Jadeship.
-export function parseItemQc(html) {
-  const text = payload(html);
-  const url = (text.match(/https:\/\/www\.uufinds\.com\/goodItemDetail\/qc\/[A-Za-z0-9]+(?:\?fromId=\d+)?/) || [])[0] || null;
-  const count = Number((text.match(/" ",(\d+)," QC pics available"/) || [])[1] || 0);
-  return { count, url };
-}
-
 const WEIDIAN_SHOP = /weidian\.com\/\?userid=(\d{5,12})|shop(\d{5,12})\.v\.weidian\.com/g;
 
 export function parseSellers(html) {
@@ -120,8 +111,8 @@ async function sellerList(path, log) {
   return all;
 }
 
-// Collecte complète. send(batch) envoie au Worker ; api(chemin, corps) interroge le Worker ; renvoie un résumé.
-export async function collectJadeship(send, log = console.log, api = null) {
+// Collecte complète. send(batch) envoie au Worker ; renvoie un résumé.
+export async function collectJadeship(send, log = console.log) {
   const items = new Map();
   const pages = [
     ...TIMEFRAMES.flatMap((tf) => PLATFORMS.map((pf) => `/feed/top/${tf}/${pf}?sort_by=amount_sold&display=grid`)),
@@ -152,27 +143,6 @@ export async function collectJadeship(send, log = console.log, api = null) {
   const list = [...items.values()];
   for (let i = 0; i < list.length; i += 250) await send({ items: list.slice(i, i + 250) });
 
-  // QC : les items les plus vendus dont le nombre de QC n'est pas connu (ou date de plus d'une semaine).
-  let qcChecked = 0;
-  if (api) {
-    const { items: needed } = await api('/api/indexer/qc-needed', { keys: list.map((i) => `${i.platform}:${i.id}`), limit: QC_PER_RUN });
-    const results = [];
-    for (const key of needed) {
-      const [platform, id] = key.split(':');
-      try {
-        results.push({ key, ...parseItemQc(await get(`/item/${platform}/${id}`)) });
-      } catch (err) {
-        log(`  QC ${key} : ${err.message}`);
-        if (/limite/.test(err.message)) break;
-      }
-      if (results.length >= 50) { await api('/api/indexer/qc', { items: results.splice(0) }); }
-      await sleep(DELAY_MS);
-    }
-    if (results.length) await api('/api/indexer/qc', { items: results });
-    qcChecked = needed.length;
-    log(`  QC vérifiées pour ${qcChecked} items`);
-  }
-
   await send({ shops: [...shops.values()], done: true });
-  return { items: list.length, shops: shops.size, qc: qcChecked };
+  return { items: list.length, shops: shops.size };
 }

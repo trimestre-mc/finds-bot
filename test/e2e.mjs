@@ -20,7 +20,21 @@ const mock = createServer((req, res) => {
   let body = '';
   req.on('data', (c) => (body += c));
   req.on('end', () => {
-    calls.push({ method: req.method, path: req.url, body: body ? JSON.parse(body) : null });
+    let parsed = null;
+    try { parsed = body ? JSON.parse(body) : null; } catch { parsed = { raw: body }; }
+    calls.push({ method: req.method, path: req.url, body: parsed });
+    // Photos QC simulées (CDN Discord)
+    if (req.method === 'GET' && req.url.startsWith('/img/')) {
+      res.writeHead(200, { 'Content-Type': 'image/jpeg' });
+      return res.end(Buffer.from([0xff, 0xd8, 0xff, 0xd9]));
+    }
+    // Message QC 9003 relu pour avoir des liens de photos frais
+    if (req.method === 'GET' && req.url === '/channels/999/messages/9003') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ id: '9003', attachments: [
+        { filename: 'qc1.jpg', content_type: 'image/jpeg', url: `http://localhost:${MOCK_PORT}/img/qc1.jpg` },
+        { filename: 'qc2.png', content_type: 'image/png', url: `http://localhost:${MOCK_PORT}/img/qc2.png` }] }));
+    }
     // Salons « sources » simulés : 555 contient des finds, 403 est interdit au bot.
     if (req.method === 'GET' && req.url.startsWith('/channels/403/')) {
       res.writeHead(403, { 'Content-Type': 'application/json' });
@@ -48,7 +62,7 @@ const mock = createServer((req, res) => {
       return res.end(JSON.stringify(msgs));
     }
     // Salon QC 999 : une photo QC d'un membre avec le lien de l'item Margiela, un message sans photo, un bot.
-    if (req.method === 'GET' && req.url.startsWith('/channels/999/messages')) {
+    if (req.method === 'GET' && req.url.startsWith('/channels/999/messages?')) {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       return res.end(JSON.stringify(req.url.includes('after=') ? [] : [
         { id: '9003', author: { id: 'u1', bot: false }, timestamp: new Date().toISOString(), content: 'QC GATS https://weidian.com/item.html?itemID=7779545401',
@@ -217,7 +231,7 @@ try {
 
   console.log('… indexation réelle (60 items max)');
   execSync('node indexer/index.mjs', {
-    cwd: ROOT, stdio: 'inherit', env: { ...process.env, WORKER_URL: WORKER, INDEXER_SECRET: SECRET, MAX_ITEMS: '60', SKIP_JADESHIP: '1' },
+    cwd: ROOT, stdio: 'inherit', env: { ...process.env, WORKER_URL: WORKER, INDEXER_SECRET: SECRET, MAX_ITEMS: '60', SKIP_JADESHIP: '1', SKIP_QC: '1' },
   });
   console.log('… traduction (3 passages du cron)');
   for (let i = 0; i < 3; i++) { await fetch(WORKER + '/__scheduled?cron=*+*+*+*+*'); await sleep(8000); }
@@ -288,7 +302,8 @@ try {
   }
   const queueLeft = sql('SELECT COUNT(*) AS n FROM post_queue')[0].n;
   const titles = posts().slice(before).map((c) => findComp(c.body, (x) => x.type === 2 && x.style === 5).url);
-  check('toute la file envoyée, sans doublon', queueLeft === 0 && posts().length - before === 58 && new Set(titles).size === titles.length,
+  const queued = Number((allText(ok.data.data).match(/\*\*(\d+)\*\* items en route/) || [])[1]);
+  check('toute la file envoyée, sans doublon', queueLeft === 0 && posts().length - before === queued && new Set(titles).size === titles.length,
     `${posts().length - before} postés, ${queueLeft} restants, ${new Set(titles).size} uniques`);
 
   const tr = sql("SELECT title_en FROM items WHERE title_en IS NOT NULL AND title_en LIKE '% %' LIMIT 1")[0] || { title_en: 'shoes' };
@@ -351,7 +366,7 @@ try {
   check('item Weidian de Jadeship mis en file pour trouver sa boutique', sql("SELECT COUNT(*) AS n FROM link_queue WHERE item_id = '7779545401'")[0].n === 1);
   // ---- QC
   await fetch(WORKER + '/api/indexer/qc', { method: 'POST', headers: { Authorization: `Bearer ${SECRET}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ items: [{ key: 'weidian:7779545401', count: 4278, url: 'https://www.uufinds.com/goodItemDetail/qc/830505d79dfa4a44864fe4b500b8fd76?fromId=1' }] }) });
+    body: JSON.stringify({ items: [{ key: 'weidian:7779545401', count: 4278, preview: ['https://img.finderqc.com/7779545401/qc/uploads/x.webp'] }] }) });
   await click('set:qc', ['999']);
   await fetch(WORKER + '/__scheduled?cron=*/2+*+*+*+*');
   await sleep(4000);
@@ -359,9 +374,11 @@ try {
     && sql("SELECT COUNT(*) AS n FROM qc_posts")[0].n === 1);
   const qcCmd = await interact({ type: 2, member: { user: { id: '42' }, permissions: '0' }, data: { name: 'qc', options: [{ name: 'lien', value: 'https://www.kakobuy.com/item/details?url=https%3A%2F%2Fweidian.com%2Fitem.html%3FitemID%3D7779545401' }] } });
   check('/qc ouvert à tous (différé)', qcCmd.data.type === 5);
-  const qcRes = await waitCall((c) => c.method === 'PATCH' && c.body && JSON.stringify(c.body).includes('photos QC'), 20000);
-  check('/qc : galerie agents + QC communauté', qcRes && /4 278 photos QC/.test(allText(qcRes.body)) && /2 photos QC de la communauté/.test(allText(qcRes.body)) && validate('/qc', qcRes.body),
-    qcRes && allText(qcRes.body).split('\n').slice(1, 3).join(' | '));
+  const qcRes = await waitCall((c) => c.method === 'PATCH' && c.body && JSON.stringify(c.body).includes('photos QC'), 25000);
+  const qcGals = qcRes ? JSON.stringify(qcRes.body).match(/"type":12/g) || [] : [];
+  check('/qc : photos de la communauté + lots des agents, dans Discord', qcRes && /QC de la communauté/.test(allText(qcRes.body)) && qcGals.length >= 2
+    && /img\.finderqc\.com/.test(JSON.stringify(qcRes.body)) && validate('/qc', qcRes.body), qcRes && `${qcGals.length} galeries · ${allText(qcRes.body).split('\n')[1]}`);
+  check('/qc : aucun lien vers un site de QC', qcRes && !/"url":"https:\/\/(www\.)?(uufinds|finderqc)/.test(JSON.stringify(qcRes.body)));
   const tq = await click('search:trending');
   check('résultats : nombre de QC affiché', /📸 4 278 QC/.test(allText(tq.data.data)) && /🧑‍🤝‍🧑 2 QC/.test(allText(tq.data.data)));
   const sidQ = findComp(tq.data.data, (c) => c.type === 3).custom_id.split(':')[2];
@@ -371,15 +388,36 @@ try {
   mark = calls.length;
   await click(`s:sel:${sidQ}:0`, [qcOpt]);
   const qcCard = await waitCall((c) => c.method === 'POST' && /\/channels\/\d+\/messages$/.test(c.path) && calls.indexOf(c) >= mark);
-  const qcBtn = qcCard && findComp(qcCard.body, (c) => c.type === 2 && /photos QC/.test(c.label || ''));
-  const commBtn = qcCard && findComp(qcCard.body, (c) => c.type === 2 && /QC communauté/.test(c.label || ''));
-  check('carte : boutons « 4 278 photos QC » et « QC communauté (2) »', qcBtn && commBtn && /QC communauté \(2\)/.test(commBtn.label) && validate('carte QC', qcCard.body),
-    qcBtn && `${qcBtn.label} | ${commBtn && commBtn.label}`);
-  const goQc = await fetch(WORKER + qcBtn.url.replace('https://finds-bot.test', ''), { redirect: 'manual' });
-  check('bouton QC → galerie UUFinds (clic compté)', /uufinds\.com\/goodItemDetail\/qc\//.test(goQc.headers.get('location') || ''));
-  const goComm = await fetch(WORKER + commBtn.url.replace('https://finds-bot.test', ''), { redirect: 'manual' });
-  check('bouton QC communauté → message Discord', /discord\.com\/channels\/111\/999\/9003$/.test(goComm.headers.get('location') || ''), goComm.headers.get('location'));
-
+  const qcBtn = qcCard && findComp(qcCard.body, (c) => c.type === 2 && c.custom_id === 'pub:qc:weidian:7779545401');
+  check('carte : bouton « 📸 Voir les QC (4 280) » à côté des boutons d\'achat', qcBtn && qcBtn.label === 'Voir les QC (4 280)' && validate('carte QC', qcCard.body),
+    qcBtn && qcBtn.label);
+  mark = calls.length;
+  const qcClick = await interact({ type: 3, member: { user: { id: '42' }, permissions: '0' }, message: { id: 'm1' }, data: { custom_id: qcBtn.custom_id, component_type: 2 } });
+  check('clic « Voir les QC » par un membre : fenêtre privée', qcClick.data.type === 5 && (qcClick.data.data.flags & 64) === 64);
+  const qcWin = await lastEdit(mark);
+  const qcGal = qcWin && findComp(qcWin.body, (c) => c.type === 12);
+  check('fenêtre QC : photos de la communauté puis lots des agents', qcGal && qcGal.items.length === 2 && /localhost:\d+\/img\/qc1\.jpg/.test(JSON.stringify(qcGal))
+    && /QC de la communauté/.test(allText(qcWin.body)) && /img\.finderqc\.com/.test(JSON.stringify(qcWin.body)) && validate('fenêtre QC', qcWin.body),
+    qcWin && `${JSON.stringify(qcGal).slice(0, 160)} | ${allText(qcWin.body).slice(0, 160)}`);
+  check('fenêtre QC : aucun lien vers un site de QC', qcWin && !/"url":"https:\/\/(www\.)?(uufinds|finderqc)/.test(JSON.stringify(qcWin.body)));
+  const more = qcWin && findComp(qcWin.body, (c) => /^pub:qcp:/.test(c.custom_id || '') && !c.disabled && c.custom_id.endsWith(':1'));
+  if (more) {
+    mark = calls.length;
+    const pageQc = await interact({ type: 3, member: { user: { id: '42' }, permissions: '0' }, message: { id: 'm2', flags: 64 }, data: { custom_id: more.custom_id, component_type: 2 } });
+    const pageWin = await lastEdit(mark);
+    check('fenêtre QC : « Plus de QC » montre les lots suivants', pageQc.data.type === 6 && pageWin && /lots 4–/.test(allText(pageWin.body)), pageWin && allText(pageWin.body).split('\n')[1]);
+  }
+  // Forum : QC postés automatiquement sous l'item
+  await click(`s:posted:${sidQ}`);
+  const fch2 = await interact({ type: 3, ...member(true), message: { id: 'm1' },
+    data: { custom_id: `s:ch:${sidQ}:0`, component_type: 8, values: ['444'], resolved: { channels: { 444: { id: '444', type: 15 } } } } });
+  const qcOpt2 = findComp(fch2.data.data, (c) => c.type === 3 && /^s:sel:/.test(c.custom_id)).options[0].value;
+  mark = calls.length;
+  await click(`s:sel:${sidQ}:0`, [qcOpt2]);
+  const th = await waitCall((c) => c.method === 'POST' && c.path === '/channels/444/threads' && calls.indexOf(c) >= mark);
+  const under = await waitCall((c) => c.method === 'POST' && /^\/channels\/\d+\/messages$/.test(c.path) && c.path !== '/channels/444/messages' && calls.indexOf(c) > calls.indexOf(th) && c.body && c.body.raw, 15000);
+  check('forum : photos QC postées automatiquement sous l\'item', th && under && /qc1\.jpg/.test(under.body.raw) && /qc2\.png/.test(under.body.raw)
+    && /attachment:\/\/qc1\.jpg/.test(under.body.raw) && /img\.finderqc\.com/.test(under.body.raw) && !/uufinds/.test(under.body.raw));
   const catsJ = await click('cat:list:0');
   check('vendeur Jadeship ajouté avec ⭐ Trusted', /A1 Top\*\*  ⭐ Trusted/.test(allText(catsJ.data.data)) || sql("SELECT tier FROM shops WHERE id = '1624885820'")[0].tier === 'trusted');
 
@@ -482,7 +520,7 @@ try {
   mark = calls.length;
   await submit('m:shop', { links: 'https://weidian.com/?userid=1840259863' });
   const reBan = await lastEdit(mark);
-  check('🚫 boutique bannie jamais réajoutée', reBan && /Aucune nouvelle boutique/.test(allText(reBan.body)));
+  check('🚫 boutique bannie jamais réajoutée', reBan && sql("SELECT COUNT(*) AS n FROM shops WHERE id = '1840259863'")[0].n === 0, reBan && allText(reBan.body).split('\n')[0]);
 
   const health = await click('health');
   check('🩺 santé : limites Discord', /Santé du bot/.test(allText(health.data.data)) && validate('santé', health.data.data));

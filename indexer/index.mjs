@@ -6,6 +6,7 @@
 
 import { chromium } from 'playwright';
 import { collectJadeship } from './jadeship.mjs';
+import { collectQc } from './finderqc.mjs';
 
 const WORKER_URL = (process.env.WORKER_URL || '').replace(/\/$/, '');
 const SECRET = process.env.INDEXER_SECRET || '';
@@ -228,12 +229,13 @@ async function main() {
     if (SHARD === 0 && first.jadeship && !process.env.SKIP_JADESHIP) {
       console.log('🟢 Collecte Jadeship');
       try {
-        const r = await collectJadeship((data) => api('/api/indexer/jadeship', data), (m) => console.log(m), api);
-        console.log(`🟢 Jadeship : ${r.items} items, ${r.shops} boutiques Weidian, ${r.qc} items vérifiés pour les QC`);
+        const r = await collectJadeship((data) => api('/api/indexer/jadeship', data), (m) => console.log(m));
+        console.log(`🟢 Jadeship : ${r.items} items, ${r.shops} boutiques Weidian`);
       } catch (err) {
         console.log(`Jadeship : ${err.message}`);
       }
     }
+    if (SHARD === 0 && !process.env.SKIP_QC) await collectQc(api).catch((err) => console.log(`📸 ${err.message}`));
     await resolveLinks();
     const { shops } = await api(`/api/indexer/jobs?x=1${SHARD_QS}`);
     console.log(`${shops.length} catalogue(s) à indexer`);

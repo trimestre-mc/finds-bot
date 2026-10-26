@@ -6,7 +6,7 @@ import { COMPONENTS_V2, container, gallery, text, sep, row, link, escape } from 
 import { fetchWeidianItem } from './weidian.js';
 import { getConfig, getMoney, formatMoney, formatCny, refreshRates, ACCENTS, LANGS } from './config.js';
 import { forumTagFor } from './categories.js';
-import { qcButtons, refreshQc, communityQc } from './qc.js';
+import { qcButtons, refreshQc, communityQc, postForumQc } from './qc.js';
 
 export const PLATFORM_NAMES = { weidian: 'Weidian', taobao: 'Taobao', '1688': '1688' };
 export const FORUM = 15;
@@ -79,8 +79,11 @@ export function agentButtons(ctx, item, channelId, community = null) {
   buttons.push(link(t.view(platform).slice(0, 80), trackedLink(ctx, item, 'source', item.url, channelId), '🔗'));
   const rows = [];
   for (let i = 0; i < buttons.length; i += 5) rows.push(row(...buttons.slice(i, i + 5)));
-  const qc = qcButtons((name, url) => trackedLink(ctx, item, name, url, channelId), item, community, ctx.cfg.lang);
-  if (qc.length) rows.push(row(...qc));
+  // Le bouton QC rejoint la dernière ligne s'il reste de la place, sinon il a sa propre ligne.
+  const qc = qcButtons(item, community, ctx.cfg.lang);
+  const last = rows[rows.length - 1];
+  if (last.components.length + qc.length <= 5) last.components.unshift(...qc);
+  else rows.push(row(...qc));
   return rows;
 }
 
@@ -152,6 +155,11 @@ export async function postItem(env, item, channelId, ctx, allowFetch = true, cha
     const thread = await discordApi(env, 'POST', `/channels/${channelId}/threads`, { name, message, applied_tags: appliedTags });
     threadId = thread && thread.id;
     messageId = threadId;
+    // Sous le post : quelques photos QC de la communauté et le lien vers la galerie des agents.
+    if (threadId && ctx.cfg.forumQc && allowFetch) {
+      calls += await postForumQc(env, threadId, item, ctx.cfg.lang)
+        .catch((err) => { console.log('qc forum', String(err).slice(0, 200)); return 1; });
+    }
   } else {
     const msg = await discordApi(env, 'POST', `/channels/${channelId}/messages`, message);
     messageId = msg && msg.id;

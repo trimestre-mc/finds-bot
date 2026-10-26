@@ -37,8 +37,8 @@ CREATE TABLE IF NOT EXISTS items (
   prev_price REAL,                           -- ancien prix si le prix a baissé
   price_changed_at INTEGER,
   hidden INTEGER NOT NULL DEFAULT 0,         -- masqué des recherches (liste noire)
-  qc_count INTEGER,                          -- photos QC connues (Jadeship / UUFinds)
-  qc_url TEXT,                               -- galerie QC
+  qc_count INTEGER,                          -- photos QC d'agents connues (FinderQC)
+  qc_preview TEXT,                           -- JSON : quelques photos QC (FinderQC)
   qc_checked_at INTEGER,
   source TEXT,                               -- shop, jadeship, manuel
   last_posted INTEGER,

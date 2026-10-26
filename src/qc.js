@@ -1,32 +1,49 @@
-// Photos QC : nombre et galerie (Jadeship → UUFinds), lien FinderQC, et QC postés par la communauté sur Discord.
+// Photos QC, toujours affichées dans Discord (jamais de lien vers un site de QC) :
+// - QC des agents via l'API FinderQC (avec l'accord de son propriétaire), mises en cache ;
+// - QC postées par la communauté dans les salons QC.
 
-import { link } from './components.js';
-import { finderQcUrl } from './links.js';
+import { COMPONENTS_V2, container, gallery, row, text, sep, escape } from './components.js';
+import { discordApi, discordUpload } from './discord.js';
 
-const JADESHIP_UA = 'finds-bot/1.0 (+https://github.com/trimestre-mc/finds-bot)';
+const UA = 'finds-bot/1.0 (+https://github.com/trimestre-mc/finds-bot)';
+const API = 'https://server.finderqc.com/api/spu/webSpuInfo';
+export const BATCHES_PER_API_PAGE = 12;
+export const BATCHES_PER_VIEW = 3;
+const RECHECK_MS = 3 * 86400000;
 
-// Données de la page Jadeship (flux Next.js) puis nombre de QC et lien de la galerie UUFinds.
-export function parseJadeshipQc(html) {
-  const text = [...html.matchAll(/self\.__next_f\.push\(\[1,"((?:[^"\\]|\\.)*)"\]\)/g)]
-    .map((m) => { try { return JSON.parse(`"${m[1]}"`); } catch { return ''; } }).join('');
-  const url = (text.match(/https:\/\/www\.uufinds\.com\/goodItemDetail\/qc\/[A-Za-z0-9]+(?:\?fromId=\d+)?/) || [])[0] || null;
-  const count = Number((text.match(/" ",(\d+)," QC pics available"/) || [])[1] || 0);
-  return { count, url };
+const fmt = (n) => Number(n || 0).toLocaleString('fr-FR').replace(/ | /g, ' ');
+const isImg = (u) => /^https:\/\/img\.finderqc\.com\//.test(u || '');
+
+// Une page de lots QC FinderQC (12 lots). Renvoie { count, batches: [{ agent, date, attrs, photos }] } ou null.
+export async function fetchQcPage(itemId, page = 1) {
+  const res = await fetch(`${API}?id=${encodeURIComponent(itemId)}&page=${page}&pageSize=${BATCHES_PER_API_PAGE}`, { headers: { 'User-Agent': UA } });
+  if (!res.ok) throw new Error(`FinderQC ${res.status}`);
+  const data = await res.json();
+  const s = data && data.code === 0 && data.data && data.data.spuInfo;
+  if (!s) return { count: 0, batches: [] };
+  const batches = (s.spuQcName || []).map((b) => ({
+    agent: b.name || '',
+    date: b.CreatedAt ? Date.parse(b.CreatedAt) : null,
+    attrs: ((b.spuImg || []).find((i) => i.attributes) || {}).attributes || '',
+    photos: (b.spuImg || []).map((i) => i.url).filter(isImg),
+  })).filter((b) => b.photos.length);
+  return { count: Number(s.qcPhotosCount) || 0, batches };
 }
 
-// Vérifie les QC d'un item sur Jadeship (une requête), une fois par semaine au plus. Renvoie l'item à jour.
+// Met à jour le nombre de QC et l'aperçu d'un item (une requête, au plus tous les 3 jours). Renvoie l'item à jour.
 export async function refreshQc(env, item) {
-  if (item.qc_checked_at && Date.now() - item.qc_checked_at < 7 * 86400000) return item;
-  let qc = { count: item.qc_count || 0, url: item.qc_url || null };
+  if (item.qc_checked_at && Date.now() - item.qc_checked_at < RECHECK_MS) return item;
+  let qc = { count: item.qc_count || 0, batches: [] };
   try {
-    const res = await fetch(`https://www.jadeship.com/item/${item.platform}/${item.item_id}`, { headers: { 'User-Agent': JADESHIP_UA } });
-    if (res.ok) qc = parseJadeshipQc(await res.text());
+    qc = await fetchQcPage(item.item_id, 1);
   } catch (err) {
     console.log('qc', item.id, String(err).slice(0, 120));
+    return item;
   }
-  await env.DB.prepare('UPDATE items SET qc_count = ?, qc_url = ?, qc_checked_at = ? WHERE id = ?')
-    .bind(qc.count, qc.url, Date.now(), item.id).run();
-  return { ...item, qc_count: qc.count, qc_url: qc.url, qc_checked_at: Date.now() };
+  const preview = qc.batches.flatMap((b) => b.photos).slice(0, 8);
+  await env.DB.prepare('UPDATE items SET qc_count = ?, qc_preview = ?, qc_checked_at = ? WHERE id = ?')
+    .bind(qc.count, JSON.stringify(preview), Date.now(), item.id).run();
+  return { ...item, qc_count: qc.count, qc_preview: JSON.stringify(preview), qc_checked_at: Date.now() };
 }
 
 // QC de la communauté pour un item : nombre de posts, de photos, et le plus récent.
@@ -39,24 +56,120 @@ export async function communityQc(env, itemId) {
   return row && row.posts ? { posts: row.posts, images: row.images, jump: `https://discord.com/channels/${row.latest}` } : null;
 }
 
-const fmt = (n) => Number(n).toLocaleString('fr-FR').replace(/ | /g, ' ');
-
-// Ligne de boutons QC d'une carte (suivis par /go comme les boutons d'achat).
-export function qcButtons(track, item, community, lang = 'fr') {
+// Bouton QC d'une carte : toujours présent, il ouvre les QC dans Discord (fenêtre visible par la personne qui clique).
+export function qcButtons(item, community, lang = 'fr') {
   const en = lang === 'en';
-  const buttons = [];
-  if (item.qc_count > 0) {
-    buttons.push(link(en ? `${fmt(item.qc_count)} QC photos` : `${fmt(item.qc_count)} photos QC`, track('qc', item.qc_url || finderQcUrl(item)), '📸'));
-  } else if (item.popularity > 0 && finderQcUrl(item)) {
-    buttons.push(link(en ? 'QC photos' : 'Photos QC', track('qc', finderQcUrl(item)), '📸'));
-  }
-  if (community) {
-    buttons.push(link(en ? `Community QC (${community.images})` : `QC communauté (${community.images})`, track('qcc', community.jump), '🧑‍🤝‍🧑'));
-  }
-  return buttons;
+  const n = (item.qc_count || 0) + (community ? community.images : 0);
+  const label = n ? (en ? `View QC (${fmt(n)})` : `Voir les QC (${fmt(n)})`) : (en ? 'QC photos' : 'Photos QC');
+  return [{ type: 2, style: 1, label, emoji: { name: '📸' }, custom_id: `pub:qc:${item.id}`.slice(0, 100) }];
 }
 
-// Résumé texte (« 📸 4 278 QC · 🧑‍🤝‍🧑 3 QC ») pour les listes.
+// Photos QC de la communauté (les plus récentes), avec des liens Discord tout frais.
+// Renvoie { photos: [{ url, filename, jump }], calls }.
+export async function communityPhotos(env, itemId, max = 4) {
+  const { results } = await env.DB.prepare('SELECT * FROM qc_posts WHERE item_id = ? ORDER BY at DESC LIMIT 4').bind(itemId).all();
+  const photos = [];
+  let calls = 0;
+  for (const q of results) {
+    if (photos.length >= max) break;
+    try {
+      const m = await discordApi(env, 'GET', `/channels/${q.channel_id}/messages/${q.message_id}`);
+      calls++;
+      for (const a of m.attachments || []) {
+        if (photos.length >= max) break;
+        if (/^image\//.test(a.content_type || '') || /\.(jpe?g|png|webp)$/i.test(a.filename || '')) {
+          photos.push({ url: a.url, filename: a.filename || 'qc.jpg', jump: `https://discord.com/channels/${q.guild_id}/${q.channel_id}/${q.message_id}` });
+        }
+      }
+    } catch (err) {
+      calls++;
+      // Message supprimé : on oublie ce QC.
+      if (/-> 404/.test(String(err))) await env.DB.prepare('DELETE FROM qc_posts WHERE id = ?').bind(q.id).run();
+    }
+  }
+  return { photos, calls };
+}
+
+function batchCaption(b, en) {
+  const parts = [`🧾 **${escape(b.agent || (en ? 'Agent' : 'Agent'))}**`];
+  if (b.date) parts.push(`<t:${Math.floor(b.date / 1000)}:D>`);
+  if (b.attrs) parts.push(escape(String(b.attrs).slice(0, 80)));
+  return parts.join('  ·  ');
+}
+
+// Fenêtre QC (dans Discord) : page `view` des lots d'agents, et les QC de la communauté en première page.
+export async function qcWindow(env, item, view = 0, opts = {}) {
+  const en = opts.lang === 'en';
+  const first = view * BATCHES_PER_VIEW;
+  const apiPage = Math.floor(first / BATCHES_PER_API_PAGE) + 1;
+  let qc = { count: item.qc_count || 0, batches: [] };
+  try { qc = await fetchQcPage(item.item_id, apiPage); } catch (err) { console.log('qc', String(err).slice(0, 100)); }
+  const offset = first % BATCHES_PER_API_PAGE;
+  const batches = qc.batches.slice(offset, offset + BATCHES_PER_VIEW);
+  const totalBatchesSeen = (apiPage - 1) * BATCHES_PER_API_PAGE + qc.batches.length;
+  const hasNext = offset + BATCHES_PER_VIEW < qc.batches.length || qc.batches.length === BATCHES_PER_API_PAGE;
+
+  const blocks = [];
+  if (view === 0 && opts.community && opts.community.length) {
+    blocks.push(text(en ? '### 🧑‍🤝‍🧑 Community QC' : '### 🧑‍🤝‍🧑 QC de la communauté'));
+    blocks.push(gallery(opts.community.slice(0, 10).map((p) => p.url)));
+  }
+  for (const b of batches) {
+    blocks.push(text(batchCaption(b, en)));
+    blocks.push(gallery(b.photos.slice(0, 10)));
+  }
+  const title = escape((item.title_en || item.title_zh || `${item.platform} ${item.item_id}`).slice(0, 80));
+  const head = `## 📸 ${title}\n-# ${qc.count ? (en ? `${fmt(qc.count)} QC photos` : `${fmt(qc.count)} photos QC`) : (en ? 'No agent QC yet' : 'Pas encore de QC d\'agents')}` +
+    (batches.length ? `  ·  ${en ? 'batches' : 'lots'} ${first + 1}–${first + batches.length}${hasNext ? '' : ` / ${totalBatchesSeen}`}` : '');
+  if (!blocks.length) {
+    blocks.push(text(opts.qcChannel
+      ? (en ? `Bought it? Post your QC photos with the item link in <#${opts.qcChannel}>.` : `Tu l'as acheté ? Poste tes photos QC avec le lien de l'item dans <#${opts.qcChannel}> : elles apparaîtront ici.`)
+      : (en ? 'Nobody has shared QC photos for this item yet.' : 'Personne n\'a encore partagé de QC pour cet item.')));
+  }
+  const nav = (view > 0 || hasNext) ? row(
+    { type: 2, style: 2, emoji: { name: '◀️' }, custom_id: `pub:qcp:${item.id}:${view - 1}`, disabled: view === 0 },
+    { type: 2, style: 2, label: en ? 'More QC' : 'Plus de QC', emoji: { name: '▶️' }, custom_id: `pub:qcp:${item.id}:${view + 1}`, disabled: !hasNext },
+  ) : null;
+  return [container([text(head), sep(), ...blocks, nav], opts.accent || 0x5865f2)];
+}
+
+// Sous un post de forum : photos QC (communauté + dernier lot des agents) et bouton « Plus de QC ».
+// Renvoie le nombre de requêtes externes faites.
+export async function postForumQc(env, threadId, item, lang = 'fr') {
+  const en = lang === 'en';
+  const { photos, calls: got } = await communityPhotos(env, item.id, 4);
+  let calls = got;
+  let qc = { count: 0, batches: [] };
+  try { qc = await fetchQcPage(item.item_id, 1); calls++; } catch { calls++; }
+  if (!photos.length && !qc.batches.length) return calls;
+
+  const files = [];
+  for (const [i, p] of photos.entries()) {
+    try {
+      const res = await fetch(p.url);
+      calls++;
+      if (res.ok) files.push({ name: `qc${i + 1}.${(p.filename.split('.').pop() || 'jpg').toLowerCase()}`, blob: await res.blob() });
+    } catch {}
+  }
+  const blocks = [text(en ? `### 📸 QC photos${qc.count ? ` · ${fmt(qc.count)}` : ''}` : `### 📸 Photos QC${qc.count ? ` · ${fmt(qc.count)}` : ''}`)];
+  if (files.length) {
+    blocks.push(text(en ? '🧑‍🤝‍🧑 From the community' : '🧑‍🤝‍🧑 De la communauté'));
+    blocks.push(gallery(files.map((f) => `attachment://${f.name}`)));
+  }
+  for (const b of qc.batches.slice(0, 2)) {
+    blocks.push(text(batchCaption(b, en)));
+    blocks.push(gallery(b.photos.slice(0, 10)));
+  }
+  if (qc.batches.length > 2 || qc.count > 8) {
+    blocks.push(row({ type: 2, style: 1, emoji: { name: '📸' }, label: en ? 'More QC' : 'Plus de QC', custom_id: `pub:qcp:${item.id}:0` }));
+  }
+  const payload = { flags: COMPONENTS_V2, allowed_mentions: { parse: [] }, components: [container(blocks, 0x5865f2)] };
+  if (files.length) await discordUpload(env, `/channels/${threadId}/messages`, payload, files);
+  else await discordApi(env, 'POST', `/channels/${threadId}/messages`, payload);
+  return calls + 1;
+}
+
+// Résumé texte (« 📸 4 882 QC · 🧑‍🤝‍🧑 3 QC ») pour les listes.
 export function qcSummary(item, community) {
   const parts = [];
   if (item.qc_count > 0) parts.push(`📸 ${fmt(item.qc_count)} QC`);

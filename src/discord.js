@@ -64,6 +64,28 @@ export async function discordApi(env, method, path, body) {
   throw new Error(`Discord ${method} ${path} -> rate limit`);
 }
 
+// Message avec fichiers joints (ex. photos QC). files = [{ name, blob }].
+export async function discordUpload(env, path, payload, files) {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const form = new FormData();
+    form.append('payload_json', JSON.stringify({
+      ...payload, attachments: files.map((f, i) => ({ id: i, filename: f.name })),
+    }));
+    files.forEach((f, i) => form.append(`files[${i}]`, f.blob, f.name));
+    const res = await fetch((env.DISCORD_API || DEFAULT_API) + path, {
+      method: 'POST', headers: { Authorization: `Bot ${env.DISCORD_BOT_TOKEN}` }, body: form,
+    });
+    if (res.status === 429) {
+      const data = await res.json().catch(() => ({}));
+      await new Promise((r) => setTimeout(r, Math.ceil((data.retry_after || 1) * 1000)));
+      continue;
+    }
+    if (!res.ok) throw new Error(`Discord POST ${path} -> ${res.status}: ${(await res.text()).slice(0, 300)}`);
+    return res.json();
+  }
+  throw new Error(`Discord POST ${path} -> rate limit`);
+}
+
 // Message de suivi après une réponse différée.
 export function followup(env, token, data) {
   return discordApi(env, 'POST', `/webhooks/${env.DISCORD_APP_ID}/${token}`, data);
