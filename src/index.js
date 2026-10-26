@@ -15,7 +15,7 @@ import {
   runSchedules, runAutoConvert, runQcChannels,
 } from './features.js';
 import { categorizePending, detectCategory } from './categories.js';
-import { fetchQcPage, runQcChecks, refreshQc, qcWindow } from './qc.js';
+import { fetchQcPage, runQcChecks, refreshQc, qcWindow, syncQcCatalog } from './qc.js';
 import { popularItemStatements } from './items.js';
 import { budget } from './budget.js';
 import { withDb } from './turso.js';
@@ -59,6 +59,11 @@ export default {
       })());
       return;
     }
+    if (event.cron === '*/1 * * * *') {
+      // Synchro du catalogue FinderQC (items + nombre de QC), seule dans son exécution.
+      if (env.TURSO_URL) ctx.waitUntil(syncQcCatalog(env).catch((e) => console.log('synchro QC', String(e))));
+      return;
+    }
     if (event.cron === '*/2 * * * *') {
       ctx.waitUntil(Promise.all([
         runAutoConvert(env).catch((e) => console.log('conversion', String(e))),
@@ -66,11 +71,16 @@ export default {
       ]));
       return;
     }
+    // Chaque minute : la file d'envoi d'abord (seule dans l'exécution), sinon l'entretien (traduction, catégories, indexeur).
     ctx.waitUntil((async () => {
-      await ensureIndexes(env).catch((e) => console.log('index', String(e).slice(0, 120)));
       await runSchedules(env).catch((e) => console.log('drops', String(e)));
+      const queued = await env.DB.prepare('SELECT 1 AS n FROM post_queue LIMIT 1').first().catch(() => null);
+      if (queued) {
+        await processQueue(env, 45000).catch((e) => console.log('file', String(e)));
+        return;
+      }
+      await ensureIndexes(env).catch((e) => console.log('index', String(e).slice(0, 120)));
       await Promise.all([
-        processQueue(env, 50000).catch((e) => console.log('file', String(e))),
         translatePending(env, TRANSLATE_PER_MINUTE).catch((e) => console.log('traduction', String(e))),
         refreshRate(env).catch((e) => console.log('taux', String(e))),
         autoIndex(env).catch((e) => console.log('indexeur', String(e))),
@@ -90,6 +100,7 @@ const INDEXES = [
   'CREATE INDEX IF NOT EXISTS items_qcdue ON items(qc_checked_at) WHERE popularity > 0 OR posted_count > 0 OR manual = 1',
   'CREATE INDEX IF NOT EXISTS items_recent ON items(first_seen DESC)',
   'CREATE TABLE IF NOT EXISTS search_cache (key TEXT PRIMARY KEY, ids TEXT NOT NULL, at INTEGER NOT NULL)',
+  'CREATE TABLE IF NOT EXISTS qc_requests (item_id TEXT PRIMARY KEY, user_id TEXT, at INTEGER NOT NULL)',
 ];
 let indexesReady = false;
 let indexesTriedAt = 0;
@@ -97,7 +108,7 @@ let indexesTriedAt = 0;
 async function ensureIndexes(env) {
   if (indexesReady || Date.now() - indexesTriedAt < 600000) return;
   indexesTriedAt = Date.now();
-  const row = await env.DB.prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE name IN ('items_nocat', 'items_noimg', 'items_qcdue', 'items_recent', 'search_cache')").first();
+  const row = await env.DB.prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE name IN ('items_nocat', 'items_noimg', 'items_qcdue', 'items_recent', 'search_cache', 'qc_requests')").first();
   if (row.n === INDEXES.length) { indexesReady = true; return; }
   for (const sql of INDEXES) await env.DB.prepare(sql).run();
   indexesReady = true;

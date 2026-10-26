@@ -2,7 +2,7 @@
 // conversion automatique des liens, filtres, liste noire, historique, réglages, santé.
 
 import { discordApi } from './discord.js';
-import { COMPONENTS_V2, container, text, escape } from './components.js';
+import { COMPONENTS_V2, container, text, escape, section, thumb } from './components.js';
 import { panel, update, openModal, later, userId } from './respond.js';
 import { buildAgentLink, canonicalUrl, extractItemRefs } from './links.js';
 import { communityQc, refreshQc, communityPhotos, qcWindow } from './qc.js';
@@ -102,6 +102,13 @@ export async function handlePublicComponent(it, env, ctx) {
     ctx.waitUntil(env.DB.prepare('INSERT INTO clicks (item_id, agent, channel_id, at) VALUES (?, ?, ?, ?)')
       .bind(key, 'qc_view', it.channel_id || null, Date.now()).run().catch(() => {}));
     return later(it, env, ctx, () => openQc(env, key, platform, itemId, 0), true);
+  }
+  if (kind === 'qcreq') {
+    // « Demander un QC » : message dans le salon QC (une demande par item et par 24 h).
+    const key = parts.slice(2).join(':');
+    const [platform, itemId] = key.split(':');
+    if (!canonicalUrl(platform, itemId)) return null;
+    return later(it, env, ctx, () => requestQc(env, it, key, platform, itemId), true);
   }
   if (kind === 'qcp') {
     // ◀ ▶ dans la fenêtre QC (mise à jour), ou « Plus de QC » sous un post de forum (nouvelle fenêtre privée).
@@ -371,7 +378,8 @@ export async function runSchedule(env, s) {
 }
 
 export async function runSchedules(env) {
-  const { results } = await env.DB.prepare('SELECT * FROM schedules WHERE enabled = 1 AND next_at <= ? ORDER BY next_at LIMIT 3')
+  // Un drop par minute au plus (requêtes à la base limitées par exécution).
+  const { results } = await env.DB.prepare('SELECT * FROM schedules WHERE enabled = 1 AND next_at <= ? ORDER BY next_at LIMIT 1')
     .bind(Date.now()).all();
   for (const s of results) {
     try {
@@ -465,4 +473,26 @@ export async function runQcChannels(env) {
       await logError(env, 'salon QC', `<#${ch.channel_id}> : ${String(err.message || err).slice(0, 200)}`);
     }
   }
+}
+
+// Demande de QC à la communauté pour un item qui n'en a aucune.
+async function requestQc(env, it, key, platform, itemId) {
+  const { results: qcCh } = await env.DB.prepare('SELECT channel_id FROM qc_channels WHERE guild_id = ? LIMIT 1').bind(it.guild_id).all();
+  if (!qcCh.length) return [container([text('Aucun salon QC n\'est configuré sur ce serveur.')])];
+  const channel = qcCh[0].channel_id;
+  const recent = await env.DB.prepare('SELECT at FROM qc_requests WHERE item_id = ?').bind(key).first();
+  if (recent && Date.now() - recent.at < 86400000) {
+    return [container([text(`🙋 Des QC ont déjà été demandés pour cet item dans <#${channel}> il y a moins de 24 h. Elles apparaîtront ici dès qu'un membre les poste.`)])];
+  }
+  const item = await env.DB.prepare('SELECT * FROM items WHERE id = ?').bind(key).first()
+    || { id: key, item_id: itemId, platform, url: canonicalUrl(platform, itemId) };
+  const title = escape((item.title_en || item.title_zh || `${platform} ${itemId}`).slice(0, 90));
+  const lines = `## 🙋 QC demandés\n<@${userId(it)}> cherche des photos QC pour **${title}**.\n` +
+    `Tu l'as acheté ? Poste tes photos ici avec ce lien : ${item.url}`;
+  await discordApi(env, 'POST', `/channels/${channel}/messages`, {
+    flags: COMPONENTS_V2, allowed_mentions: { users: [userId(it)] },
+    components: [container([item.image ? section(lines, thumb(item.image)) : text(lines)], 0x5865f2)],
+  });
+  await env.DB.prepare('INSERT OR REPLACE INTO qc_requests (item_id, user_id, at) VALUES (?, ?, ?)').bind(key, userId(it), Date.now()).run().catch(() => {});
+  return [container([text(`✅ Demande envoyée dans <#${channel}>. Dès qu'un membre poste ses QC avec le lien, elles apparaîtront dans « Voir les QC ».`)])];
 }

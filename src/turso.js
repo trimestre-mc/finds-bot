@@ -32,7 +32,11 @@ function toResult(r) {
 export function tursoDb(env) {
   const endpoint = `${String(env.TURSO_URL).replace(/^libsql:\/\//, 'https://').replace(/\/$/, '')}/v2/pipeline`;
 
+  // Chaque appel à Turso est une requête externe (50 max par exécution sur Workers gratuit) : on les compte.
+  const db = { calls: 0 };
+
   async function pipeline(requests) {
+    db.calls++;
     const res = await fetch(endpoint, {
       method: 'POST',
       headers: { Authorization: `Bearer ${env.TURSO_TOKEN}`, 'Content-Type': 'application/json' },
@@ -87,13 +91,12 @@ export function tursoDb(env) {
     return results.slice(1, n + 1).map(toResult);
   }
 
-  return { prepare: (sql) => new Statement(sql), batch };
+  return Object.assign(db, { prepare: (sql) => new Statement(sql), batch });
 }
 
 // Utilise Turso si TURSO_URL et TURSO_TOKEN sont configurés, sinon la base D1 liée au Worker.
-let cached = null;
+// Un accès neuf par exécution : le compteur de requêtes repart de zéro à chaque fois.
 export function withDb(env) {
   if (!env.TURSO_URL || !env.TURSO_TOKEN) return env;
-  if (!cached || cached.url !== env.TURSO_URL) cached = { url: env.TURSO_URL, db: tursoDb(env) };
-  return Object.assign(Object.create(env), { DB: cached.db });
+  return Object.assign(Object.create(env), { DB: tursoDb(env) });
 }

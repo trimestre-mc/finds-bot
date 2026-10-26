@@ -5,6 +5,8 @@
 import { COMPONENTS_V2, container, gallery, row, text, sep, escape } from './components.js';
 import { discordApi, discordUpload } from './discord.js';
 import { popularItemStatements } from './items.js';
+import { canonicalUrl } from './links.js';
+import { detectCategory } from './categories.js';
 import { budget } from './budget.js';
 
 const UA = 'finds-bot/1.0 (+https://github.com/trimestre-mc/finds-bot)';
@@ -205,16 +207,20 @@ export async function qcWindow(env, item, view = 0, opts = {}) {
     blocks.push(text(en ? '⏳ QC photos for this item are being fetched right now. Come back in a few minutes.'
       : '⏳ Les photos QC de cet item sont en cours de récupération. Reviens dans quelques minutes.'));
   }
+  let ask = null;
   if (!blocks.length) {
     blocks.push(text(opts.qcChannel
-      ? (en ? `Bought it? Post your QC photos with the item link in <#${opts.qcChannel}>.` : `Tu l'as acheté ? Poste tes photos QC avec le lien de l'item dans <#${opts.qcChannel}> : elles apparaîtront ici.`)
+      ? (en ? `No QC photos anywhere yet for this item. Bought it? Post your QC photos with the item link in <#${opts.qcChannel}>.`
+        : `Aucune photo QC n'existe encore pour cet item. Tu l'as acheté ? Poste tes photos QC avec le lien de l'item dans <#${opts.qcChannel}> : elles apparaîtront ici.`)
       : (en ? 'Nobody has shared QC photos for this item yet.' : 'Personne n\'a encore partagé de QC pour cet item.')));
+    // Pas de QC nulle part : on peut les demander à la communauté.
+    if (opts.qcChannel) ask = row({ type: 2, style: 1, emoji: { name: '🙋' }, label: en ? 'Ask for QC' : 'Demander un QC', custom_id: `pub:qcreq:${item.id}`.slice(0, 100) });
   }
   const nav = (view > 0 || hasNext) ? row(
     { type: 2, style: 2, emoji: { name: '◀️' }, custom_id: `pub:qcp:${item.id}:${view - 1}`, disabled: view === 0 },
     { type: 2, style: 2, label: en ? 'More QC' : 'Plus de QC', emoji: { name: '▶️' }, custom_id: `pub:qcp:${item.id}:${view + 1}`, disabled: !hasNext },
   ) : null;
-  return [container([text(head), sep(), ...blocks, nav], opts.accent || 0x5865f2)];
+  return [container([text(head), sep(), ...blocks, nav, ask], opts.accent || 0x5865f2)];
 }
 
 // Sous un post de forum : photos QC (communauté + dernier lot des agents) et bouton « Plus de QC ».
@@ -259,4 +265,127 @@ export function qcSummary(item, community) {
   if (item.qc_count > 0) parts.push(`📸 ${fmt(item.qc_count)} QC`);
   if (community) parts.push(`🧑‍🤝‍🧑 ${community.images} QC`);
   return parts.join('  ·  ');
+}
+
+// ---------------------------------------------------------------- Synchro en masse du catalogue FinderQC
+// Chaque minute (son propre cron) : quelques pages de 100 produits du catalogue FinderQC, TOUS les produits (avec ou
+// sans QC). L'API s'arrête à 10 000 résultats par filtre : on découpe chaque plateforme en tranches de prix assez
+// fines pour rester sous cette limite (la largeur s'adapte toute seule). Chaque produit est ajouté ou mis à jour
+// (nombre de QC, ventes), et les items Weidian partent dans la file de découverte de boutiques (boutique entière
+// indexée ensuite par GitHub). Un cycle complet, puis on recommence le lendemain pour les nouveautés.
+
+const SYNC_PLATFORMS = ['Weidian', 'Taobao', 'Ali1688'];
+const SYNC_PAGE_SIZE = 100;
+const SYNC_LIMIT = 10000; // résultats max par filtre côté FinderQC
+const SYNC_MAX_CENTS = 2000000; // au-delà de 20 000 ¥ : une dernière tranche ouverte
+const SYNC_PAGES_PER_RUN = 12; // temps CPU limité sur Workers gratuit
+
+async function listPage(filter, page) {
+  const qs = new URLSearchParams({ ...filter, page: String(page), pageSize: String(SYNC_PAGE_SIZE) });
+  const res = await fetch(`https://server.finderqc.com/api/spu/webSpuList?${qs}`, { headers: { 'User-Agent': UA } });
+  if (!res.ok) throw new Error(`FinderQC ${res.status}`);
+  const data = await res.json();
+  if (!data || data.code !== 0 || !data.data) throw new Error('FinderQC : réponse inattendue');
+  return { list: data.data.list || [], total: Number(data.data.total) || 0 };
+}
+
+const yuan = (cents) => (cents / 100).toFixed(2);
+
+function sliceFilter(state) {
+  const last = state.lo >= SYNC_MAX_CENTS;
+  return {
+    mallType: SYNC_PLATFORMS[state.plat],
+    minPrice: yuan(state.lo),
+    maxPrice: last ? '9999999' : yuan(state.lo + state.w - 1),
+  };
+}
+
+export async function syncQcCatalog(env) {
+  let external = 0;
+  const used = () => external + (env.DB.calls || 0);
+  const day = new Date().toISOString().slice(0, 10);
+  const row = await env.DB.prepare("SELECT value FROM settings WHERE key = 'qcsync'").first();
+  let state = null;
+  try { state = row ? JSON.parse(row.value) : null; } catch {}
+  if (!state || state.v !== 2 || (state.done && state.cycle !== day)) {
+    state = { v: 2, cycle: day, plat: 0, lo: 0, w: 1000, page: 1, done: false, seen: 0 };
+  }
+  if (state.done) return 0;
+  const b = await budget(env, 'qcsync');
+  if (!b.left) return 0;
+
+  const now = Date.now();
+  let stmts = [];
+  let written = 0;
+  let pages = 0;
+  const flush = async () => {
+    if (!stmts.length) return;
+    const out = stmts;
+    stmts = [];
+    await env.DB.batch(out);
+  };
+  while (used() < 40 && written < b.left && pages < SYNC_PAGES_PER_RUN) {
+    if (state.plat >= SYNC_PLATFORMS.length) { state.done = true; break; }
+    let page;
+    try {
+      page = await listPage(sliceFilter(state), state.page);
+      external++;
+      pages++;
+    } catch (err) {
+      console.log('synchro QC', String(err).slice(0, 100));
+      break;
+    }
+    // Tranche trop large (plus de 10 000 produits) : on la coupe en deux et on recommence.
+    if (state.page === 1 && page.total >= SYNC_LIMIT && state.w > 1 && state.lo < SYNC_MAX_CENTS) {
+      state.w = Math.max(1, Math.floor(state.w / 2));
+      continue;
+    }
+    for (const x of page.list) {
+      const platform = PLATFORMS[x.mallType];
+      const id = String(x.itemId || '');
+      if (!platform || !/^\d{6,14}$/.test(id)) continue;
+      const key = `${platform}:${id}`;
+      const title = x.enTitle || x.originalTitle || null;
+      const qc = Math.max(0, Number(x.qcPhotosCount) || 0);
+      const image = /^https:\/\//.test(x.originalThubnaiURL || x.picUrl || '') ? (x.originalThubnaiURL || x.picUrl) : null;
+      stmts.push(env.DB.prepare(
+        `INSERT INTO items (id, platform, item_id, title_en, price_cny, image, url, popularity, source, first_seen, category, qc_count, qc_checked_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'finderqc', ?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET qc_count = excluded.qc_count, qc_checked_at = excluded.qc_checked_at,
+           popularity = MAX(items.popularity, excluded.popularity), image = COALESCE(items.image, excluded.image),
+           title_en = COALESCE(items.title_en, excluded.title_en), price_cny = COALESCE(items.price_cny, excluded.price_cny)
+         WHERE items.qc_count IS NOT excluded.qc_count OR items.popularity < excluded.popularity
+           OR items.image IS NULL OR items.title_en IS NULL`,
+      ).bind(key, platform, id, title ? String(title).slice(0, 200) : null, x.cnPrice != null ? Number(x.cnPrice) : null,
+        image, canonicalUrl(platform, id), Math.max(0, Number(x.oneYear) || 0), now, detectCategory(title), qc, now));
+      // Boutique Weidian inconnue : retrouvée puis indexée en entier par l'indexeur.
+      if (platform === 'weidian') {
+        stmts.push(env.DB.prepare(
+          `INSERT OR IGNORE INTO link_queue (item_id, source, added_at)
+           SELECT ?, 'finderqc', ? WHERE NOT EXISTS (SELECT 1 FROM items WHERE id = ? AND shop_id IS NOT NULL)`,
+        ).bind(id, now, key));
+      }
+      written++;
+      state.seen++;
+    }
+    if (stmts.length >= 300) await flush();
+    const lastPage = page.list.length < SYNC_PAGE_SIZE || state.page * SYNC_PAGE_SIZE >= Math.min(page.total, SYNC_LIMIT);
+    if (lastPage) {
+      // Tranche finie : la suivante, plus large si celle-ci était creuse, plus fine si elle était pleine.
+      if (state.lo >= SYNC_MAX_CENTS) {
+        state.plat++;
+        state.lo = 0;
+        state.w = 1000;
+      } else {
+        state.lo += state.w;
+        if (page.total < 3000) state.w *= 2;
+        else if (page.total > 7000) state.w = Math.max(1, Math.floor(state.w * 0.7));
+      }
+      state.page = 1;
+    } else state.page++;
+  }
+  await flush();
+  await b.use(written);
+  await env.DB.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('qcsync', ?)").bind(JSON.stringify(state)).run();
+  return written;
 }

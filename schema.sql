@@ -210,3 +210,10 @@ CREATE TABLE IF NOT EXISTS search_cache (
   ids TEXT NOT NULL,
   at INTEGER NOT NULL
 );
+
+-- Demandes de QC à la communauté (une par item et par 24 h)
+CREATE TABLE IF NOT EXISTS qc_requests (
+  item_id TEXT PRIMARY KEY,
+  user_id TEXT,
+  at INTEGER NOT NULL
+);

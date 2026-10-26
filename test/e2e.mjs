@@ -567,6 +567,7 @@ try {
   console.error(err);
   console.log(devLog.slice(-3000));
 } finally {
+  writeFileSync(ROOT + '.wrangler/e2e-dev.log', devLog);
   const workerErrors = devLog.split('\n').filter((l) => /envoi échoué|traduction échouée|tâche|erreur|Error/.test(l));
   if (workerErrors.length) console.log('Logs Worker :\n' + workerErrors.slice(0, 15).join('\n'));
   dev.kill();

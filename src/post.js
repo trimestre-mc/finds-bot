@@ -113,14 +113,6 @@ export function buildItemMessage(item, ctx, images = [], channelId = null, commu
   };
 }
 
-// Déjà posté dans ce salon récemment ? (anti-doublon, durée réglable)
-export async function recentlyPosted(env, itemId, channelId, days) {
-  if (!days) return false;
-  const row = await env.DB.prepare('SELECT 1 FROM posts WHERE item_id = ? AND channel_id = ? AND posted_at > ? LIMIT 1')
-    .bind(itemId, channelId, Date.now() - days * 86400000).first();
-  return !!row;
-}
-
 // Tags disponibles d'un forum (une requête par forum et par exécution).
 async function forumTag(env, ctx, channelId, category) {
   if (!ctx.forumTags.has(channelId)) {
@@ -135,7 +127,9 @@ async function forumTag(env, ctx, channelId, category) {
 // Poste un item : message dans un salon texte, ou nouveau post (1 item = 1 post) dans un forum.
 // Renvoie le nombre de requêtes externes faites (pour rester sous la limite Cloudflare).
 // checkQc : vérifier les QC sur Jadeship avant de poster (items populaires, ou post choisi à la main).
-export async function postItem(env, item, channelId, ctx, allowFetch = true, channelType = 0, checkQc = false) {
+// opts.community : QC de la communauté déjà chargées (envoi groupé) ; opts.history : tableau où ajouter les
+// écritures d'historique au lieu de les exécuter tout de suite (un seul lot à la fin).
+export async function postItem(env, item, channelId, ctx, allowFetch = true, channelType = 0, checkQc = false, opts = {}) {
   const wantQc = allowFetch && !item.qc_checked_at && (checkQc || item.popularity > 0);
   const [[images, fetched], withQc] = await Promise.all([
     itemImages(env, item, allowFetch),
@@ -143,7 +137,8 @@ export async function postItem(env, item, channelId, ctx, allowFetch = true, cha
   ]);
   item = withQc;
   let calls = 1 + fetched + (wantQc ? 1 : 0);
-  const message = buildItemMessage(item, ctx, images, channelId, await communityQc(env, item.id));
+  const community = opts.community !== undefined ? opts.community : await communityQc(env, item.id);
+  const message = buildItemMessage(item, ctx, images, channelId, community);
   let messageId;
   let threadId = null;
   if (Number(channelType) === FORUM) {
@@ -166,15 +161,35 @@ export async function postItem(env, item, channelId, ctx, allowFetch = true, cha
   }
   // Le message est déjà sur Discord : si la base refuse l'écriture (quota du jour), on ne fait pas échouer le post.
   const now = Date.now();
-  await env.DB.batch([
+  const history = [
     env.DB.prepare('UPDATE items SET posted_count = posted_count + 1, last_posted = ? WHERE id = ?').bind(now, item.id),
     env.DB.prepare('INSERT INTO posts (item_id, channel_id, message_id, thread_id, posted_at) VALUES (?, ?, ?, ?, ?)')
       .bind(item.id, channelId, messageId || null, threadId, now),
-  ]).catch((err) => console.log('historique', String(err).slice(0, 120)));
+  ];
+  if (opts.history) opts.history.push(...history);
+  else await env.DB.batch(history).catch((err) => console.log('historique', String(err).slice(0, 120)));
   return calls;
 }
 
-// Vide la file "tout poster" pendant budgetMs. Appelé par le cron et juste après « Confirmer ».
+// QC de la communauté de plusieurs items en une requête : Map id → { posts, images, jump }.
+async function communityQcMany(env, ids) {
+  const map = new Map();
+  if (!ids.length) return map;
+  const { results } = await env.DB.prepare(
+    `SELECT item_id, guild_id, channel_id, message_id, images FROM qc_posts WHERE item_id IN (${ids.map(() => '?').join(',')}) ORDER BY at DESC`,
+  ).bind(...ids).all();
+  for (const q of results) {
+    const c = map.get(q.item_id) || { posts: 0, images: 0, jump: `https://discord.com/channels/${q.guild_id}/${q.channel_id}/${q.message_id}` };
+    c.posts++;
+    c.images += q.images;
+    map.set(q.item_id, c);
+  }
+  return map;
+}
+
+// Vide la file "tout poster" pendant budgetMs. Appelé par son cron (chaque minute) et juste après « Confirmer ».
+// Envoi groupé : 10 items réservés, chargés et vérifiés en quelques requêtes, historique écrit en un seul lot.
+// Avec Turso, chaque requête à la base compte dans les 50 requêtes externes autorisées par exécution.
 export async function processQueue(env, budgetMs) {
   // Un seul envoyeur à la fois (cron et bouton « Confirmer » peuvent se chevaucher).
   const now = Date.now();
@@ -188,39 +203,67 @@ export async function processQueue(env, budgetMs) {
   const deadline = now + budgetMs;
   let ctx = null;
   let posted = 0;
-  let calls = 0; // Cloudflare gratuit : 50 requêtes externes max par exécution
+  let external = 0; // requêtes Discord, Weidian, QC
+  const used = () => external + (env.DB.calls || 0);
   try {
-    while (Date.now() < deadline && calls < MAX_CALLS) {
-      const job = await env.DB.prepare(
-        `DELETE FROM post_queue WHERE id = (SELECT MIN(id) FROM post_queue) RETURNING item_id, channel_id, channel_type, ping`,
-      ).first();
-      if (!job) break;
+    while (Date.now() < deadline && used() < MAX_CALLS - 6) {
+      const room = Math.max(1, Math.min(10, MAX_CALLS - used() - 6));
+      const { results: jobs } = await env.DB.prepare(
+        `DELETE FROM post_queue WHERE id IN (SELECT id FROM post_queue ORDER BY id LIMIT ?)
+         RETURNING id, item_id, channel_id, channel_type, ping`,
+      ).bind(room).all();
+      if (!jobs.length) break;
+      jobs.sort((a, b) => a.id - b.id);
       if (!ctx) ctx = await postContext(env);
-      const started = Date.now();
-      try {
-        if (job.ping) {
-          // Message d'annonce d'un drop (ping de rôle), juste avant les items.
-          await discordApi(env, 'POST', `/channels/${job.channel_id}/messages`, {
-            content: job.ping, allowed_mentions: { parse: ['roles', 'everyone'] },
-          });
-          calls++;
+
+      const ids = [...new Set(jobs.map((j) => j.item_id).filter(Boolean))];
+      const marks = ids.map(() => '?').join(',');
+      const [items, recent, community] = await Promise.all([
+        ids.length ? env.DB.prepare(`SELECT * FROM items WHERE id IN (${marks})`).bind(...ids).all() : { results: [] },
+        ids.length && ctx.cfg.dedupeDays
+          ? env.DB.prepare(`SELECT item_id, channel_id FROM posts WHERE posted_at > ? AND item_id IN (${marks})`)
+            .bind(Date.now() - ctx.cfg.dedupeDays * 86400000, ...ids).all()
+          : { results: [] },
+        communityQcMany(env, ids),
+      ]);
+      const byId = new Map(items.results.map((i) => [i.id, i]));
+      const already = new Set(recent.results.map((r) => `${r.item_id}|${r.channel_id}`));
+      const history = [];
+      const deadChannels = new Set();
+
+      for (const job of jobs) {
+        if (deadChannels.has(job.channel_id)) continue;
+        const started = Date.now();
+        try {
+          if (job.ping) {
+            // Message d'annonce d'un drop (ping de rôle), juste avant les items.
+            await discordApi(env, 'POST', `/channels/${job.channel_id}/messages`, {
+              content: job.ping, allowed_mentions: { parse: ['roles', 'everyone'] },
+            });
+            external++;
+          }
+          const item = byId.get(job.item_id);
+          if (!item || already.has(`${item.id}|${job.channel_id}`)) continue; // supprimé, simple annonce, ou déjà posté
+          external += await postItem(env, item, job.channel_id, ctx, used() < MAX_CALLS - 8, job.channel_type, false,
+            { community: community.get(item.id) || null, history });
+          already.add(`${item.id}|${job.channel_id}`);
+          posted++;
+        } catch (err) {
+          console.log('envoi échoué', job.item_id, String(err).slice(0, 300));
+          if (/-> (403|404)/.test(String(err))) deadChannels.add(job.channel_id);
         }
-        const item = job.item_id && await env.DB.prepare('SELECT * FROM items WHERE id = ?').bind(job.item_id).first();
-        if (!item) continue; // item supprimé entre-temps, ou simple annonce
-        if (await recentlyPosted(env, item.id, job.channel_id, ctx.cfg.dedupeDays)) continue;
-        calls += await postItem(env, item, job.channel_id, ctx, calls < MAX_CALLS - 3, job.channel_type);
-        posted++;
-      } catch (err) {
-        console.log('envoi échoué', job.item_id, String(err).slice(0, 300));
-        await logError(env, 'envoi', `${job.item_id} → <#${job.channel_id}> : ${String(err.message || err).slice(0, 200)}`);
-        if (/-> (403|404)/.test(String(err))) {
-          // Salon inaccessible : on vide le reste de la file pour ce salon.
-          await env.DB.prepare('DELETE FROM post_queue WHERE channel_id = ?').bind(job.channel_id).run();
-        }
+        // Discord accepte ~1 message par seconde et par salon pour un bot.
+        const wait = POST_INTERVAL_MS - (Date.now() - started);
+        if (wait > 0) await new Promise((r) => setTimeout(r, wait));
       }
-      // Discord accepte ~1 message par seconde et par salon pour un bot.
-      const wait = POST_INTERVAL_MS - (Date.now() - started);
-      if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+
+      // Historique en un seul lot ; salons inaccessibles : on vide le reste de leur file.
+      for (const ch of deadChannels) {
+        history.push(env.DB.prepare('DELETE FROM post_queue WHERE channel_id = ?').bind(ch));
+        history.push(env.DB.prepare('INSERT INTO logs (at, kind, message) VALUES (?, ?, ?)')
+          .bind(Date.now(), 'envoi', `Le bot ne peut pas écrire dans <#${ch}> : file vidée pour ce salon`));
+      }
+      if (history.length) await env.DB.batch(history).catch((err) => console.log('historique', String(err).slice(0, 120)));
     }
   } finally {
     await env.DB.prepare("UPDATE settings SET value = '0' WHERE key = 'queue_lock'").run();
