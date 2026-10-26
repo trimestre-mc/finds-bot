@@ -5,6 +5,7 @@
 // Test local sans Worker : SHOP=1784277725 node index.mjs
 
 import { chromium } from 'playwright';
+import { collectJadeship } from './jadeship.mjs';
 
 const WORKER_URL = (process.env.WORKER_URL || '').replace(/\/$/, '');
 const SECRET = process.env.INDEXER_SECRET || '';
@@ -110,13 +111,46 @@ async function crawlShop(page, shopId, onBatch) {
   return { count: seen.size, shopName };
 }
 
-// Photos des items (page produit publique), une seule fois par item, à rythme modéré.
-async function fetchImages(itemId) {
+// Page produit Weidian publique : photos et boutique. Une seule fois par item, à rythme modéré.
+async function fetchItemPage(itemId) {
   const res = await fetch(`https://weidian.com/item.html?itemID=${itemId}`);
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   const html = (await res.text()).replaceAll('&#34;', '"').replaceAll('&quot;', '"').replaceAll('&amp;', '&');
   const block = (html.match(/"imgs"\s*:\s*\[([^\]]*)\]/) || [])[1] || '';
-  return [...new Set((block.match(/https:\/\/[^"]+/g) || []).map((u) => u.split('?')[0]))].slice(0, 8);
+  return {
+    images: [...new Set((block.match(/https:\/\/[^"]+/g) || []).map((u) => u.split('?')[0]))].slice(0, 8),
+    shopId: (html.match(/"shop_id"\s*:\s*"?(\d+)/) || [])[1] || null,
+    shopName: (html.match(/"shopName"\s*:\s*"([^"]+)"/) || [])[1] || null,
+  };
+}
+
+async function fetchImages(itemId) {
+  return (await fetchItemPage(itemId)).images;
+}
+
+// Retrouve la boutique des items trouvés (Jadeship, salons Discord, ajout en masse).
+async function resolveLinks() {
+  const { items } = await api('/api/indexer/link-queue?limit=1500');
+  if (!items.length) return;
+  console.log(`🔍 ${items.length} items dont il faut trouver la boutique`);
+  let batch = [];
+  let added = 0;
+  let errors = 0;
+  const flush = async () => { if (batch.length) { added += (await api('/api/indexer/resolved', { items: batch })).shopsAdded; batch = []; } };
+  for (const itemId of items) {
+    if (Date.now() - started > TIME_BUDGET_MS / 2) { console.log('Temps : la suite au prochain passage.'); break; }
+    try {
+      batch.push({ itemId, ...(await fetchItemPage(itemId)) });
+      errors = 0;
+    } catch (err) {
+      batch.push({ itemId });
+      if (++errors >= 5) { console.log(`Arrêt après 5 erreurs : ${err.message}`); break; }
+    }
+    if (batch.length >= 50) await flush();
+    await sleep(IMAGE_DELAY_MS);
+  }
+  await flush();
+  console.log(`🔍 ${added} nouvelle(s) boutique(s) découverte(s)`);
 }
 
 async function fillImages() {
@@ -159,6 +193,17 @@ async function main() {
     }
 
     if (!WORKER_URL || !SECRET) throw new Error('WORKER_URL et INDEXER_SECRET sont requis');
+    const first = await api('/api/indexer/jobs');
+    if (first.jadeship && !process.env.SKIP_JADESHIP) {
+      console.log('🟢 Collecte Jadeship');
+      try {
+        const r = await collectJadeship((data) => api('/api/indexer/jadeship', data), (m) => console.log(m));
+        console.log(`🟢 Jadeship : ${r.items} items, ${r.shops} boutiques Weidian`);
+      } catch (err) {
+        console.log(`Jadeship : ${err.message}`);
+      }
+    }
+    await resolveLinks();
     const { shops } = await api('/api/indexer/jobs');
     console.log(`${shops.length} catalogue(s) à indexer`);
 

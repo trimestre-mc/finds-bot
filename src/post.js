@@ -89,7 +89,7 @@ export function buildItemMessage(item, agents, rate, images = []) {
     components: [container([
       pics.length ? gallery(pics) : null,
       text(`## ${escape(itemTitle(item))}`),
-      text(`${price}\n-# 🏪 ${escape(item.shop_name || platform)}  ·  ${platform}`),
+      text(`${price}\n-# 🏪 ${escape(item.shop_name || platform)}  ·  ${platform}${item.popularity ? `  ·  🔥 ${item.popularity} ventes` : ''}`),
       sep(),
       ...rows,
     ], CARD_ACCENT)],

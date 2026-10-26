@@ -91,9 +91,13 @@ export async function resolveQueue(env, limit) {
   for (const row of results) {
     try {
       const known = await env.DB.prepare('SELECT shop_id FROM items WHERE id = ?').bind(`weidian:${row.item_id}`).first();
-      if (!known) {
+      if (!known || !known.shop_id) {
         const info = await fetchWeidianItem(row.item_id);
         if (info.shopId && await addShopQuiet(env, info.shopId, info.shopName, row.source, null)) added++;
+        if (known && info.shopId) {
+          await env.DB.prepare('UPDATE items SET shop_id = ?, shop_name = COALESCE(shop_name, ?) WHERE id = ?')
+            .bind(info.shopId, info.shopName, `weidian:${row.item_id}`).run();
+        }
       }
     } catch (err) {
       console.log('résolution', row.item_id, String(err).slice(0, 120));

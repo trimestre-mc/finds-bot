@@ -9,7 +9,8 @@ CREATE TABLE IF NOT EXISTS shops (
   last_indexed INTEGER,
   last_error TEXT,
   run_id TEXT,
-  source TEXT,                      -- manuel, bulk, discord:<salon>
+  source TEXT,                      -- manuel, bulk, discord:<salon>, jadeship
+  tier TEXT,                        -- trusted, high, mid (annuaire Jadeship)
   added_by TEXT,
   added_at INTEGER
 );
@@ -31,6 +32,8 @@ CREATE TABLE IF NOT EXISTS items (
   manual INTEGER NOT NULL DEFAULT 0,
   translate_failed INTEGER NOT NULL DEFAULT 0,
   posted_count INTEGER NOT NULL DEFAULT 0,
+  popularity INTEGER NOT NULL DEFAULT 0,     -- ventes connues (Jadeship)
+  source TEXT,                               -- shop, jadeship, manuel
   last_posted INTEGER,
   first_seen INTEGER,
   last_seen_run TEXT

@@ -61,7 +61,13 @@ function where(params, rate) {
     binds.push(params.shop);
   }
   if (!params.includePosted) clauses.push('posted_count = 0');
+  if (params.trending) clauses.push('popularity > 0');
   return { sql: clauses.length ? `WHERE ${clauses.join(' AND ')}` : '', binds };
+}
+
+// Nouveautés : les plus récents d'abord. Sinon : les plus vendus d'abord.
+function order(params) {
+  return params.latest ? 'first_seen DESC, id' : 'popularity DESC, first_seen DESC, id';
 }
 
 export async function countResults(env, params, rate) {
@@ -73,7 +79,7 @@ export async function countResults(env, params, rate) {
 export async function pageResults(env, params, rate, page) {
   const w = where(params, rate);
   const { results } = await env.DB.prepare(
-    `SELECT * FROM items ${w.sql} ORDER BY first_seen DESC, id LIMIT ? OFFSET ?`,
+    `SELECT * FROM items ${w.sql} ORDER BY ${order(params)} LIMIT ? OFFSET ?`,
   ).bind(...w.binds, PAGE_SIZE, page * PAGE_SIZE).all();
   return results;
 }
@@ -81,7 +87,7 @@ export async function pageResults(env, params, rate, page) {
 export async function allResultIds(env, params, rate) {
   const w = where(params, rate);
   const { results } = await env.DB.prepare(
-    `SELECT id FROM items ${w.sql} ORDER BY first_seen DESC, id LIMIT ?`,
+    `SELECT id FROM items ${w.sql} ORDER BY ${order(params)} LIMIT ?`,
   ).bind(...w.binds, MAX_BULK).all();
   return results.map((r) => r.id);
 }

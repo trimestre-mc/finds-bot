@@ -192,7 +192,7 @@ try {
 
   console.log('… indexation réelle (60 items max)');
   execSync('node indexer/index.mjs', {
-    cwd: ROOT, stdio: 'inherit', env: { ...process.env, WORKER_URL: WORKER, INDEXER_SECRET: SECRET, MAX_ITEMS: '60' },
+    cwd: ROOT, stdio: 'inherit', env: { ...process.env, WORKER_URL: WORKER, INDEXER_SECRET: SECRET, MAX_ITEMS: '60', SKIP_JADESHIP: '1' },
   });
   console.log('… traduction (3 passages du cron)');
   for (let i = 0; i < 3; i++) { await fetch(WORKER + '/__scheduled?cron=*+*+*+*+*'); await sleep(8000); }
@@ -297,6 +297,27 @@ try {
   await sleep(4000);
   check('cron de découverte : lit seulement les nouveaux messages', calls.some((c) => c.method === 'GET' && c.path.includes('/channels/555/messages?limit=100&after=1002')));
 
+  // ---- Jadeship : items populaires (dont Taobao) et vendeurs classés
+  const js = await fetch(WORKER + '/api/indexer/jadeship', {
+    method: 'POST', headers: { Authorization: `Bearer ${SECRET}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      items: [
+        { platform: 'taobao', id: '919064369235', title: 'Minimalist Round Neck Shirt', price: 68, image: 'https://img.alicdn.com/x.jpg', sold: 185 },
+        { platform: 'weidian', id: '7779545401', title: 'Margiel GATS German Training Shoes', price: 380, image: 'https://si.geilicdn.com/x.jpg', sold: 469 },
+      ],
+      shops: [{ id: '1624885820', name: 'A1 Top', tier: 'trusted' }],
+      done: true,
+    }),
+  }).then((r) => r.json());
+  check('Jadeship : items reçus', js.ok && js.items === 2);
+  const trend = await click('search:trending');
+  const tt = allText(trend.data.data);
+  check('🔥 Tendances : les plus vendus d\'abord', /Tendances/.test(tt) && tt.indexOf('Margiel') > -1 && tt.indexOf('Margiel') < tt.indexOf('Minimalist') && /🔥 469 ventes/.test(tt), tt.split('\n')[1]);
+  check('Tendances : limites Discord', validate('tendances', trend.data.data));
+  check('item Weidian de Jadeship mis en file pour trouver sa boutique', sql("SELECT COUNT(*) AS n FROM link_queue WHERE item_id = '7779545401'")[0].n === 1);
+  const catsJ = await click('cat:list:0');
+  check('vendeur Jadeship ajouté avec ⭐ Trusted', /A1 Top\*\*  ⭐ Trusted/.test(allText(catsJ.data.data)) || sql("SELECT tier FROM shops WHERE id = '1624885820'")[0].tier === 'trusted');
+
   const acc = await click('acc');
   check('vue accès', /Membres ajoutés/.test(allText(acc.data.data)) && validate('accès', acc.data.data));
   const accAdd = await click('acc:add', ['555']);
@@ -310,7 +331,7 @@ try {
   check('item Taobao manuel', /Item ajouté/.test(allText(itm.data.data)));
 
   const h2 = await click('home');
-  check('accueil avec stats', /61\*\* items/.test(allText(h2.data.data)), allText(h2.data.data).split('\n').find((l) => /items/.test(l)));
+  check('accueil avec stats', /63\*\* items/.test(allText(h2.data.data)), allText(h2.data.data).split('\n').find((l) => /items/.test(l)));
 } catch (err) {
   failures++;
   console.error(err);

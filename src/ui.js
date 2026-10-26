@@ -4,13 +4,14 @@ import {
   Style, container, section, text, sep, row, thumb, btn, emojiBtn, modal,
   escape, fmtInt, ago,
 } from './components.js';
-import { getRate, getAgents, formatPrice, itemTitle, POSTS_PER_MINUTE } from './post.js';
+import { getRate, getAgents, formatPrice, itemTitle, POSTS_PER_MINUTE, PLATFORM_NAMES } from './post.js';
 import { buildAgentLink, AGENT_PRESETS } from './links.js';
 import { countResults, pageResults, PAGE_SIZE, MAX_BULK } from './search.js';
 
 export const QUEUE_PER_MINUTE = POSTS_PER_MINUTE;
 const SHOPS_PER_PAGE = 6;
 const STATUS_ICON = { pending: '🕒', indexing: '⏳', ok: '🟢', error: '🔴' };
+const TIER_BADGE = { trusted: '  ⭐ Trusted', high: '  💎 High Tier', mid: '  ✦ Mid Tier' };
 const EXAMPLE_ITEM = { url: 'https://weidian.com/item.html?itemID=7863670229', item_id: '7863670229', platform: 'weidian' };
 
 const notice = (msg) => (msg ? text(`> ${msg}`) : null);
@@ -46,6 +47,7 @@ export async function homeView(env, it, msg) {
     sep(),
     row(
       emojiBtn('🔎', 'Rechercher', 'search:new', Style.PRIMARY),
+      emojiBtn('🔥', 'Tendances', 'search:trending'),
       emojiBtn('✨', 'Nouveautés', 'search:latest'),
     ),
     row(
@@ -99,7 +101,7 @@ export async function resultsView(env, sid, page, msg) {
   if (params.min != null) filters.push(`≥ ${params.min} €`);
   if (params.max != null) filters.push(`≤ ${params.max} €`);
   filters.push(params.includePosted ? 'déjà postés inclus' : 'non postés');
-  const title = params.q ? `« ${escape(params.q)} »` : params.latest ? 'Nouveautés' : 'Tous les items';
+  const title = params.q ? `« ${escape(params.q)} »` : params.trending ? '🔥 Tendances' : params.latest ? 'Nouveautés' : 'Tous les items';
 
   const head = [
     notice(msg),
@@ -122,7 +124,8 @@ export async function resultsView(env, sid, page, msg) {
 
   const cards = items.map((item, i) => {
     const line = `**${page * PAGE_SIZE + i + 1}. [${escape(itemTitle(item).slice(0, 90))}](${item.url})**\n` +
-      `${formatPrice(item.price_cny, rate)}  ·  🏪 ${escape((item.shop_name || '—').slice(0, 40))}` +
+      `${formatPrice(item.price_cny, rate)}  ·  🏪 ${escape((item.shop_name || PLATFORM_NAMES[item.platform] || '—').slice(0, 40))}` +
+      (item.popularity ? `  ·  🔥 ${fmtInt(item.popularity)} ventes` : '') +
       (item.posted_count ? '  ·  ✅ posté' : '');
     return item.image ? section(line, thumb(item.image)) : text(line);
   });
@@ -199,7 +202,7 @@ export async function catalogsView(env, page = 0, msg) {
         : s.status === 'indexing' ? 'indexation en cours…'
           : `indexé ${ago(s.last_indexed)}`;
     return section(
-      `${STATUS_ICON[s.status] || '•'} **${escape(s.name || 'Boutique')}**\n-# ${fmtInt(s.item_count)} items  ·  ${state}`,
+      `${STATUS_ICON[s.status] || '•'} **${escape(s.name || 'Boutique')}**${TIER_BADGE[s.tier] || ''}\n-# ${fmtInt(s.item_count)} items  ·  ${state}`,
       btn('Gérer', `cat:shop:${s.id}`),
     );
   });
