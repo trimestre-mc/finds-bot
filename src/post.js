@@ -95,7 +95,6 @@ export function buildItemMessage(item, agents, rate, images = []) {
       sep(),
       main ? text(`### [🛒 Acheter sur ${escape(main.name)} →](${main.url})`) : null,
       ...rows,
-      text(`-# Prix indicatif, hors livraison  ·  ID ${item.item_id}`),
     ], CARD_ACCENT)],
   };
 }
