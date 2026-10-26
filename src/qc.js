@@ -268,7 +268,7 @@ export function qcSummary(item, community) {
 }
 
 // ---------------------------------------------------------------- Synchro en masse du catalogue FinderQC
-// Chaque minute (son propre cron) : quelques pages de 100 produits du catalogue FinderQC, TOUS les produits (avec ou
+// Toutes les 2 min, minutes impaires (son propre cron) : quelques pages de 100 produits du catalogue FinderQC, TOUS les produits (avec ou
 // sans QC). L'API s'arrête à 10 000 résultats par filtre : on découpe chaque plateforme en tranches de prix assez
 // fines pour rester sous cette limite (la largeur s'adapte toute seule). Chaque produit est ajouté ou mis à jour
 // (nombre de QC, ventes), et les items Weidian partent dans la file de découverte de boutiques (boutique entière

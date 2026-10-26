@@ -59,8 +59,8 @@ export default {
       })());
       return;
     }
-    if (event.cron === '*/1 * * * *') {
-      // Synchro du catalogue FinderQC (items + nombre de QC), seule dans son exécution.
+    if (event.cron === '1-59/2 * * * *') {
+      // Synchro du catalogue FinderQC (items + nombre de QC), seule dans son exécution (« */1 » serait fusionné avec « * »).
       if (env.TURSO_URL) ctx.waitUntil(syncQcCatalog(env).catch((e) => console.log('synchro QC', String(e))));
       return;
     }
