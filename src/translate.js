@@ -29,8 +29,8 @@ export function tidyTitle(t) {
     .trim();
 }
 
-export async function rewriteTitles(env, titles) {
-  const res = await env.AI.run(LLM_MODEL, {
+export async function rewriteTitles(env, titles, model = LLM_MODEL) {
+  const res = await env.AI.run(model, {
     messages: [
       { role: 'system', content: SYSTEM },
       { role: 'user', content: JSON.stringify(titles) },
@@ -38,7 +38,8 @@ export async function rewriteTitles(env, titles) {
     max_tokens: 60 + titles.length * 30,
     temperature: 0.2,
   });
-  const raw = typeof res.response === 'string' ? res.response : JSON.stringify(res.response);
+  const raw = typeof res.response === 'string' ? res.response
+    : res.choices ? String(res.choices[0].message.content || '') : JSON.stringify(res.response);
   const match = raw.match(/\[[\s\S]*\]/);
   const arr = match ? JSON.parse(match[0]) : null;
   if (!Array.isArray(arr) || arr.length !== titles.length) throw new Error(`réponse inattendue: ${raw.slice(0, 120)}`);

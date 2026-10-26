@@ -6,7 +6,7 @@ import { COMPONENTS_V2, container, gallery, row, text, sep, escape } from './com
 import { discordApi, discordUpload } from './discord.js';
 import { popularItemStatements } from './items.js';
 import { canonicalUrl } from './links.js';
-import { detectCategory } from './categories.js';
+import { detectCategory, isDeadLink } from './categories.js';
 import { budget } from './budget.js';
 
 const UA = 'finds-bot/1.0 (+https://github.com/trimestre-mc/finds-bot)';
@@ -377,15 +377,16 @@ export async function syncQcCatalog(env) {
       const qc = Math.max(0, Number(x.qcPhotosCount) || 0);
       const image = /^https:\/\//.test(x.originalThubnaiURL || x.picUrl || '') ? (x.originalThubnaiURL || x.picUrl) : null;
       stmts.push(env.DB.prepare(
-        `INSERT INTO items (id, platform, item_id, title_en, price_cny, image, url, popularity, source, first_seen, category, qc_count, qc_checked_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'finderqc', ?, ?, ?, ?)
+        `INSERT INTO items (id, platform, item_id, title_en, price_cny, image, url, popularity, source, first_seen, category, qc_count, qc_checked_at, hidden)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'finderqc', ?, ?, ?, ?, ?)
          ON CONFLICT(id) DO UPDATE SET qc_count = excluded.qc_count, qc_checked_at = excluded.qc_checked_at,
            popularity = MAX(items.popularity, excluded.popularity), image = COALESCE(items.image, excluded.image),
            title_en = COALESCE(items.title_en, excluded.title_en), price_cny = COALESCE(items.price_cny, excluded.price_cny)
          WHERE items.qc_count IS NOT excluded.qc_count OR items.popularity < excluded.popularity
            OR items.image IS NULL OR items.title_en IS NULL`,
       ).bind(key, platform, id, title ? String(title).slice(0, 200) : null, x.cnPrice != null ? Number(x.cnPrice) : null,
-        image, canonicalUrl(platform, id), Math.max(0, Number(x.oneYear) || 0), now, detectCategory(title), qc, now));
+        image, canonicalUrl(platform, id), Math.max(0, Number(x.oneYear) || 0), now, detectCategory(title), qc, now,
+        isDeadLink(title, x.cnPrice) ? 2 : 0));
       // Boutique Weidian inconnue : retrouvée puis indexée en entier par l'indexeur.
       if (platform === 'weidian') {
         stmts.push(env.DB.prepare(

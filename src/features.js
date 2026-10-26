@@ -10,9 +10,11 @@ import { prepareQuery, allResultIds, withoutCache, inferCategory } from './searc
 import { postContext, processQueue, logError, FORUM } from './post.js';
 import { getConfig, setConfig, CURRENCIES, LANGS, ACCENTS } from './config.js';
 import { messageText, collectQc } from './discover.js';
+import { CATEGORY_BY_KEY } from './categories.js';
 import { homeView, loadSearch, createSearch, resultsView, filtersView, catalogsView } from './ui.js';
 import {
   schedulesView, scheduleView, scheduleModal, statsView, historyView, settingsView, healthView, findView, convertView,
+  categoryChannelsView, categoryChannels, categoryRhythm, CATEGORY_RHYTHMS,
 } from './views.js';
 
 // ---------------------------------------------------------------- Indexeur GitHub
@@ -201,6 +203,42 @@ export async function handleFeatureComponent(it, env, ctx, a, b, c, d, values) {
     // --- Drops automatiques
     case 'sch:list': return update(await schedulesView(env, it));
     case 'sch:view': return update(await scheduleView(env, c));
+    // --- Salons par catégorie (un drop automatique par catégorie)
+    case 'cch:open': return update(await categoryChannelsView(env, it, null));
+    case 'cch:pick': return update(await categoryChannelsView(env, it, values[0]));
+    case 'cch:set': {
+      const cat = CATEGORY_BY_KEY[c];
+      if (!cat) return update(await categoryChannelsView(env, it, null));
+      const existing = (await categoryChannels(env, it.guild_id)).get(c);
+      if (!values[0]) {
+        if (existing) await env.DB.prepare('DELETE FROM schedules WHERE id = ?').bind(existing.id).run();
+        return update(await categoryChannelsView(env, it, c, `${cat.emoji} ${cat.label} : plus de salon.`));
+      }
+      const type = resolvedType(it, values[0]);
+      if (existing) {
+        await env.DB.prepare('UPDATE schedules SET channel_id = ?, channel_type = ?, enabled = 1, next_at = ? WHERE id = ?')
+          .bind(values[0], type, Date.now() + 60000, existing.id).run();
+      } else {
+        const r = CATEGORY_RHYTHMS[await categoryRhythm(env)];
+        await env.DB.prepare(
+          `INSERT INTO schedules (guild_id, name, params, channel_id, channel_type, per_run, every_minutes, next_at, created_by, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ).bind(it.guild_id, `🗂️ ${cat.label}`, JSON.stringify({ category: c, sort: 'popular', includePosted: true, catChannel: c }),
+          values[0], type, r.per, r.every, Date.now() + 60000, userId(it), Date.now()).run();
+      }
+      return update(await categoryChannelsView(env, it, c, `✅ ${cat.emoji} ${cat.label} → <#${values[0]}>. Premiers items dans environ une minute.`));
+    }
+    case 'cch:rhythm': {
+      const r = CATEGORY_RHYTHMS[values[0]];
+      if (r) {
+        await env.DB.batch([
+          env.DB.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('cat_rhythm', ?)").bind(values[0]),
+          env.DB.prepare("UPDATE schedules SET per_run = ?, every_minutes = ? WHERE guild_id = ? AND json_extract(params, '$.catChannel') IS NOT NULL")
+            .bind(r.per, r.every, it.guild_id),
+        ]);
+      }
+      return update(await categoryChannelsView(env, it, null, r ? `⏱️ Rythme : ${r.label} par salon.` : null));
+    }
     case 'sch:preset': {
       const p = PRESETS[c];
       if (!p) return update(await schedulesView(env, it));

@@ -61,6 +61,7 @@ export async function homeView(env, it, msg) {
     row(
       emojiBtn('📚', 'Catalogues', 'cat:list:0'),
       emojiBtn('⏰', 'Drops auto', 'sch:list'),
+      emojiBtn('🗂️', 'Salons catégories', 'cch:open'),
       emojiBtn('🏷️', 'Agents', 'ag:list'),
       emojiBtn('➕', 'Ajouter un item', 'item:add'),
     ),

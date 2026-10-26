@@ -5,7 +5,7 @@ import {
 } from './components.js';
 import { formatPrice, itemTitle, PLATFORM_NAMES, postContext, agentButtons } from './post.js';
 import { searchIds, itemsByIds } from './search.js';
-import { CATEGORY_BY_KEY } from './categories.js';
+import { CATEGORY_BY_KEY, CATEGORIES } from './categories.js';
 import { getConfig, CURRENCIES, ACCENTS, LANGS } from './config.js';
 import { loadSearch } from './ui.js';
 import { communityQc, qcSummary } from './qc.js';
@@ -32,6 +32,61 @@ export function describeParams(p) {
   return parts.join(' · ') || 'tous les items';
 }
 
+// ---------------------------------------------------------------- Salons par catégorie
+
+// Rythme commun à tous les salons de catégorie.
+export const CATEGORY_RHYTHMS = {
+  '10m': { per: 1, every: 10, label: '1 item toutes les 10 min' },
+  '30m': { per: 2, every: 30, label: '2 items toutes les 30 min' },
+  '1h': { per: 3, every: 60, label: '3 items par heure' },
+  '3h': { per: 5, every: 180, label: '5 items toutes les 3 h' },
+  '1d': { per: 10, every: 1440, label: '10 items par jour' },
+};
+
+export async function categoryChannels(env, guildId) {
+  const { results } = await env.DB.prepare(
+    "SELECT * FROM schedules WHERE guild_id = ? AND json_extract(params, '$.catChannel') IS NOT NULL",
+  ).bind(guildId).all();
+  return new Map(results.map((s) => [JSON.parse(s.params).catChannel, s]));
+}
+
+export async function categoryRhythm(env) {
+  const row = await env.DB.prepare("SELECT value FROM settings WHERE key = 'cat_rhythm'").first();
+  return row && CATEGORY_RHYTHMS[row.value] ? row.value : '1h';
+}
+
+// Un salon par catégorie : le bot y poste tout seul les meilleurs items de la catégorie.
+export async function categoryChannelsView(env, it, pick, msg) {
+  const [byCat, rhythm] = await Promise.all([categoryChannels(env, it.guild_id), categoryRhythm(env)]);
+  const lines = CATEGORIES.map((c) => {
+    const s = byCat.get(c.key);
+    return `${c.emoji} **${c.label}** → ${s ? `<#${s.channel_id}>${s.enabled ? `  ·  prochain ${ago(s.next_at)}` : '  ·  ⏸️ en pause'}` : '-# aucun salon'}`;
+  });
+  const picked = pick && CATEGORY_BY_KEY[pick];
+  const current = picked && byCat.get(pick);
+  return [container([
+    notice(msg),
+    text('## 🗂️ Salons par catégorie\n-# Choisis un salon pour chaque catégorie : le bot y poste tout seul les meilleurs items de la catégorie (les plus vendus d\'abord), sans jamais reposter le même item dans le même salon.'),
+    sep(),
+    text(lines.join('\n')),
+    sep(),
+    row({
+      type: 3, custom_id: 'cch:pick', placeholder: '1. Choisis une catégorie',
+      options: CATEGORIES.map((c) => ({ label: c.label, value: c.key, emoji: { name: c.emoji }, default: c.key === pick, description: byCat.has(c.key) ? 'Salon configuré' : 'Aucun salon' })),
+    }),
+    picked ? row({
+      type: 8, custom_id: `cch:set:${pick}`, placeholder: `2. Salon pour ${picked.label} (vide = arrêter)`, channel_types: [0, 5, 15],
+      min_values: 0, max_values: 1, default_values: current ? [{ id: current.channel_id, type: 'channel' }] : [],
+    }) : null,
+    text('**Rythme** (pour toutes les catégories)'),
+    row({
+      type: 3, custom_id: 'cch:rhythm', placeholder: 'Rythme',
+      options: Object.entries(CATEGORY_RHYTHMS).map(([k, r]) => ({ label: `${r.label} par salon`, value: k, default: k === rhythm })),
+    }),
+    row(emojiBtn('⏰', 'Drops', 'sch:list'), backHome()),
+  ])];
+}
+
 // ---------------------------------------------------------------- Drops automatiques
 
 export async function schedulesView(env, it, msg) {
@@ -54,6 +109,7 @@ export async function schedulesView(env, it, msg) {
       emojiBtn('✨', '3 nouveautés / 2 h', 'sch:preset:latest'),
       emojiBtn('📉', 'Baisses de prix / 6 h', 'sch:preset:drops'),
     ),
+    row(emojiBtn('🗂️', 'Un salon par catégorie', 'cch:open', Style.PRIMARY)),
     row(backHome()),
   ])];
 }

@@ -66,3 +66,17 @@ export async function categorizePending(env, limit, waitMs = 30 * 60000) {
   await b.use(results.length);
   return results.length;
 }
+
+// « Liens morts » : annonces qui ne sont pas de vrais articles (prix bidon à 9 999 ¥ pour qu'on ne les achète pas,
+// « nouveau lien : … », liens de complément de frais de port ou de différence de prix). Masqués des recherches
+// (hidden = 2, distinct du masquage à la main = 1, pour pouvoir réapparaître si le vendeur corrige l'annonce).
+const DEAD_TITLE = /new\s*link|link\s*chang|youshop10\.com|万能链接|补差价|补邮费?|邮费差价|运费补|邮费链接|运费链接|差价链接|新链接[:：]|链接已换|换链接了/i;
+const FEE_TITLE = /邮费|运费|差价|链接|客户|联系|定金|deposit|shipping/i;
+
+export function isDeadLink(title, price) {
+  const t = String(title || '');
+  const p = price == null ? null : Number(price);
+  if (p != null && (p >= 99999 || /^9{4,}(\.9*0*)?$/.test(String(p)))) return true;
+  if (DEAD_TITLE.test(t)) return true;
+  return p != null && p <= 2 && FEE_TITLE.test(t);
+}

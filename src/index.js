@@ -14,7 +14,7 @@ import {
   triggerIndexer, handleGo, handlePublicCommand, handlePublicComponent, handleFeatureComponent, handleFeatureModal,
   runSchedules, runQcChannels,
 } from './features.js';
-import { categorizePending, detectCategory } from './categories.js';
+import { categorizePending, detectCategory, isDeadLink } from './categories.js';
 import { fetchQcPage, runQcChecks, refreshQc, qcWindow, syncQcCatalog } from './qc.js';
 import { popularItemStatements } from './items.js';
 import { budget } from './budget.js';
@@ -528,8 +528,13 @@ async function handleApi(request, env, url) {
 
   // Diagnostic : aperçu des titres réécrits pour une liste de titres chinois.
   if (path === '/api/titles-preview' && request.method === 'POST') {
-    const { titles } = await request.json();
-    return json({ titles: await rewriteTitles(env, (titles || []).slice(0, 20)) });
+    const { titles, model } = await request.json();
+    const t = Date.now();
+    try {
+      return json({ titles: await rewriteTitles(env, (titles || []).slice(0, 30), model || undefined), ms: Date.now() - t });
+    } catch (err) {
+      return json({ error: String(err.message || err).slice(0, 300) });
+    }
   }
 
   // Diagnostic : la fenêtre QC telle qu'un membre la verrait, pour un item du catalogue.
@@ -621,9 +626,10 @@ async function handleApi(request, env, url) {
     if (b.left < Math.min(200, (body.items || []).length)) return json({ error: 'budget' }, 429);
     await b.use(Math.min(200, (body.items || []).length));
     const stmts = (body.items || []).slice(0, 200).map((i) => env.DB.prepare(
-      `INSERT INTO items (id, platform, item_id, shop_id, shop_name, title_zh, price_cny, image, url, stock, first_seen, last_seen_run, category)
-       VALUES (?, 'weidian', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `INSERT INTO items (id, platform, item_id, shop_id, shop_name, title_zh, price_cny, image, url, stock, first_seen, last_seen_run, category, hidden)
+       VALUES (?, 'weidian', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
+         hidden = CASE WHEN items.hidden = 1 THEN 1 ELSE excluded.hidden END,
          title_en = CASE WHEN items.title_zh IS excluded.title_zh THEN items.title_en ELSE NULL END,
          prev_price = CASE WHEN excluded.price_cny < items.price_cny THEN items.price_cny
                            WHEN excluded.price_cny > items.price_cny THEN NULL ELSE items.prev_price END,
@@ -632,7 +638,7 @@ async function handleApi(request, env, url) {
          stock = excluded.stock, shop_id = excluded.shop_id, shop_name = excluded.shop_name`,
     ).bind(`weidian:${i.itemId}`, String(i.itemId), body.shopId, body.shopName || null, i.name || null,
       i.price != null ? Number(i.price) : null, i.img || null, `https://weidian.com/item.html?itemID=${i.itemId}`,
-      i.stock != null ? Number(i.stock) : null, now, body.runId, detectCategory(i.name)));
+      i.stock != null ? Number(i.stock) : null, now, body.runId, detectCategory(i.name), isDeadLink(i.name, i.price) ? 2 : 0));
     if (stmts.length) await env.DB.batch(stmts);
     if (body.shopName) await env.DB.prepare('UPDATE shops SET name = ? WHERE id = ?').bind(body.shopName, body.shopId).run();
     return json({ ok: true, saved: stmts.length });
