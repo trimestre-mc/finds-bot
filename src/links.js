@@ -64,6 +64,13 @@ export function extractItemRefs(text) {
   }).map(({ platform, itemId }) => ({ platform, itemId, url: canonicalUrl(platform, itemId) }));
 }
 
+// Page QC FinderQC d'un item (lien direct, le site cherche les QC à l'ouverture).
+const FINDERQC_PLATFORM = { weidian: 'Weidian', taobao: 'Taobao', '1688': 'Ali1688' };
+export function finderQcUrl(item) {
+  const p = FINDERQC_PLATFORM[item.platform];
+  return p ? `https://finderqc.com/product/${p}/${item.item_id}` : null;
+}
+
 // Agents préréglés : il suffit de donner son code d'affiliation.
 // Formats vérifiés sur les sites (BBDBuy garde inviteCode même s'il redirige vers la connexion).
 export const AGENT_PRESETS = {

@@ -12,7 +12,7 @@ import { prepareQuery, allResultIds } from './search.js';
 import { getRate, refreshRate, formatPrice, postItem, processQueue, postContext } from './post.js';
 import {
   triggerIndexer, handleGo, handlePublicCommand, handlePublicComponent, handleFeatureComponent, handleFeatureModal,
-  runSchedules, runAutoConvert,
+  runSchedules, runAutoConvert, runQcChannels,
 } from './features.js';
 import { categorizePending } from './categories.js';
 import { translatePending, rewriteTitles, titleWait } from './translate.js';
@@ -49,7 +49,10 @@ export default {
       return;
     }
     if (event.cron === '*/2 * * * *') {
-      ctx.waitUntil(runAutoConvert(env).catch((e) => console.log('conversion', String(e))));
+      ctx.waitUntil(Promise.all([
+        runAutoConvert(env).catch((e) => console.log('conversion', String(e))),
+        runQcChannels(env).catch((e) => console.log('salons QC', String(e))),
+      ]));
       return;
     }
     ctx.waitUntil((async () => {
@@ -270,7 +273,7 @@ async function postSelected(env, sid, page, ids) {
     const item = await env.DB.prepare('SELECT * FROM items WHERE id = ?').bind(id).first();
     if (!item) continue;
     try {
-      await postItem(env, item, s.channelId, pctx, true, s.channelType);
+      await postItem(env, item, s.channelId, pctx, true, s.channelType, true);
       ok++;
     } catch (err) {
       error = String(err.message || err);
@@ -553,6 +556,30 @@ async function handleApi(request, env, url) {
       await env.DB.prepare('DELETE FROM link_queue WHERE item_id = ?').bind(id).run();
     }
     return json({ ok: true, shopsAdded: added });
+  }
+
+  // QC : items dont le nombre de photos QC est à (re)vérifier, les plus vendus d'abord.
+  if (path === '/api/indexer/qc-needed') {
+    const keys = (body.keys || []).filter((k) => /^(weidian|taobao|1688):\d{6,14}$/.test(k)).slice(0, 2000);
+    const out = [];
+    for (let i = 0; i < keys.length; i += 90) {
+      const chunk = keys.slice(i, i + 90);
+      const { results } = await env.DB.prepare(
+        `SELECT id, popularity FROM items WHERE id IN (${chunk.map(() => '?').join(',')})
+           AND (qc_checked_at IS NULL OR qc_checked_at < ?)`,
+      ).bind(...chunk, Date.now() - 7 * 86400000).all();
+      out.push(...results);
+    }
+    out.sort((a, b) => b.popularity - a.popularity);
+    return json({ items: out.slice(0, Math.min(Number(body.limit) || 180, 500)).map((r) => r.id) });
+  }
+
+  if (path === '/api/indexer/qc') {
+    const stmts = (body.items || []).slice(0, 100).filter((i) => /^(weidian|taobao|1688):\d{6,14}$/.test(i.key)).map((i) => env.DB.prepare(
+      'UPDATE items SET qc_count = ?, qc_url = ?, qc_checked_at = ? WHERE id = ?',
+    ).bind(Math.max(0, Number(i.count) || 0), /^https:\/\/www\.uufinds\.com\//.test(i.url || '') ? i.url : null, Date.now(), i.key));
+    if (stmts.length) await env.DB.batch(stmts);
+    return json({ ok: true, saved: stmts.length });
   }
 
   // Items et vendeurs collectés sur Jadeship par l'indexeur.

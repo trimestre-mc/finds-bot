@@ -3,11 +3,13 @@
 import {
   Style, container, section, text, sep, row, thumb, btn, emojiBtn, modal, escape, fmtInt, ago,
 } from './components.js';
-import { getRate, formatPrice, itemTitle, PLATFORM_NAMES, postContext, agentButtons } from './post.js';
-import { countResults, pageResults, SORTS } from './search.js';
+import { formatPrice, itemTitle, PLATFORM_NAMES, postContext, agentButtons } from './post.js';
+import { countResults, pageResults } from './search.js';
 import { CATEGORY_BY_KEY } from './categories.js';
-import { getConfig, CURRENCIES, ACCENTS, LANGS, formatMoney } from './config.js';
+import { getConfig, CURRENCIES, ACCENTS, LANGS } from './config.js';
 import { loadSearch } from './ui.js';
+import { communityQc, qcSummary } from './qc.js';
+import { finderQcUrl } from './links.js';
 
 const notice = (msg) => (msg ? text(`> ${msg}`) : null);
 const backHome = () => emojiBtn('🏠', 'Menu', 'home');
@@ -176,6 +178,7 @@ export async function historyView(env, it, page = 0, msg) {
 export async function settingsView(env, it, msg) {
   const cfg = await getConfig(env);
   const { results: conv } = await env.DB.prepare('SELECT * FROM convert_channels WHERE guild_id = ?').bind(it.guild_id).all();
+  const { results: qcCh } = await env.DB.prepare('SELECT * FROM qc_channels WHERE guild_id = ?').bind(it.guild_id).all();
   return [container([
     notice(msg),
     text('## ⚙️ Réglages'),
@@ -207,6 +210,11 @@ export async function settingsView(env, it, msg) {
     row({
       type: 8, custom_id: 'set:convert', placeholder: 'Salons de conversion automatique', channel_types: [0, 5],
       min_values: 0, max_values: 10, default_values: conv.map((c) => ({ id: c.channel_id, type: 'channel' })),
+    }),
+    text(`**📸 Salons QC**\n-# Les membres y postent leurs photos QC avec le lien de l'item : chaque item gagne un bouton « QC communauté ».\n${qcCh.length ? qcCh.map((c) => `<#${c.channel_id}> · ${fmtInt(c.collected)} QC récupérés`).join('\n') : '-# Aucun salon.'}`),
+    row({
+      type: 8, custom_id: 'set:qc', placeholder: 'Salons QC', channel_types: [0, 5],
+      min_values: 0, max_values: 10, default_values: qcCh.map((c) => ({ id: c.channel_id, type: 'channel' })),
     }),
     row(backHome()),
   ])];
@@ -270,14 +278,15 @@ export async function findView(env, sid, page) {
   const a = await pageResults(env, params, ctx.money, Math.floor(start / 5));
   const b = (start % 5) + FIND_PAGE > 5 ? await pageResults(env, params, ctx.money, Math.floor(start / 5) + 1) : [];
   const items = [...a, ...b].slice(start % 5, (start % 5) + FIND_PAGE);
+  const communities = Object.fromEntries(await Promise.all(items.map(async (i) => [i.id, await communityQc(env, i.id)])));
   if (!total) {
     return [container([text(`## 🔎 ${escape(s.params.q || 'Recherche')}\nAucun item trouvé. Essaie en anglais (ex : *hoodie*, *jordan 4*, *bag*).`)])];
   }
   const blocks = items.flatMap((item) => {
     const line = `**${escape(itemTitle(item).slice(0, 80))}**\n${formatPrice(item.price_cny, ctx.money)}  ·  🏪 ${escape((item.shop_name || PLATFORM_NAMES[item.platform]).slice(0, 30))}` +
       (item.popularity ? `  ·  🔥 ${fmtInt(item.popularity)}` : '');
-    const rows = agentButtons(ctx, item, null).slice(0, 1);
-    return [item.image ? section(line, thumb(item.image)) : text(line), ...rows, sep(false)];
+    const rows = agentButtons(ctx, item, null, communities[item.id]);
+    return [item.image ? section(line, thumb(item.image)) : text(line), rows[0], rows.length > 1 ? rows[rows.length - 1] : null, sep(false)];
   });
   return [container([
     text(`## 🔎 ${escape(s.params.q || 'Résultats')}\n-# ${fmtInt(total)} résultats  ·  page ${page + 1}/${pages}`),
@@ -297,7 +306,7 @@ export async function convertView(env, ref, known) {
   const head = known
     ? `**${escape(itemTitle(known).slice(0, 90))}**\n${formatPrice(known.price_cny, ctx.money)}  ·  🏪 ${escape(known.shop_name || platform)}`
     : `**Lien ${platform} converti** · \`${ref.itemId}\``;
-  const rows = agentButtons(ctx, item, null);
+  const rows = agentButtons(ctx, item, null, await communityQc(env, item.id));
   return [container([
     known && known.image ? section(head, thumb(known.image)) : text(head),
     ...(ctx.agents.length ? [] : [text('-# Aucun agent configuré pour l\'instant.')]),
@@ -305,4 +314,40 @@ export async function convertView(env, ref, known) {
   ], (ACCENTS[ctx.cfg.accent] || ACCENTS.orange).color)];
 }
 
-export { SORTS, formatMoney, getRate };
+
+
+// /qc : toutes les photos QC connues d'un item.
+export async function qcView(env, item, community) {
+  const ctx = await postContext(env);
+  const platform = PLATFORM_NAMES[item.platform];
+  const head = item.title_en || item.title_zh
+    ? `## 📸 ${escape(itemTitle(item).slice(0, 80))}\n${formatPrice(item.price_cny, ctx.money)}  ·  ${platform}`
+    : `## 📸 QC · ${platform} \`${item.item_id}\``;
+  const lines = [];
+  if (item.qc_count > 0) lines.push(`📸 **${fmtInt(item.qc_count)} photos QC** prises par les agents (galerie UUFinds)`);
+  else lines.push('📸 Aucune galerie de QC d\'agent trouvée pour l\'instant. FinderQC cherche peut-être encore.');
+  const images = community.reduce((n, q) => n + q.images, 0);
+  if (community.length) {
+    lines.push(`🧑‍🤝‍🧑 **${images} photo${images > 1 ? 's' : ''} QC de la communauté**`);
+    for (const q of community) lines.push(`-# [${q.images} photo${q.images > 1 ? 's' : ''}](https://discord.com/channels/${q.guild_id}/${q.channel_id}/${q.message_id}) · ${ago(q.at)}`);
+  }
+  const track = (name, url) => (ctx.base ? `${ctx.base}/go/${encodeURIComponent(item.id)}/${name}` : url);
+  const buttons = [];
+  if (item.qc_url) buttons.push(btnLink(`Galerie (${fmtInt(item.qc_count)})`, track('qc', item.qc_url), '📸'));
+  if (finderQcUrl(item)) buttons.push(btnLink('FinderQC', item.qc_url ? finderQcUrl(item) : track('qc', finderQcUrl(item)), '🔍'));
+  if (community.length) buttons.push(btnLink('Dernier QC communauté', track('qcc', community[0] && `https://discord.com/channels/${community[0].guild_id}/${community[0].channel_id}/${community[0].message_id}`), '🧑‍🤝‍🧑'));
+  return [container([
+    text(head),
+    sep(),
+    text(lines.join('\n')),
+    buttons.length ? row(...buttons) : null,
+    sep(),
+    ...agentButtons(ctx, item, null).slice(0, 1),
+  ], (ACCENTS[ctx.cfg.accent] || ACCENTS.orange).color)];
+}
+
+function btnLink(label, url, emoji) {
+  return { type: 2, style: 5, label, url, emoji: { name: emoji } };
+}
+
+export { qcSummary };

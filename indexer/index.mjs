@@ -228,8 +228,8 @@ async function main() {
     if (SHARD === 0 && first.jadeship && !process.env.SKIP_JADESHIP) {
       console.log('🟢 Collecte Jadeship');
       try {
-        const r = await collectJadeship((data) => api('/api/indexer/jadeship', data), (m) => console.log(m));
-        console.log(`🟢 Jadeship : ${r.items} items, ${r.shops} boutiques Weidian`);
+        const r = await collectJadeship((data) => api('/api/indexer/jadeship', data), (m) => console.log(m), api);
+        console.log(`🟢 Jadeship : ${r.items} items, ${r.shops} boutiques Weidian, ${r.qc} items vérifiés pour les QC`);
       } catch (err) {
         console.log(`Jadeship : ${err.message}`);
       }

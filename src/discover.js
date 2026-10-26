@@ -3,6 +3,7 @@
 
 import { discordApi } from './discord.js';
 import { fetchWeidianItem } from './weidian.js';
+import { extractItemRefs } from './links.js';
 
 // Décode plusieurs fois (les liens d'agents contiennent souvent le lien Weidian encodé).
 function decodeAll(text) {
@@ -128,6 +129,7 @@ export async function scanSource(env, source, backfill = 0) {
   }
   let withText = 0;
   for (const m of messages) {
+    await collectQc(env, m, source.guild_id, source.channel_id).catch(() => {});
     const t = messageText(m);
     if (t.trim()) withText++;
     const f = extractWeidian(t);
@@ -158,4 +160,19 @@ export async function runDiscovery(env) {
     }
   }
   await resolveQueue(env, Math.max(0, 40 - calls));
+}
+
+// QC de la communauté : un message avec au moins une photo et un lien d'item devient un QC de cet item.
+// (On garde le lien du message : les photos restent sur Discord, pas d'URL qui expire.)
+export async function collectQc(env, m, guildId, channelId) {
+  if (m.author && m.author.bot) return false;
+  const images = (m.attachments || []).filter((a) => /^image\//.test(a.content_type || '') || /\.(jpe?g|png|webp|heic)(\?|$)/i.test(a.filename || a.url || ''));
+  if (!images.length) return false;
+  const refs = extractItemRefs(messageText(m));
+  if (refs.length !== 1) return false; // plusieurs items cités : on ne sait pas lequel est en photo
+  const r = await env.DB.prepare(
+    'INSERT OR IGNORE INTO qc_posts (item_id, guild_id, channel_id, message_id, images, author_id, at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+  ).bind(`${refs[0].platform}:${refs[0].itemId}`, guildId || null, channelId, m.id, images.length,
+    m.author ? m.author.id : null, Date.parse(m.timestamp || '') || Date.now()).run();
+  return r.meta.changes > 0;
 }

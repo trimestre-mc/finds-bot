@@ -75,6 +75,7 @@ function where(params, money) {
   }
   if (!params.includePosted) clauses.push('posted_count = 0');
   if (params.trending) clauses.push('popularity > 0');
+  if (params.withQc) clauses.push('(qc_count > 0 OR EXISTS (SELECT 1 FROM qc_posts q WHERE q.item_id = items.id))');
   if (params.drops) {
     clauses.push('prev_price > price_cny AND price_changed_at > ?');
     binds.push(Date.now() - DROP_WINDOW_DAYS * 86400000);

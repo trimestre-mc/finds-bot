@@ -27,6 +27,12 @@ export const COMMANDS = [
   },
   {
     ...base,
+    name: 'qc',
+    description: 'Voir les photos QC d\'un item (Weidian, Taobao, 1688 ou lien d\'agent)',
+    options: [{ type: STRING, name: 'lien', description: 'Le lien de l\'item', required: true, max_length: 500 }],
+  },
+  {
+    ...base,
     name: 'convert',
     description: 'Transformer un lien Weidian, Taobao, 1688 ou d\'agent en liens d\'achat',
     options: [{ type: STRING, name: 'lien', description: 'Le lien à convertir', required: true, max_length: 500 }],

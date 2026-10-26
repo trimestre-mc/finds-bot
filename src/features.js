@@ -4,14 +4,15 @@
 import { discordApi } from './discord.js';
 import { COMPONENTS_V2, container, text, escape } from './components.js';
 import { panel, update, openModal, later, userId } from './respond.js';
-import { buildAgentLink, canonicalUrl, extractItemRefs } from './links.js';
+import { buildAgentLink, canonicalUrl, extractItemRefs, finderQcUrl } from './links.js';
+import { communityQc, refreshQc } from './qc.js';
 import { prepareQuery, allResultIds } from './search.js';
 import { postContext, processQueue, logError, FORUM } from './post.js';
 import { getConfig, setConfig, CURRENCIES, LANGS, ACCENTS } from './config.js';
-import { messageText } from './discover.js';
+import { messageText, collectQc } from './discover.js';
 import { homeView, loadSearch, createSearch, resultsView, filtersView, catalogsView } from './ui.js';
 import {
-  schedulesView, scheduleView, scheduleModal, statsView, historyView, settingsView, healthView, findView, convertView,
+  schedulesView, scheduleView, scheduleModal, statsView, historyView, settingsView, healthView, findView, convertView, qcView,
 } from './views.js';
 
 // ---------------------------------------------------------------- Indexeur GitHub
@@ -40,7 +41,12 @@ export async function handleGo(url, env, ctx) {
   const item = known || { id: itemKey, platform, item_id: itemId, url: canonicalUrl(platform, itemId) };
   if (!item.url || !/^\d{6,14}$/.test(String(item.item_id))) return new Response('Lien inconnu', { status: 404 });
   let target = item.url;
-  if (agentName !== 'source') {
+  if (agentName === 'qc') {
+    target = item.qc_url || finderQcUrl(item) || item.url;
+  } else if (agentName === 'qcc') {
+    const c = await communityQc(env, itemKey);
+    target = c ? c.jump : (finderQcUrl(item) || item.url);
+  } else if (agentName !== 'source') {
     const agent = await env.DB.prepare('SELECT template FROM agents WHERE name = ?').bind(agentName).first();
     if (agent) target = buildAgentLink(agent.template, item);
   }
@@ -62,6 +68,19 @@ export async function handlePublicCommand(it, env, ctx) {
         max: opts.prix_max != null ? opts.prix_max : null, includePosted: true, sort: 'popular', public: true,
       });
       return findView(env, sid, 0);
+    }, true);
+  }
+  if (it.data.name === 'qc') {
+    const refs = extractItemRefs(String(opts.lien || ''));
+    if (!refs.length) {
+      return panel([container([text('❌ Je n\'ai trouvé aucun lien Weidian, Taobao ou 1688 (ni de lien d\'agent).')])]);
+    }
+    const ref = refs[0];
+    return later(it, env, ctx, async () => {
+      const key = `${ref.platform}:${ref.itemId}`;
+      let item = await env.DB.prepare('SELECT * FROM items WHERE id = ?').bind(key).first();
+      item = await refreshQc(env, item || { id: key, item_id: ref.itemId, platform: ref.platform, url: ref.url, popularity: 0 });
+      return qcView(env, item, await communityQcList(env, key));
     }, true);
   }
   if (it.data.name === 'convert') {
@@ -219,6 +238,22 @@ export async function handleFeatureComponent(it, env, ctx, a, b, c, d, values) {
       await setConfig(env, 'defaultChannel', values[0] || null);
       await setConfig(env, 'defaultChannelType', values[0] ? resolvedType(it, values[0]) : null);
       return update(await settingsView(env, it, values[0] ? `📍 Salon par défaut : <#${values[0]}>.` : '📍 Plus de salon par défaut.'));
+    case 'set:qc': {
+      const stmts = [env.DB.prepare(`DELETE FROM qc_channels WHERE guild_id = ? AND channel_id NOT IN (${values.map(() => '?').join(',') || "''"})`)
+        .bind(it.guild_id, ...values)];
+      for (const ch of values) {
+        stmts.push(env.DB.prepare('INSERT OR IGNORE INTO qc_channels (channel_id, guild_id, added_at) VALUES (?, ?, ?)').bind(ch, it.guild_id, Date.now()));
+      }
+      await env.DB.batch(stmts);
+      return update(await settingsView(env, it, values.length
+        ? `📸 Le bot récupère les QC postés dans ${values.map((v) => `<#${v}>`).join(', ')} (photo + lien d'item), y compris l'historique récent.`
+        : '📸 Plus de salon QC.'));
+    }
+    case 's:qc': {
+      const s = await loadSearch(env, c);
+      if (s) await saveParams(env, c, { withQc: !s.params.withQc });
+      return update(await resultsView(env, c, 0));
+    }
     case 'set:convert': {
       const stmts = [env.DB.prepare(`DELETE FROM convert_channels WHERE guild_id = ? AND channel_id NOT IN (${values.map(() => '?').join(',') || "''"})`)
         .bind(it.guild_id, ...values)];
@@ -337,6 +372,7 @@ export async function runAutoConvert(env) {
       let converted = 0;
       for (const m of messages.slice().reverse()) {
         if (m.author && m.author.bot) continue;
+        await collectQc(env, m, ch.guild_id, ch.channel_id).catch(() => {});
         const refs = extractItemRefs(messageText(m)).slice(0, 3);
         if (!refs.length || calls > 45) continue;
         const cards = [];
@@ -355,6 +391,45 @@ export async function runAutoConvert(env) {
         .bind(newest, converted, ch.channel_id).run();
     } catch (err) {
       await logError(env, 'conversion', `<#${ch.channel_id}> : ${String(err.message || err).slice(0, 200)}`);
+    }
+  }
+}
+
+// Liste des QC de la communauté pour un item (les plus récents d'abord).
+export async function communityQcList(env, itemId) {
+  const { results } = await env.DB.prepare('SELECT * FROM qc_posts WHERE item_id = ? ORDER BY at DESC LIMIT 6').bind(itemId).all();
+  return results;
+}
+
+// ---------------------------------------------------------------- Salons QC (cron toutes les 2 min)
+
+// Lit les salons QC : chaque message avec photo + lien d'item devient un QC de la communauté.
+// À l'ajout d'un salon, on lit aussi les 500 derniers messages.
+export async function runQcChannels(env) {
+  const { results } = await env.DB.prepare('SELECT * FROM qc_channels ORDER BY added_at LIMIT 5').all();
+  for (const ch of results) {
+    try {
+      const pages = [];
+      if (ch.last_message_id) {
+        pages.push(await discordApi(env, 'GET', `/channels/${ch.channel_id}/messages?limit=100&after=${ch.last_message_id}`));
+      } else {
+        let before = '';
+        for (let p = 0; p < 5; p++) {
+          const page = await discordApi(env, 'GET', `/channels/${ch.channel_id}/messages?limit=100${before ? `&before=${before}` : ''}`);
+          pages.push(page);
+          if (page.length < 100) break;
+          before = page[page.length - 1].id;
+        }
+      }
+      const messages = pages.flat();
+      if (!messages.length) continue;
+      let collected = 0;
+      for (const m of messages) if (await collectQc(env, m, ch.guild_id, ch.channel_id)) collected++;
+      const newest = messages.reduce((acc, x) => (!acc || BigInt(x.id) > BigInt(acc) ? x.id : acc), ch.last_message_id);
+      await env.DB.prepare('UPDATE qc_channels SET last_message_id = ?, collected = collected + ? WHERE channel_id = ?')
+        .bind(newest, collected, ch.channel_id).run();
+    } catch (err) {
+      await logError(env, 'salon QC', `<#${ch.channel_id}> : ${String(err.message || err).slice(0, 200)}`);
     }
   }
 }

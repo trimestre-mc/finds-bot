@@ -37,6 +37,9 @@ CREATE TABLE IF NOT EXISTS items (
   prev_price REAL,                           -- ancien prix si le prix a baissé
   price_changed_at INTEGER,
   hidden INTEGER NOT NULL DEFAULT 0,         -- masqué des recherches (liste noire)
+  qc_count INTEGER,                          -- photos QC connues (Jadeship / UUFinds)
+  qc_url TEXT,                               -- galerie QC
+  qc_checked_at INTEGER,
   source TEXT,                               -- shop, jadeship, manuel
   last_posted INTEGER,
   first_seen INTEGER,
@@ -173,4 +176,26 @@ CREATE TABLE IF NOT EXISTS logs (
   at INTEGER NOT NULL,
   kind TEXT,
   message TEXT
+);
+
+-- QC postés par la communauté (photo + lien d'item dans un salon surveillé)
+CREATE TABLE IF NOT EXISTS qc_posts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  item_id TEXT NOT NULL,
+  guild_id TEXT,
+  channel_id TEXT NOT NULL,
+  message_id TEXT NOT NULL UNIQUE,
+  images INTEGER NOT NULL DEFAULT 1,
+  author_id TEXT,
+  at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS qc_posts_item ON qc_posts(item_id, at);
+
+-- Salons où les membres postent leurs QC (lus toutes les 2 min, sans réponse du bot)
+CREATE TABLE IF NOT EXISTS qc_channels (
+  channel_id TEXT PRIMARY KEY,
+  guild_id TEXT,
+  last_message_id TEXT,
+  collected INTEGER NOT NULL DEFAULT 0,
+  added_at INTEGER
 );

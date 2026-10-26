@@ -9,6 +9,7 @@ import { buildAgentLink, AGENT_PRESETS } from './links.js';
 import { countResults, pageResults, PAGE_SIZE, MAX_BULK, SORTS } from './search.js';
 import { CATEGORIES, CATEGORY_BY_KEY } from './categories.js';
 import { formatMoney, getConfig } from './config.js';
+import { communityQc, qcSummary } from './qc.js';
 
 export const QUEUE_PER_MINUTE = POSTS_PER_MINUTE;
 const SHOPS_PER_PAGE = 6;
@@ -109,6 +110,7 @@ export async function resultsView(env, sid, page, msg) {
   const pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
   page = Math.min(Math.max(0, page), pages - 1);
   const items = total ? await pageResults(env, params, money, page) : [];
+  const qcLine = Object.fromEntries(await Promise.all(items.map(async (i) => [i.id, qcSummary(i, await communityQc(env, i.id))])));
 
   const filters = [];
   if (params.shopName) filters.push(`🏪 ${escape(params.shopName)}`);
@@ -116,6 +118,7 @@ export async function resultsView(env, sid, page, msg) {
   if (params.min != null) filters.push(`≥ ${params.min}`);
   if (params.max != null) filters.push(`≤ ${params.max}`);
   if (params.sort && SORTS[params.sort]) filters.push(`${SORTS[params.sort].emoji} ${SORTS[params.sort].label}`);
+  if (params.withQc) filters.push('📸 avec QC');
   filters.push(params.includePosted ? 'déjà postés inclus' : 'non postés');
   const title = params.q ? `« ${escape(params.q)} »` : params.drops ? '📉 Baisses de prix'
     : params.trending ? '🔥 Tendances' : params.latest ? '✨ Nouveautés' : 'Tous les items';
@@ -145,6 +148,7 @@ export async function resultsView(env, sid, page, msg) {
       `${formatPrice(item.price_cny, money)}${dropped ? ` 📉 ~~${formatMoney(item.prev_price, money)}~~` : ''}` +
       `  ·  🏪 ${escape((item.shop_name || PLATFORM_NAMES[item.platform] || '—').slice(0, 40))}` +
       (item.popularity ? `  ·  🔥 ${fmtInt(item.popularity)}` : '') +
+      (qcLine[item.id] ? `  ·  ${qcLine[item.id]}` : '') +
       (item.posted_count ? '  ·  ✅ posté' : '');
     return item.image ? section(line, thumb(item.image)) : text(line);
   });
@@ -197,6 +201,7 @@ export async function filtersView(env, sid) {
       })),
     }),
     row(
+      emojiBtn('📸', p.withQc ? 'Tous les items' : 'Seulement avec QC', `s:qc:${sid}`, p.withQc ? Style.PRIMARY : Style.SECONDARY),
       emojiBtn(p.includePosted ? '🙈' : '👁️', p.includePosted ? 'Masquer les déjà postés' : 'Inclure les déjà postés', `s:posted:${sid}`),
       emojiBtn('💶', 'Prix', `s:edit:${sid}`),
       emojiBtn('✅', 'Voir les résultats', `s:pg:${sid}:0`, Style.PRIMARY),

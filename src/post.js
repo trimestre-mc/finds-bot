@@ -6,6 +6,7 @@ import { COMPONENTS_V2, container, gallery, text, sep, row, link, escape } from 
 import { fetchWeidianItem } from './weidian.js';
 import { getConfig, getMoney, formatMoney, formatCny, refreshRates, ACCENTS, LANGS } from './config.js';
 import { forumTagFor } from './categories.js';
+import { qcButtons, refreshQc, communityQc } from './qc.js';
 
 export const PLATFORM_NAMES = { weidian: 'Weidian', taobao: 'Taobao', '1688': '1688' };
 export const FORUM = 15;
@@ -69,19 +70,22 @@ export function trackedLink(ctx, item, agentName, direct, channelId) {
   return `${ctx.base}/go/${encodeURIComponent(item.id)}/${encodeURIComponent(agentName)}${c}`;
 }
 
-export function agentButtons(ctx, item, channelId) {
+// Boutons d'une carte : agents + annonce d'origine, puis une ligne QC si des photos QC existent.
+export function agentButtons(ctx, item, channelId, community = null) {
   const t = LANGS[ctx.cfg.lang];
   const platform = PLATFORM_NAMES[item.platform] || item.platform;
-  const buttons = ctx.agents.slice(0, 19).map((a) => link(t.buy(a.name).slice(0, 80),
+  const buttons = ctx.agents.slice(0, 14).map((a) => link(t.buy(a.name).slice(0, 80),
     trackedLink(ctx, item, a.name, buildAgentLink(a.template, item), channelId), '🛒'));
   buttons.push(link(t.view(platform).slice(0, 80), trackedLink(ctx, item, 'source', item.url, channelId), '🔗'));
   const rows = [];
   for (let i = 0; i < buttons.length; i += 5) rows.push(row(...buttons.slice(i, i + 5)));
+  const qc = qcButtons((name, url) => trackedLink(ctx, item, name, url, channelId), item, community, ctx.cfg.lang);
+  if (qc.length) rows.push(row(...qc));
   return rows;
 }
 
 // Carte d'un item posté dans un salon (Components V2).
-export function buildItemMessage(item, ctx, images = [], channelId = null) {
+export function buildItemMessage(item, ctx, images = [], channelId = null, community = null) {
   const t = LANGS[ctx.cfg.lang];
   const platform = PLATFORM_NAMES[item.platform] || item.platform;
   const dropped = item.prev_price && item.price_cny && item.prev_price > item.price_cny;
@@ -101,7 +105,7 @@ export function buildItemMessage(item, ctx, images = [], channelId = null) {
       text(`## ${escape(itemTitle(item))}`),
       text(`${price}\n-# ${meta.join('  ·  ')}`),
       sep(),
-      ...agentButtons(ctx, item, channelId),
+      ...agentButtons(ctx, item, channelId, community),
     ], (ACCENTS[ctx.cfg.accent] || ACCENTS.orange).color)],
   };
 }
@@ -127,10 +131,16 @@ async function forumTag(env, ctx, channelId, category) {
 
 // Poste un item : message dans un salon texte, ou nouveau post (1 item = 1 post) dans un forum.
 // Renvoie le nombre de requêtes externes faites (pour rester sous la limite Cloudflare).
-export async function postItem(env, item, channelId, ctx, allowFetch = true, channelType = 0) {
-  const [images, fetched] = await itemImages(env, item, allowFetch);
-  const message = buildItemMessage(item, ctx, images, channelId);
-  let calls = 1 + fetched;
+// checkQc : vérifier les QC sur Jadeship avant de poster (items populaires, ou post choisi à la main).
+export async function postItem(env, item, channelId, ctx, allowFetch = true, channelType = 0, checkQc = false) {
+  const wantQc = allowFetch && !item.qc_checked_at && (checkQc || item.popularity > 0);
+  const [[images, fetched], withQc] = await Promise.all([
+    itemImages(env, item, allowFetch),
+    wantQc ? refreshQc(env, item) : item,
+  ]);
+  item = withQc;
+  let calls = 1 + fetched + (wantQc ? 1 : 0);
+  const message = buildItemMessage(item, ctx, images, channelId, await communityQc(env, item.id));
   let messageId;
   let threadId = null;
   if (Number(channelType) === FORUM) {

@@ -47,6 +47,16 @@ const mock = createServer((req, res) => {
           { id: '5002', author: { bot: true }, content: 'https://item.taobao.com/item.htm?id=222222222' }] : [];
       return res.end(JSON.stringify(msgs));
     }
+    // Salon QC 999 : une photo QC d'un membre avec le lien de l'item Margiela, un message sans photo, un bot.
+    if (req.method === 'GET' && req.url.startsWith('/channels/999/messages')) {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify(req.url.includes('after=') ? [] : [
+        { id: '9003', author: { id: 'u1', bot: false }, timestamp: new Date().toISOString(), content: 'QC GATS https://weidian.com/item.html?itemID=7779545401',
+          attachments: [{ id: 'a1', filename: 'qc1.jpg', content_type: 'image/jpeg', url: 'https://cdn.discordapp.com/x/qc1.jpg' }, { id: 'a2', filename: 'qc2.png', content_type: 'image/png', url: 'https://cdn.discordapp.com/x/qc2.png' }] },
+        { id: '9002', author: { id: 'u2', bot: false }, content: 'sans photo https://weidian.com/item.html?itemID=7779545401', attachments: [] },
+        { id: '9001', author: { id: 'b', bot: true }, content: 'https://weidian.com/item.html?itemID=7779545401', attachments: [{ filename: 'x.jpg', content_type: 'image/jpeg' }] },
+      ]));
+    }
     if (req.method === 'DELETE') { res.writeHead(204); return res.end(); }
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ id: String(Date.now()) }));
@@ -339,6 +349,37 @@ try {
   check('🔥 Tendances : les plus vendus d\'abord', /Tendances/.test(tt) && tt.indexOf('Margiel') > -1 && tt.indexOf('Margiel') < tt.indexOf('Minimalist') && /🔥 469/.test(tt), tt.split('\n')[1]);
   check('Tendances : limites Discord', validate('tendances', trend.data.data));
   check('item Weidian de Jadeship mis en file pour trouver sa boutique', sql("SELECT COUNT(*) AS n FROM link_queue WHERE item_id = '7779545401'")[0].n === 1);
+  // ---- QC
+  await fetch(WORKER + '/api/indexer/qc', { method: 'POST', headers: { Authorization: `Bearer ${SECRET}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ items: [{ key: 'weidian:7779545401', count: 4278, url: 'https://www.uufinds.com/goodItemDetail/qc/830505d79dfa4a44864fe4b500b8fd76?fromId=1' }] }) });
+  await click('set:qc', ['999']);
+  await fetch(WORKER + '/__scheduled?cron=*/2+*+*+*+*');
+  await sleep(4000);
+  check('📸 salon QC : photo de membre + lien → QC communauté', sql("SELECT COUNT(*) AS n, SUM(images) AS img FROM qc_posts WHERE item_id = 'weidian:7779545401'")[0].img === 2
+    && sql("SELECT COUNT(*) AS n FROM qc_posts")[0].n === 1);
+  const qcCmd = await interact({ type: 2, member: { user: { id: '42' }, permissions: '0' }, data: { name: 'qc', options: [{ name: 'lien', value: 'https://www.kakobuy.com/item/details?url=https%3A%2F%2Fweidian.com%2Fitem.html%3FitemID%3D7779545401' }] } });
+  check('/qc ouvert à tous (différé)', qcCmd.data.type === 5);
+  const qcRes = await waitCall((c) => c.method === 'PATCH' && c.body && JSON.stringify(c.body).includes('photos QC'), 20000);
+  check('/qc : galerie agents + QC communauté', qcRes && /4 278 photos QC/.test(allText(qcRes.body)) && /2 photos QC de la communauté/.test(allText(qcRes.body)) && validate('/qc', qcRes.body),
+    qcRes && allText(qcRes.body).split('\n').slice(1, 3).join(' | '));
+  const tq = await click('search:trending');
+  check('résultats : nombre de QC affiché', /📸 4 278 QC/.test(allText(tq.data.data)) && /🧑‍🤝‍🧑 2 QC/.test(allText(tq.data.data)));
+  const sidQ = findComp(tq.data.data, (c) => c.type === 3).custom_id.split(':')[2];
+  const onlyQc = await click(`s:qc:${sidQ}`);
+  check('🎛️ filtre « seulement avec QC »', /avec QC/.test(allText(onlyQc.data.data)) && /1 résultat/.test(allText(onlyQc.data.data)), allText(onlyQc.data.data).split('\n')[1]);
+  const qcOpt = findComp(onlyQc.data.data, (c) => c.type === 3 && /^s:sel:/.test(c.custom_id)).options[0].value;
+  mark = calls.length;
+  await click(`s:sel:${sidQ}:0`, [qcOpt]);
+  const qcCard = await waitCall((c) => c.method === 'POST' && /\/channels\/\d+\/messages$/.test(c.path) && calls.indexOf(c) >= mark);
+  const qcBtn = qcCard && findComp(qcCard.body, (c) => c.type === 2 && /photos QC/.test(c.label || ''));
+  const commBtn = qcCard && findComp(qcCard.body, (c) => c.type === 2 && /QC communauté/.test(c.label || ''));
+  check('carte : boutons « 4 278 photos QC » et « QC communauté (2) »', qcBtn && commBtn && /QC communauté \(2\)/.test(commBtn.label) && validate('carte QC', qcCard.body),
+    qcBtn && `${qcBtn.label} | ${commBtn && commBtn.label}`);
+  const goQc = await fetch(WORKER + qcBtn.url.replace('https://finds-bot.test', ''), { redirect: 'manual' });
+  check('bouton QC → galerie UUFinds (clic compté)', /uufinds\.com\/goodItemDetail\/qc\//.test(goQc.headers.get('location') || ''));
+  const goComm = await fetch(WORKER + commBtn.url.replace('https://finds-bot.test', ''), { redirect: 'manual' });
+  check('bouton QC communauté → message Discord', /discord\.com\/channels\/111\/999\/9003$/.test(goComm.headers.get('location') || ''), goComm.headers.get('location'));
+
   const catsJ = await click('cat:list:0');
   check('vendeur Jadeship ajouté avec ⭐ Trusted', /A1 Top\*\*  ⭐ Trusted/.test(allText(catsJ.data.data)) || sql("SELECT tier FROM shops WHERE id = '1624885820'")[0].tier === 'trusted');
 
@@ -370,6 +411,7 @@ try {
   const sorted = await click(`s:sort:${sid2}`, ['price_asc']);
   check('🎛️ tri par prix croissant', /Prix croissant/.test(allText(sorted.data.data)));
   await click(`s:cat:${sid2}`, ['all']);
+  await click(`s:posted:${sid2}`);
   const page0 = await click(`s:pg:${sid2}:0`);
   const opts = findComp(page0.data.data, (c) => c.type === 3 && /^s:sel:/.test(c.custom_id)).options;
   const before2 = Number((allText(page0.data.data).match(/(\d+) résultat/) || [])[1]);
