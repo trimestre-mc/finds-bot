@@ -18,6 +18,7 @@ import { categorizePending, detectCategory } from './categories.js';
 import { fetchQcPage, runQcChecks, refreshQc, qcWindow } from './qc.js';
 import { popularItemStatements } from './items.js';
 import { budget } from './budget.js';
+import { withDb } from './turso.js';
 import { translatePending, rewriteTitles, titleWait } from './translate.js';
 import { fetchWeidianItem } from './weidian.js';
 import { extractWeidian, ingest, resolveQueue, scanSource, runDiscovery, addShopQuiet } from './discover.js';
@@ -34,6 +35,7 @@ const MODAL_SUBMIT = 5;
 
 export default {
   async fetch(request, env, ctx) {
+    env = withDb(env);
     const url = new URL(request.url);
     try {
       if (request.method === 'POST' && url.pathname === '/interactions') return await handleInteraction(request, env, ctx);
@@ -48,6 +50,7 @@ export default {
   },
 
   async scheduled(event, env, ctx) {
+    env = withDb(env);
     if (event.cron === '*/5 * * * *') {
       ctx.waitUntil((async () => {
         await runDiscovery(env).catch((e) => console.log('découverte', String(e)));
