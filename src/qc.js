@@ -20,7 +20,13 @@ const isImg = (u) => /^https:\/\/(img\.finderqc\.com|cdn\.repfind\.ai)\//.test(u
 
 // Une page de lots QC FinderQC (12 lots). Renvoie { count, batches: [{ agent, date, attrs, photos }] } ou null.
 export async function fetchQcPage(itemId, page = 1) {
-  const res = await fetch(`${API}?id=${encodeURIComponent(itemId)}&page=${page}&pageSize=${BATCHES_PER_API_PAGE}`, { headers: { 'User-Agent': UA } });
+  const url = `${API}?id=${encodeURIComponent(itemId)}&page=${page}&pageSize=${BATCHES_PER_API_PAGE}`;
+  let res = await fetch(url, { headers: { 'User-Agent': UA } });
+  // Trop de requêtes : une seconde de pause et un nouvel essai.
+  if (res.status === 429) {
+    await new Promise((r) => setTimeout(r, 1200));
+    res = await fetch(url, { headers: { 'User-Agent': UA } });
+  }
   if (!res.ok) throw new Error(`FinderQC ${res.status}`);
   const data = await res.json();
   const s = data && data.code === 0 && data.data && data.data.spuInfo;
@@ -69,8 +75,9 @@ export async function fetchQc(item, page = 1, opts = {}) {
   try { hint = JSON.parse(item.qc_preview || 'null'); } catch {}
   const preferRepfind = hint && !Array.isArray(hint) && hint.s === 'repfind';
   let qc = { count: 0, batches: [], similar: [], running: false };
+  let failed = false;
   if (!preferRepfind) {
-    try { qc = await fetchQcPage(item.item_id, page); qc.source = 'finderqc'; } catch (err) { console.log('finderqc', String(err).slice(0, 100)); }
+    try { qc = await fetchQcPage(item.item_id, page); qc.source = 'finderqc'; } catch (err) { failed = true; console.log('finderqc', String(err).slice(0, 100)); }
   }
   if (!qc.count && opts.repfind !== false) {
     try {
@@ -78,6 +85,8 @@ export async function fetchQc(item, page = 1, opts = {}) {
       if (r.count || r.running) qc = { ...r, similar: qc.similar || [], source: 'repfind' };
     } catch (err) { console.log('repfind', String(err).slice(0, 100)); }
   }
+  // Source injoignable (et rien ailleurs) : « on ne sait pas », surtout pas « aucune QC ».
+  if (failed && !qc.count && !qc.running) qc.failed = true;
   return qc;
 }
 
@@ -101,6 +110,7 @@ export async function runQcChecks(env, limit) {
     calls++;
     const qc = await fetchQc(item, 1, { repfind: repfindLeft > 0 });
     if (qc.source === 'repfind' || !qc.count) { repfindLeft--; calls += 2; }
+    if (qc.failed) continue;
     stmts.push(env.DB.prepare('UPDATE items SET qc_count = ?, qc_preview = ?, qc_checked_at = ? WHERE id = ?')
       .bind(qc.count, previewJson(qc), qc.running ? null : Date.now(), item.id));
     found.push(...(qc.similar || []).slice(0, 10));
@@ -120,6 +130,7 @@ export async function runQcChecks(env, limit) {
 export async function refreshQc(env, item) {
   if (item.qc_checked_at && Date.now() - item.qc_checked_at < RECHECK_MS) return item;
   const qc = await fetchQc(item, 1);
+  if (qc.failed) return item; // source indisponible : on garde ce qu'on savait
   const preview = previewJson(qc);
   // Récupération en cours chez Repfind : on revérifiera (pas de date de vérification).
   const checkedAt = qc.running ? null : Date.now();
@@ -201,11 +212,16 @@ export async function qcWindow(env, item, view = 0, opts = {}) {
     blocks.push(gallery(b.photos.slice(0, 10)));
   }
   const title = escape((item.title_en || item.title_zh || `${item.platform} ${item.item_id}`).slice(0, 80));
-  const head = `## 📸 ${title}\n-# ${qc.count ? (en ? `${fmt(qc.count)} QC photos` : `${fmt(qc.count)} photos QC`) : (en ? 'No agent QC yet' : 'Pas encore de QC d\'agents')}` +
+  const known = qc.count || (qc.failed ? item.qc_count : 0);
+  const head = `## 📸 ${title}\n-# ${known ? (en ? `${fmt(known)} QC photos` : `${fmt(known)} photos QC`) : (en ? 'No agent QC yet' : 'Pas encore de QC d\'agents')}` +
     (batches.length ? `  ·  ${en ? 'batches' : 'lots'} ${first + 1}–${first + batches.length}${hasNext ? '' : ` / ${totalBatchesSeen}`}` : '');
   if (!blocks.length && qc.running) {
     blocks.push(text(en ? '⏳ QC photos for this item are being fetched right now. Come back in a few minutes.'
       : '⏳ Les photos QC de cet item sont en cours de récupération. Reviens dans quelques minutes.'));
+  }
+  if (!blocks.length && qc.failed) {
+    blocks.push(text(en ? '⏳ The QC source is busy right now. Try again in a minute.'
+      : '⏳ La source des QC est surchargée en ce moment. Réessaie dans une minute.'));
   }
   let ask = null;
   if (!blocks.length) {
@@ -216,11 +232,13 @@ export async function qcWindow(env, item, view = 0, opts = {}) {
     // Pas de QC nulle part : on peut les demander à la communauté.
     if (opts.qcChannel) ask = row({ type: 2, style: 1, emoji: { name: '🙋' }, label: en ? 'Ask for QC' : 'Demander un QC', custom_id: `pub:qcreq:${item.id}`.slice(0, 100) });
   }
+  const retry = qc.failed && !batches.length
+    ? row({ type: 2, style: 1, emoji: { name: '🔄' }, label: en ? 'Retry' : 'Réessayer', custom_id: `pub:qcp:${item.id}:${view}` }) : null;
   const nav = (view > 0 || hasNext) ? row(
     { type: 2, style: 2, emoji: { name: '◀️' }, custom_id: `pub:qcp:${item.id}:${view - 1}`, disabled: view === 0 },
     { type: 2, style: 2, label: en ? 'More QC' : 'Plus de QC', emoji: { name: '▶️' }, custom_id: `pub:qcp:${item.id}:${view + 1}`, disabled: !hasNext },
   ) : null;
-  return [container([text(head), sep(), ...blocks, nav, ask], opts.accent || 0x5865f2)];
+  return [container([text(head), sep(), ...blocks, nav, retry, ask], opts.accent || 0x5865f2)];
 }
 
 // Sous un post de forum : photos QC (communauté + dernier lot des agents) et bouton « Plus de QC ».
@@ -278,7 +296,7 @@ const SYNC_PLATFORMS = ['Weidian', 'Taobao', 'Ali1688'];
 const SYNC_PAGE_SIZE = 100;
 const SYNC_LIMIT = 10000; // résultats max par filtre côté FinderQC
 const SYNC_MAX_CENTS = 2000000; // au-delà de 20 000 ¥ : une dernière tranche ouverte
-const SYNC_PAGES_PER_RUN = 12; // temps CPU limité sur Workers gratuit
+const SYNC_PAGES_PER_RUN = 8; // temps CPU limité, et FinderQC doit rester disponible pour les fenêtres QC
 
 async function listPage(filter, page) {
   const qs = new URLSearchParams({ ...filter, page: String(page), pageSize: String(SYNC_PAGE_SIZE) });
@@ -310,7 +328,7 @@ export async function syncQcCatalog(env) {
   if (!state || state.v !== 2 || (state.done && state.cycle !== day)) {
     state = { v: 2, cycle: day, plat: 0, lo: 0, w: 1000, page: 1, done: false, seen: 0 };
   }
-  if (state.done) return 0;
+  if (state.done || (state.pauseUntil && Date.now() < state.pauseUntil)) return 0;
   const b = await budget(env, 'qcsync');
   if (!b.left) return 0;
 
@@ -333,6 +351,8 @@ export async function syncQcCatalog(env) {
       pages++;
     } catch (err) {
       console.log('synchro QC', String(err).slice(0, 100));
+      // FinderQC demande de ralentir : pause de 15 min (les fenêtres QC des membres passent avant la synchro).
+      if (/429/.test(String(err))) state.pauseUntil = Date.now() + 15 * 60000;
       break;
     }
     // Tranche trop large (plus de 10 000 produits) : on la coupe en deux et on recommence.
