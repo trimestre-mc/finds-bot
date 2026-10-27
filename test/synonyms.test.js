@@ -42,3 +42,12 @@ test('fautes de frappe, singulier, numéros collés, recherche élargie', async 
   assert.equal(relevance(expandQuery('lv bag'), { title_zh: '2025蔻家新款老花腋下包' }), 0);
   assert.deepEqual(relaxQuery(expandQuery('nike hoodie rouge')).map((g) => g.alt[0]), ['nike', 'hoodie']);
 });
+
+test('autocomplétion de /find : modèles connus, marque + type, surnoms', async () => {
+  const { suggestQueries } = await import('../src/synonyms.js');
+  assert.ok(suggestQueries('nik').includes('nike tech fleece'));
+  assert.ok(suggestQueries('nike h').includes('nike hoodie'));
+  assert.ok(suggestQueries('lv').includes('louis vuitton bag') || suggestQueries('lv').includes('louis vuitton'));
+  assert.ok(suggestQueries('').length > 0 && suggestQueries('x'.repeat(5)).includes('xxxxx'));
+  assert.ok(suggestQueries('a').length <= 25);
+});

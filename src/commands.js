@@ -17,7 +17,7 @@ export const COMMANDS = [
     name: 'find',
     description: 'Chercher un item (ex : hoodie, jordan 4, bag) et l\'acheter avec le bon lien',
     options: [
-      { type: STRING, name: 'recherche', description: 'Ce que tu cherches (en anglais, c\'est mieux)', required: true, max_length: 100 },
+      { type: STRING, name: 'recherche', description: 'Ce que tu cherches (ex : nike tech, jordan 4, sac lv)', required: true, max_length: 100, autocomplete: true },
       {
         type: STRING, name: 'categorie', description: 'Limiter à une catégorie', required: false,
         choices: CATEGORIES.map((c) => ({ name: c.label, value: c.key })),

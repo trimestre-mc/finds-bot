@@ -266,3 +266,36 @@ export function relevance(groups, item) {
   }
   return score;
 }
+
+// Suggestions pendant la frappe de /find (autocomplétion Discord) : marques, puis marque + type d'article.
+// Calculé ici, sans base de données. 25 suggestions au plus (limite Discord).
+const POPULAR_TYPES = ['hoodie', 'tee', 'jacket', 'pants', 'shorts', 'shoes', 'bag', 'cap', 'sweater', 'puffer', 'tracksuit', 'jeans'];
+const POPULAR_MODELS = ['nike tech fleece', 'jordan 4', 'jordan 1', 'dunk low', 'air force 1', 'yeezy 350', 'new balance 550',
+  'supreme box logo', 'chrome hearts hoodie', 'stone island sweatshirt', 'moncler puffer', 'canada goose', 'essentials hoodie',
+  'ralph lauren polo', 'trapstar tracksuit', 'corteiz cargos', 'bape hoodie', 'arcteryx jacket', 'denim tears', 'gallery dept'];
+export function suggestQueries(input) {
+  const q = normalize(input);
+  const names = BRANDS.map((b) => b.alt.find((a) => /^[a-z0-9 '&-]+$/.test(a) && a.length > 2)).filter(Boolean);
+  if (!q) return POPULAR_MODELS.slice(0, 25);
+  const out = [];
+  const add = (x) => { if (x && !out.includes(x) && out.length < 25) out.push(x); };
+  for (const m of POPULAR_MODELS) if (m.startsWith(q)) add(m);
+  // Surnom ou faute de frappe d'une marque (« lv », « ch », « suprem ») : son nom complet.
+  const known = lookup(q.split(' ')[0]);
+  if (known && known.kind === 'brand') {
+    const full = known.alt.find((a) => /^[a-z0-9 '&-]+$/.test(a) && a.length > 2);
+    if (full) { add(full); for (const t of POPULAR_TYPES.slice(0, 4)) add(`${full} ${t}`); }
+  }
+  // « nike h » : marque complète + début d'un type d'article.
+  for (const n of names) {
+    if (q.startsWith(`${n} `)) {
+      const rest = q.slice(n.length + 1);
+      for (const t of POPULAR_TYPES) if (t.startsWith(rest)) add(`${n} ${t}`);
+    }
+  }
+  for (const n of names) if (n.startsWith(q)) add(n);
+  for (const n of names) if (n.startsWith(q)) for (const t of POPULAR_TYPES.slice(0, 4)) add(`${n} ${t}`);
+  for (const m of POPULAR_MODELS) if (m.includes(q)) add(m);
+  add(q); // toujours ce qui a été tapé
+  return out.slice(0, 25);
+}

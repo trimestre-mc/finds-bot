@@ -25,7 +25,7 @@ import SCHEMA from '../schema.sql';
 import { searchByImage } from './imagesearch.js';
 import { describeImage } from './vision.js';
 import { uploadEmojis, refreshEmojis } from './emojis.js';
-import { expandQuery } from './synonyms.js';
+import { expandQuery, suggestQueries } from './synonyms.js';
 import { watchChannels, imageJob, saveFound } from './watch.js';
 import { translatePending, rewriteTitles, titleWait, quickTitles, applyGlossary } from './translate.js';
 import { fetchWeidianItem } from './weidian.js';
@@ -191,6 +191,13 @@ async function handleInteraction(request, env, ctx) {
   if (!it.guild_id) return reply('Ce bot s\'utilise uniquement dans un serveur.');
 
   // Commandes et boutons publics (/find, /convert) : ouverts à tous les membres.
+  // Autocomplétion de /find : suggestions calculées sans base (synonyms.js).
+  if (it.type === InteractionType.AUTOCOMPLETE) {
+    const focused = (it.data.options || []).find((o) => o.focused);
+    const choices = suggestQueries(focused ? String(focused.value || '') : '').map((x) => ({ name: x.slice(0, 100), value: x.slice(0, 100) }));
+    return json({ type: Reply.AUTOCOMPLETE, data: { choices } });
+  }
+
   if (it.type === InteractionType.COMMAND && it.data.name !== 'menu') {
     return (await handlePublicCommand(it, env, ctx)) || reply('Commande inconnue.');
   }
