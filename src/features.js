@@ -8,7 +8,7 @@ import { buildAgentLink, canonicalUrl, extractItemRefs } from './links.js';
 import { communityQc, refreshQc, communityPhotos, qcWindow } from './qc.js';
 import { allResultIds, withoutCache } from './search.js';
 import { postContext, processQueue, logError, FORUM } from './post.js';
-import { getConfig, setConfig, CURRENCIES, LANGS, ACCENTS } from './config.js';
+import { getConfig, setConfig, getSignup, CURRENCIES, LANGS, ACCENTS } from './config.js';
 import { messageText, collectQc } from './discover.js';
 import { CATEGORY_BY_KEY } from './categories.js';
 import { expandQuery } from './synonyms.js';
@@ -39,6 +39,15 @@ export async function handleGo(url, env, ctx) {
   const [, , rawItem, rawAgent] = url.pathname.split('/');
   const itemKey = decodeURIComponent(rawItem || '');
   const agentName = decodeURIComponent(rawAgent || 'source');
+  const channel = /^\d{1,25}$/.test(url.searchParams.get('c') || '') ? url.searchParams.get('c') : null;
+  if (agentName === 'signup') {
+    // Bouton « S'inscrire » (gris) : lien d'inscription du propriétaire.
+    const s = await getSignup(env);
+    if (!s) return new Response('Lien inconnu', { status: 404 });
+    ctx.waitUntil(env.DB.prepare('INSERT INTO clicks (item_id, agent, channel_id, at) VALUES (?, ?, ?, ?)')
+      .bind(itemKey.slice(0, 40), 'signup', channel, Date.now()).run().catch(() => {}));
+    return new Response(null, { status: 302, headers: { Location: s.url, 'Cache-Control': 'no-store' } });
+  }
   const [platform, itemId] = itemKey.split(':');
   const known = await env.DB.prepare('SELECT * FROM items WHERE id = ?').bind(itemKey).first();
   const item = known || { id: itemKey, platform, item_id: itemId, url: canonicalUrl(platform, itemId) };
@@ -52,7 +61,6 @@ export async function handleGo(url, env, ctx) {
     const agent = await env.DB.prepare('SELECT template FROM agents WHERE name = ?').bind(agentName).first();
     if (agent) target = buildAgentLink(agent.template, item);
   }
-  const channel = /^\d{1,25}$/.test(url.searchParams.get('c') || '') ? url.searchParams.get('c') : null;
   ctx.waitUntil(env.DB.prepare('INSERT INTO clicks (item_id, agent, channel_id, at) VALUES (?, ?, ?, ?)')
     .bind(itemKey, agentName.slice(0, 40), channel, Date.now()).run().catch(() => {}));
   return new Response(null, { status: 302, headers: { Location: target, 'Cache-Control': 'no-store' } });
@@ -97,6 +105,19 @@ export async function handlePublicComponent(it, env, ctx) {
   const parts = it.data.custom_id.split(':');
   const [, kind, sid, page] = parts;
   if (kind === 'pg') return update(await findView(env, sid, Number(page) || 0));
+  if (kind === 'su') {
+    // Bouton « S'inscrire » coloré : petite fenêtre privée avec le vrai lien.
+    const s = await getSignup(env);
+    if (!s) return panel([container([text('Le lien d\'inscription n\'est plus disponible.')])]);
+    ctx.waitUntil(env.DB.prepare('INSERT INTO clicks (item_id, agent, channel_id, at) VALUES (?, ?, ?, ?)')
+      .bind(parts.slice(2).join(':').slice(0, 40), 'signup', it.channel_id || null, Date.now()).run().catch(() => {}));
+    const b = { type: 2, style: 5, label: (s.label || 'S\'inscrire').slice(0, 80), url: s.url };
+    if (s.emoji) b.emoji = { name: s.emoji };
+    return panel([container([
+      text(s.message ? escape(s.message).slice(0, 1500) : `### ${escape(s.label || 'S\'inscrire')}\nClique ci-dessous pour créer ton compte.`),
+      { type: 1, components: [b] },
+    ])]);
+  }
   if (kind === 'qc') {
     // Bouton « 📸 Voir les QC » d'une carte : fenêtre privée avec les QC de l'item.
     const key = parts.slice(2).join(':');

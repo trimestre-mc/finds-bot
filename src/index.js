@@ -18,6 +18,7 @@ import { categorizePending, detectCategory, isDeadLink } from './categories.js';
 import { fetchQcPage, runQcChecks, refreshQc, qcWindow, syncQcCatalog } from './qc.js';
 import { popularItemStatements } from './items.js';
 import { budget } from './budget.js';
+import { getSignup, setSignup, SIGNUP_COLORS } from './config.js';
 import { withDb } from './turso.js';
 import { searchByImage } from './imagesearch.js';
 import { expandQuery } from './synonyms.js';
@@ -27,7 +28,7 @@ import { fetchWeidianItem } from './weidian.js';
 import { extractWeidian, ingest, resolveQueue, scanSource, runDiscovery } from './discover.js';
 import {
   QUEUE_PER_MINUTE, homeView, searchModal, loadSearch, createSearch, resultsView, confirmAllView,
-  catalogsView, addShopModal, shopView, confirmDeleteShopView, agentsView, agentModal, presetModal, itemModal,
+  catalogsView, addShopModal, shopView, confirmDeleteShopView, agentsView, agentModal, presetModal, itemModal, signupModal,
   accessView, hasAdminPermission, deniedView, sourcesView,
 } from './ui.js';
 
@@ -150,6 +151,12 @@ async function handleInteraction(request, env, ctx) {
   return reply('Action inconnue.');
 }
 
+// Un seul emoji Unicode (Discord refuse tout le message si l'emoji d'un bouton est invalide).
+function cleanEmoji(raw) {
+  const e = (raw || '').trim();
+  return /^\p{Extended_Pictographic}(\uFE0F|\u200D\p{Extended_Pictographic}|\p{Emoji_Modifier})*$/u.test(e) ? e : null;
+}
+
 const AGENTS_LOCKED = '🔒 Seul le propriétaire du bot peut modifier les agents.';
 
 // Les liens d'affiliation ne peuvent être changés que par AGENTS_OWNER_ID (si défini).
@@ -221,6 +228,22 @@ async function onComponent(it, env, ctx) {
       const name = decodeURIComponent(c);
       await env.DB.prepare('DELETE FROM agents WHERE name = ?').bind(name).run();
       return update(await agentsView(env, `🗑️ Agent **${escape(name)}** retiré.`, true));
+    }
+
+    case 'ag:su': {
+      if (!canEditAgents(env, it)) return update(await agentsView(env, AGENTS_LOCKED, false));
+      return openModal(signupModal(await getSignup(env)));
+    }
+    case 'ag:sudel': {
+      if (!canEditAgents(env, it)) return update(await agentsView(env, AGENTS_LOCKED, false));
+      await setSignup(env, null);
+      return update(await agentsView(env, '🗑️ Bouton d\'inscription retiré.', true));
+    }
+    case 'ag:sucol': {
+      if (!canEditAgents(env, it)) return update(await agentsView(env, AGENTS_LOCKED, false));
+      const s = await getSignup(env);
+      if (s && SIGNUP_COLORS[values[0]]) await setSignup(env, { ...s, color: values[0] });
+      return update(await agentsView(env, s ? `🎨 Couleur : **${SIGNUP_COLORS[values[0]].label}**.` : null, true));
     }
 
     case 'item:add': return openModal(itemModal());
@@ -425,6 +448,18 @@ async function onModal(it, env, ctx) {
     ).bind(name, template, position).run();
     const example = buildAgentLink(template, { url: 'https://weidian.com/item.html?itemID=7863670229', item_id: '7863670229', platform: 'weidian' });
     return update(await agentsView(env, `✅ **${escape(name)}** enregistré. [Tester un lien généré](${example})`, true));
+  }
+
+  if (kind === 'signup') {
+    if (!canEditAgents(env, it)) return update(await agentsView(env, AGENTS_LOCKED, false));
+    const url = (v.url || '').trim();
+    if (!/^https:\/\/[^\s]+$/.test(url)) return update(await agentsView(env, '❌ Le lien doit commencer par `https://`.', true));
+    const old = await getSignup(env);
+    await setSignup(env, {
+      url, label: (v.label || 'S\'inscrire').slice(0, 80), emoji: cleanEmoji(v.emoji),
+      message: (v.message || '').slice(0, 400) || null, color: old ? old.color : 'vert',
+    });
+    return update(await agentsView(env, '✅ Bouton d\'inscription enregistré : il apparaît sous tous les items postés à partir de maintenant.', true));
   }
 
   if (kind === 'item') return addItem(it, env, ctx, v);

@@ -21,14 +21,14 @@ const TYPES = [
   { words: ['shoes', 'shoe', 'sneakers', 'sneaker', 'chaussures', 'chaussure', 'baskets', 'basket', 'trainers'], alt: ['shoe', 'sneaker', 'trainer', '鞋'], cat: 'shoes' },
   { words: ['boots', 'boot', 'bottes', 'botte'], alt: ['boot', '靴'], cat: 'shoes' },
   { words: ['slides', 'claquettes', 'sandals', 'sandales', 'slippers'], alt: ['slide', 'sandal', 'slipper', '拖鞋', '凉鞋'], cat: 'shoes' },
-  { words: ['bag', 'bags', 'sac', 'sacs', 'backpack', 'tote', 'handbag'], alt: ['bag', 'backpack', 'tote', '包'], cat: 'bags' },
+  { words: ['bag', 'bags', 'sac', 'sacs', 'backpack', 'tote', 'handbag'], alt: ['bag', 'backpack', 'tote', 'handbag', 'crossbody', '背包', '挎包', '手提包', '单肩包', '双肩包', '腋下包', '托特包', '女包', '男包'], cat: 'bags' },
   { words: ['wallet', 'wallets', 'portefeuille', 'cardholder'], alt: ['wallet', 'card holder', '钱包', '卡包'], cat: 'accessories' },
-  { words: ['cap', 'caps', 'casquette', 'casquettes', 'hat', 'hats', 'chapeau'], alt: ['cap', 'hat', '帽'], cat: 'accessories' },
+  { words: ['cap', 'caps', 'casquette', 'casquettes', 'hat', 'hats', 'chapeau'], alt: ['cap', 'hat', '帽子', '棒球帽', '鸭舌帽', '渔夫帽'], cat: 'accessories' },
   { words: ['beanie', 'bonnet'], alt: ['beanie', '毛线帽', '针织帽'], cat: 'accessories' },
   { words: ['belt', 'belts', 'ceinture'], alt: ['belt', '腰带', '皮带'], cat: 'accessories' },
   { words: ['sunglasses', 'lunettes', 'glasses'], alt: ['sunglasses', 'glasses', '墨镜', '眼镜'], cat: 'accessories' },
   { words: ['scarf', 'echarpe', 'écharpe'], alt: ['scarf', '围巾'], cat: 'accessories' },
-  { words: ['socks', 'chaussettes'], alt: ['socks', '袜'], cat: 'accessories' },
+  { words: ['socks', 'sock', 'chaussettes', 'chaussette'], alt: ['socks', 'sock', '袜'], cat: 'accessories' },
   { words: ['necklace', 'collier', 'chain', 'chaine', 'chaîne'], alt: ['necklace', 'chain', '项链'], cat: 'jewelry' },
   { words: ['bracelet', 'bracelets'], alt: ['bracelet', '手镯', '手链'], cat: 'jewelry' },
   { words: ['ring', 'rings', 'bague', 'bagues'], alt: ['ring', '戒指'], cat: 'jewelry' },
@@ -42,14 +42,16 @@ const BRANDS = [
   { words: ['nike', 'nk'], alt: ['nike', 'nk', '耐克'] },
   { words: ['tech', 'techfleece'], alt: ['tech fleece', 'tech', '科技'] },
   { words: ['jordan', 'aj', 'jordans'], alt: ['jordan', 'aj', '乔丹'] },
-  { words: ['dunk', 'dunks'], alt: ['dunk', 'sb'] },
+  { words: ['dunk', 'dunks', 'sb dunk'], alt: ['dunk', 'dunksb'] },
+  { words: ['air force 1', 'air force one', 'air force', 'af1', 'af'], alt: ['air force', 'af1', 'af 1', '空军'] },
+  { words: ['air max', 'airmax'], alt: ['air max', 'airmax', '气垫'] },
   { words: ['adidas', 'addidas'], alt: ['adidas', '阿迪'] },
   { words: ['yeezy', 'yeezys'], alt: ['yeezy', 'yzy', '椰子', '侃爷'] },
   { words: ['new balance', 'nb'], alt: ['new balance', 'nb', '新百伦'] },
   { words: ['asics'], alt: ['asics', '亚瑟士', '亚瑟'] },
   { words: ['salomon'], alt: ['salomon', '萨洛蒙'] },
   { words: ['chrome hearts', 'ch'], alt: ['chrome hearts', 'chrome heart', 'ch', '克罗心'] },
-  { words: ['balenciaga', 'balenci', 'bal'], alt: ['balenciaga', 'bal', '巴黎世家', '巴黎', '双b'] },
+  { words: ['balenciaga', 'balenci', 'bal'], alt: ['balenciaga', 'bal', '巴黎世家', '双b'] },
   { words: ['chanel'], alt: ['chanel', '小香', '香奈儿'] },
   { words: ['ralph lauren', 'ralph', 'rl', 'polo ralph'], alt: ['ralph lauren', 'ralph', 'rl', '小马', '拉夫劳伦'] },
   { words: ['burberry'], alt: ['burberry', '博柏利', '巴宝莉', '某b'] },
@@ -57,7 +59,7 @@ const BRANDS = [
   { words: ['bottega', 'bottega veneta', 'bv'], alt: ['bottega', 'bv', '葆蝶家'] },
   { words: ['gucci'], alt: ['gucci', '古驰'] },
   { words: ['prada'], alt: ['prada', '普拉达'] },
-  { words: ['louis vuitton', 'lv', 'vuitton'], alt: ['louis vuitton', 'vuitton', 'lv', '路易威登', '老花'] },
+  { words: ['louis vuitton', 'lv', 'vuitton'], alt: ['louis vuitton', 'vuitton', 'lv', '路易威登'] },
   { words: ['dior'], alt: ['dior', '迪奥'] },
   { words: ['fendi'], alt: ['fendi', '芬迪'] },
   { words: ['saint laurent', 'ysl'], alt: ['saint laurent', 'ysl', '圣罗兰'] },
@@ -81,6 +83,29 @@ const BRANDS = [
   { words: ['van cleef', 'vca'], alt: ['van cleef', 'vca', '梵克雅宝', '四叶草'] },
   { words: ['rolex'], alt: ['rolex', '劳力士'] },
   { words: ['bape'], alt: ['bape', '猿人头'] },
+  { words: ['ny', 'yankees', 'new york', 'mlb'], alt: ['ny', 'yankees', 'new york', 'mlb', '洋基'] },
+  { words: ['diesel'], alt: ['diesel', '迪赛'] },
+  { words: ['miu miu', 'miumiu'], alt: ['miu miu', 'miumiu', '缪缪'] },
+  { words: ['celine'], alt: ['celine', '赛琳', '思琳'] },
+  { words: ['valentino'], alt: ['valentino', '华伦天奴'] },
+  { words: ['versace'], alt: ['versace', '范思哲'] },
+  { words: ['givenchy'], alt: ['givenchy', '纪梵希'] },
+  { words: ['vivienne westwood', 'westwood', 'vivienne'], alt: ['vivienne westwood', 'westwood', '西太后'] },
+  { words: ['goyard'], alt: ['goyard', '戈雅'] },
+  { words: ['ugg', 'uggs'], alt: ['ugg', '雪地靴'] },
+  { words: ['converse'], alt: ['converse', '匡威'] },
+  { words: ['vans'], alt: ['vans', '万斯'] },
+  { words: ['puma'], alt: ['puma', '彪马'] },
+  { words: ['onitsuka', 'onitsuka tiger'], alt: ['onitsuka', '鬼冢虎'] },
+  { words: ['hellstar'], alt: ['hellstar'] },
+  { words: ['sp5der', 'spider'], alt: ['sp5der', 'spider'] },
+  { words: ['broken planet'], alt: ['broken planet'] },
+  { words: ['syna', 'synaworld'], alt: ['syna', 'synaworld'] },
+  { words: ['nocta'], alt: ['nocta'] },
+  { words: ['represent'], alt: ['represent'] },
+  { words: ['ami', 'ami paris'], alt: ['ami paris', 'ami'] },
+  { words: ['acne', 'acne studios'], alt: ['acne studios', 'acne'] },
+  { words: ['polene'], alt: ['polene', 'polène'] },
   { words: ['trapstar'], alt: ['trapstar'] },
   { words: ['corteiz', 'crtz'], alt: ['corteiz', 'crtz'] },
   { words: ['denim tears'], alt: ['denim tears'] },
@@ -97,32 +122,109 @@ const COLORS = [
   { words: ['blue', 'bleu', 'bleue', 'navy'], alt: ['blue', 'navy', '蓝'] },
   { words: ['red', 'rouge'], alt: ['red', '红'] },
   { words: ['green', 'vert', 'verte'], alt: ['green', '绿'] },
-  { words: ['brown', 'marron'], alt: ['brown', '棕', '咖'] },
-  { words: ['beige', 'cream', 'creme', 'crème'], alt: ['beige', 'cream', '米'] },
+  { words: ['brown', 'marron'], alt: ['brown', '棕', '咖啡色'] },
+  { words: ['beige', 'cream', 'creme', 'crème'], alt: ['beige', 'cream', '米白', '米色', '杏色'] },
   { words: ['pink', 'rose'], alt: ['pink', '粉'] },
   { words: ['yellow', 'jaune'], alt: ['yellow', '黄'] },
   { words: ['purple', 'violet'], alt: ['purple', '紫'] },
   { words: ['orange'], alt: ['orange', '橙'] },
 ];
 
-const DICT = [...BRANDS, ...TYPES, ...COLORS];
+const DICT = [
+  ...BRANDS.map((d) => ({ ...d, kind: 'brand' })),
+  ...TYPES.map((d) => ({ ...d, kind: 'type' })),
+  ...COLORS.map((d) => ({ ...d, kind: 'color' })),
+];
 const STOP = new Set(['de', 'du', 'des', 'le', 'la', 'les', 'un', 'une', 'et', 'en', 'pour', 'the', 'a', 'an', 'of', 'for', 'and', 'with', 'avec']);
 
-const normalize = (q) => String(q || '').toLowerCase().normalize('NFKC')
+// Minuscules, sans accents (« survêtement » = « survetement »), chinois intact.
+const deaccent = (s) => s.normalize('NFD').replace(/[̀-ͯ]/g, '').normalize('NFC');
+const normalize = (q) => deaccent(String(q || '').toLowerCase().normalize('NFKC'))
   .replace(/[^\p{L}\p{N}\s'-]/gu, ' ').replace(/\s+/g, ' ').trim();
 
-// Groupes d'une recherche : [{ alt: [équivalents], cat }]. Les expressions de deux mots passent avant les mots seuls.
+const WORDS = new Map();
+for (const d of DICT) for (const w of d.words) if (!WORDS.has(deaccent(w))) WORDS.set(deaccent(w), d);
+
+// Distance d'édition (fautes de frappe : « suprem », « moncker », « jordna »).
+function distance(a, b, max) {
+  if (Math.abs(a.length - b.length) > max) return max + 1;
+  // Damerau (OSA) : deux lettres inversées comptent pour une seule faute.
+  const d = Array.from({ length: a.length + 1 }, (_, i) => [i, ...Array(b.length).fill(0)]);
+  for (let j = 1; j <= b.length; j++) d[0][j] = j;
+  for (let i = 1; i <= a.length; i++) {
+    for (let j = 1; j <= b.length; j++) {
+      d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+      if (i > 1 && j > 1 && a[i - 1] === b[j - 2] && a[i - 2] === b[j - 1]) d[i][j] = Math.min(d[i][j], d[i - 2][j - 2] + 1);
+    }
+  }
+  return d[a.length][b.length];
+}
+
+// Mot du dictionnaire : exact, au singulier, ou à une faute près (deux pour les mots longs).
+function lookup(word) {
+  if (WORDS.has(word)) return WORDS.get(word);
+  const single = word.replace(/(es|s|x)$/, '');
+  if (single !== word && single.length >= 3 && WORDS.has(single)) return WORDS.get(single);
+  if (word.length < 4 || /\d/.test(word) || !/^[a-z' -]+$/.test(word)) return null;
+  const phrase = word.includes(' ');
+  const max = word.length >= 7 ? 2 : 1;
+  let best = null;
+  let bestD = max + 1;
+  for (const [w, d] of WORDS) {
+    if (w.length < 4 || w.includes(' ') !== phrase || w[0] !== word[0]) continue;
+    const dd = distance(word, w, max);
+    if (dd < bestD) { best = d; bestD = dd; }
+  }
+  return best;
+}
+
+// « aj4 » → « aj 4 », « nb550 » → « nb 550 » (sauf si le mot collé est connu tel quel, comme « af1 » ou « mm6 »).
+function tokens(q) {
+  const out = [];
+  for (const w of normalize(q).split(' ').filter(Boolean)) {
+    const m = w.match(/^([a-z]+)(\d{1,4})$/);
+    if (m && !WORDS.has(w) && lookup(m[1])) out.push(m[1], m[2]);
+    else out.push(w);
+  }
+  return out.slice(0, 10);
+}
+
+// Groupes d'une recherche : [{ alt: [équivalents], cat, kind }]. Les expressions de trois puis deux mots passent
+// avant les mots seuls. Un numéro de modèle après une marque accepte aussi la forme collée (« jordan 4 » → aj4).
 export function expandQuery(q) {
-  const words = normalize(q).split(' ').filter(Boolean).slice(0, 8);
+  const words = tokens(q);
   const groups = [];
   for (let i = 0; i < words.length; i++) {
-    const pair = i + 1 < words.length ? `${words[i]} ${words[i + 1]}` : null;
-    const entry = (pair && DICT.find((d) => d.words.includes(pair))) || DICT.find((d) => d.words.includes(words[i]));
-    if (entry && pair && entry.words.includes(pair)) i++;
-    if (entry) groups.push({ alt: entry.alt, cat: entry.cat || null });
-    else if (!STOP.has(words[i])) groups.push({ alt: [words[i]], cat: null });
+    let entry = null;
+    for (const n of [3, 2]) {
+      const phrase = words.slice(i, i + n).join(' ');
+      const found = i + n <= words.length && (WORDS.get(phrase) || lookup(phrase));
+      if (found) { entry = found; i += n - 1; break; }
+    }
+    if (!entry && !STOP.has(words[i])) entry = lookup(words[i]);
+    if (entry) groups.push({ alt: entry.alt, cat: entry.cat || null, kind: entry.kind });
+    else if (!STOP.has(words[i])) groups.push({ alt: [words[i]], cat: null, kind: /^\d+$/.test(words[i]) ? 'num' : 'word' });
+  }
+  for (let i = 1; i < groups.length; i++) {
+    const brand = groups[i - 1];
+    const num = groups[i];
+    if (brand.kind !== 'brand' || num.kind !== 'num') continue;
+    const glued = brand.alt.filter((a) => !a.includes(' ')).map((a) => `${a}${num.alt[0]}`);
+    groups[i - 1] = { ...brand, alt: [...brand.alt, ...glued] };
+    groups[i] = { ...num, alt: [...num.alt, ...glued] };
   }
   return groups;
+}
+
+// Recherche sans résultat : on retire d'abord une couleur, puis un type d'article, puis un mot inconnu.
+const DROP_ORDER = ['color', 'type', 'word', 'num'];
+export function relaxQuery(groups) {
+  if (!groups || groups.length < 2) return null;
+  for (const kind of DROP_ORDER) {
+    const i = groups.map((g) => g.kind).lastIndexOf(kind);
+    if (i >= 0) return groups.filter((_, j) => j !== i);
+  }
+  return null;
 }
 
 // Une seule chaîne : est-ce qu'un équivalent est présent (mot entier pour les mots latins) ?

@@ -47,6 +47,28 @@ export async function getConfig(env) {
   return cfg;
 }
 
+// Bouton « S'inscrire » sous les items. Discord ne colore pas les boutons-liens : gris = lien direct (1 clic),
+// les autres couleurs ouvrent une petite fenêtre avec le lien (2 clics).
+export const SIGNUP_COLORS = {
+  gris: { style: 5, label: 'Gris (lien direct, 1 clic)', emoji: '⬜' },
+  bleu: { style: 1, label: 'Bleu (2 clics)', emoji: '🟦' },
+  vert: { style: 3, label: 'Vert (2 clics)', emoji: '🟩' },
+  rouge: { style: 4, label: 'Rouge (2 clics)', emoji: '🟥' },
+};
+
+export async function getSignup(env) {
+  const row = await env.DB.prepare("SELECT value FROM settings WHERE key = 'signup'").first();
+  try {
+    const s = row ? JSON.parse(row.value) : null;
+    return s && /^https:\/\//.test(s.url || '') ? { color: 'vert', ...s } : null;
+  } catch { return null; }
+}
+
+export async function setSignup(env, value) {
+  if (!value) await env.DB.prepare("DELETE FROM settings WHERE key = 'signup'").run();
+  else await env.DB.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('signup', ?)").bind(JSON.stringify(value)).run();
+}
+
 export async function setConfig(env, key, value) {
   if (!KEYS.includes(key)) throw new Error(`réglage inconnu : ${key}`);
   if (value == null) await env.DB.prepare('DELETE FROM settings WHERE key = ?').bind(`cfg_${key}`).run();

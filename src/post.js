@@ -2,9 +2,9 @@
 
 import { discordApi } from './discord.js';
 import { buildAgentLink } from './links.js';
-import { COMPONENTS_V2, container, gallery, text, sep, row, link, escape } from './components.js';
+import { COMPONENTS_V2, container, gallery, text, sep, row, link, escape, Style } from './components.js';
 import { fetchWeidianItem } from './weidian.js';
-import { getConfig, getMoney, formatMoney, formatCny, refreshRates, ACCENTS, LANGS } from './config.js';
+import { getConfig, getMoney, getSignup, formatMoney, formatCny, refreshRates, ACCENTS, LANGS, SIGNUP_COLORS } from './config.js';
 import { forumTagFor } from './categories.js';
 import { qcButtons, refreshQc, communityQc, postForumQc } from './qc.js';
 
@@ -38,8 +38,23 @@ export async function getAgents(env) {
 // Tout ce qu'il faut pour poster : agents, devise, réglages, adresse publique (boutons suivis).
 export async function postContext(env) {
   const cfg = await getConfig(env);
-  const [agents, money] = await Promise.all([getAgents(env), getMoney(env, cfg)]);
-  return { cfg, agents, money, base: (env.PUBLIC_URL || '').replace(/\/$/, ''), forumTags: new Map() };
+  const [agents, money, signup] = await Promise.all([getAgents(env), getMoney(env, cfg), getSignup(env)]);
+  return { cfg, agents, money, signup, base: (env.PUBLIC_URL || '').replace(/\/$/, ''), forumTags: new Map() };
+}
+
+// Bouton « S'inscrire » configuré par le propriétaire : lien suivi si gris, sinon bouton coloré (fenêtre avec le lien).
+export function signupButton(ctx, item, channelId) {
+  const s = ctx.signup;
+  if (!s) return null;
+  const color = SIGNUP_COLORS[s.color] || SIGNUP_COLORS.vert;
+  const label = (s.label || 'S\'inscrire').slice(0, 80);
+  const emoji = s.emoji ? { name: s.emoji } : undefined;
+  if (color.style === Style.LINK) {
+    const b = link(label, item ? trackedLink(ctx, item, 'signup', s.url, channelId) : s.url);
+    if (emoji) b.emoji = emoji;
+    return b;
+  }
+  return { type: 2, style: color.style, label, emoji, custom_id: `pub:su:${item ? item.id : ''}`.slice(0, 100) };
 }
 
 // Photos d'un item : jusqu'à 4. Pour Weidian, on lit la page produit une fois puis on garde le résultat.
@@ -84,6 +99,8 @@ export function agentButtons(ctx, item, channelId, community = null) {
   const last = rows[rows.length - 1];
   if (last.components.length + qc.length <= 5) last.components.unshift(...qc);
   else rows.push(row(...qc));
+  const signup = signupButton(ctx, item, channelId);
+  if (signup) rows.push(row(signup));
   return rows;
 }
 

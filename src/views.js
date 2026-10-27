@@ -190,7 +190,8 @@ export async function statsView(env, days = 7) {
     env.DB.prepare("SELECT CAST((at / 86400000) AS INTEGER) AS d, COUNT(*) AS n FROM clicks WHERE at > ? GROUP BY d ORDER BY d").bind(Date.now() - 7 * 86400000).all(),
   ]);
   const rate = posts.n ? (clicks.n / posts.n).toFixed(1).replace('.', ',') : '—';
-  const agentLines = byAgent.results.map((a) => `${a.agent === 'source' ? '🔗 Annonce d\'origine' : `🛒 ${escape(a.agent)}`} — **${fmtInt(a.n)}**`);
+  const BUTTON_NAMES = { source: '🔗 Annonce d\'origine', signup: '✍️ Inscription', qc_view: '📸 Voir les QC' };
+  const agentLines = byAgent.results.map((a) => `${BUTTON_NAMES[a.agent] || `🛒 ${escape(a.agent)}`} — **${fmtInt(a.n)}**`);
   const itemLines = topItems.results.map((r, i) => `${i + 1}. ${r.url ? `[${escape(itemTitle({ title_en: r.title_en, title_zh: r.title_zh, item_id: r.iid }).slice(0, 60))}](${r.url})` : escape(r.item_id)} — **${fmtInt(r.n)}** clics`);
   const maxDay = Math.max(0, ...perDay.results.map((d) => d.n));
   const today = Math.floor(Date.now() / 86400000);

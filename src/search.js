@@ -1,6 +1,6 @@
 // Recherche dans les items indexés.
 
-import { relevance } from './synonyms.js';
+import { relevance, relaxQuery } from './synonyms.js';
 import { translate } from './translate.js';
 import { detectCategory } from './categories.js';
 
@@ -62,7 +62,9 @@ function where(params, money) {
       const ors = [];
       for (const a of g.alt) {
         if (latinAlt(a)) {
-          for (const form of new Set([a, `${a}s`])) {
+          // « tech fleece » trouve aussi « techfleece » et « tech-fleece ».
+          const spaced = a.includes(' ') ? [a.replace(/ /g, ''), a.replace(/ /g, '-')] : [];
+          for (const form of new Set([a, `${a}s`, ...spaced])) {
             ors.push(`${ITEM_TEXT} GLOB ?`);
             binds.push(`*[^a-z0-9]${form}[^a-z0-9]*`);
           }
@@ -120,27 +122,47 @@ function order(params) {
   return params.latest ? SORTS.recent.sql : SORTS.popular.sql;
 }
 
+const FEW_RESULTS = 10;
+
 export async function allResultIds(env, params, money) {
-  const w = where(params, money);
   if (params.groups && params.groups.length) {
-    // Recherche par mots : les plus pertinents d'abord (mots trouvés dans le titre anglais, bon type d'article),
-    // puis le tri choisi. Lecture de toute la table une fois, puis cache partagé de 6 h.
-    const { results } = await env.DB.prepare(
-      `SELECT id, title_en, title_zh, shop_name, category, popularity, first_seen, price_cny FROM items ${w.sql} ORDER BY popularity DESC LIMIT 5000`,
-    ).bind(...w.binds).all();
-    const scored = results.map((r) => ({ ...r, score: relevance(params.groups, r) })).filter((r) => r.score > 0);
-    const sorted = sortRows(scored, params);
-    if (!params.sort || params.sort === 'popular') sorted.sort((a, b) => b.score - a.score || b.popularity - a.popularity || b.first_seen - a.first_seen);
-    // Même produit chez plusieurs vendeurs (titre et prix identiques) : on garde le premier (le plus vendu).
-    const seen = new Set();
-    const unique = sorted.filter((r) => {
-      const key = `${(r.title_en || r.title_zh || r.id).toLowerCase()}|${r.price_cny}`;
-      if (seen.has(key)) return false;
-      seen.add(key);
-      return true;
-    });
-    return unique.slice(0, MAX_BULK).map((r) => r.id);
+    // Peu de résultats avec tous les mots : on complète sans le moins important (couleur, puis type, puis mot
+    // inconnu). Les résultats exacts restent en tête.
+    let groups = params.groups;
+    const ids = [];
+    for (let tries = 0; groups && tries < 3 && ids.length < FEW_RESULTS; tries++, groups = relaxQuery(groups)) {
+      for (const id of await rankedIds(env, { ...params, groups }, money)) if (!ids.includes(id)) ids.push(id);
+    }
+    return ids.slice(0, MAX_BULK);
   }
+  return plainIds(env, params, money);
+}
+
+async function rankedIds(env, params, money) {
+  const w = where(params, money);
+  // Recherche par mots : les plus pertinents d'abord (mots trouvés dans le titre anglais, bon type d'article),
+  // puis le tri choisi. Lecture de toute la table une fois, puis cache partagé de 6 h.
+  const { results } = await env.DB.prepare(
+    `SELECT id, title_en, title_zh, shop_name, category, popularity, first_seen, price_cny FROM items ${w.sql} ORDER BY popularity DESC LIMIT 5000`,
+  ).bind(...w.binds).all();
+  const scored = results.map((r) => ({ ...r, score: relevance(params.groups, r) })).filter((r) => r.score > 0);
+  const sorted = sortRows(scored, params);
+  if (!params.sort || params.sort === 'popular') sorted.sort((a, b) => b.score - a.score || b.popularity - a.popularity || b.first_seen - a.first_seen);
+  // Même produit chez plusieurs vendeurs : on garde le premier (le plus vendu). Les longs titres copiés-collés
+  // d'un grossiste à l'autre comptent comme doublons même à un prix différent.
+  const seen = new Set();
+  const unique = sorted.filter((r) => {
+    const title = (r.title_en || r.title_zh || r.id).toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '');
+    const key = title.length > 40 ? title : `${title}|${r.price_cny}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+  return unique.slice(0, MAX_BULK).map((r) => r.id);
+}
+
+async function plainIds(env, params, money) {
+  const w = where(params, money);
   if (params.category || params.autoCategory) {
     // Avec une catégorie : on lit seulement cette catégorie (index), puis on trie ici.
     const { results } = await env.DB.prepare(
@@ -178,7 +200,7 @@ export function inferCategory(variants) {
 const CACHE_MS = 6 * 3600000;
 function cacheKey(params) {
   const { _ids, public: _p, shopName, ...rest } = params;
-  return JSON.stringify(Object.keys(rest).sort().map((k) => [k, rest[k]]));
+  return 'v2' + JSON.stringify(Object.keys(rest).sort().map((k) => [k, rest[k]]));
 }
 
 async function cachedIds(env, params, money) {

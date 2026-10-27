@@ -4,11 +4,11 @@ import {
   Style, container, section, text, sep, row, thumb, btn, emojiBtn, modal,
   escape, fmtInt, ago,
 } from './components.js';
-import { getRate, getAgents, formatPrice, itemTitle, POSTS_PER_MINUTE, PLATFORM_NAMES } from './post.js';
+import { getRate, getAgents, formatPrice, itemTitle, POSTS_PER_MINUTE, PLATFORM_NAMES, signupButton } from './post.js';
 import { buildAgentLink, AGENT_PRESETS } from './links.js';
 import { searchIds, itemsByIds, idsToPost, PAGE_SIZE, MAX_BULK, SORTS } from './search.js';
 import { CATEGORIES, CATEGORY_BY_KEY } from './categories.js';
-import { formatMoney, getConfig } from './config.js';
+import { formatMoney, getConfig, getSignup, SIGNUP_COLORS } from './config.js';
 import { communityQc, qcSummary } from './qc.js';
 
 export const QUEUE_PER_MINUTE = POSTS_PER_MINUTE;
@@ -350,7 +350,7 @@ export async function confirmDeleteShopView(env, shopId) {
 // ---------------------------------------------------------------- Agents
 
 export async function agentsView(env, msg, canEdit = true) {
-  const agents = await getAgents(env);
+  const [agents, signup] = await Promise.all([getAgents(env), getSignup(env)]);
   const cards = agents.map((a, i) => section(
     `**${i + 1}. ${escape(a.name)}**\n-# ` + (a.code
       ? `Code : \`${escape(a.code)}\`  ·  [tester le lien](${buildAgentLink(a.template, EXAMPLE_ITEM)})`
@@ -375,8 +375,38 @@ export async function agentsView(env, msg, canEdit = true) {
       type: 3, custom_id: 'ag:pick', placeholder: '➕ Ajouter ou modifier un agent…', options,
       disabled: !canEdit || agents.length >= 20,
     }),
+    sep(),
+    text('### ✍️ Bouton d\'inscription\n-# Un bouton sous chaque item pour créer un compte chez ton agent (avec ton lien de parrainage).' +
+      (signup ? `\nLien : ${escape(signup.url.slice(0, 120))}${signup.message ? `\nMessage : ${escape(signup.message.slice(0, 120))}` : ''}\n-# Aperçu :` : '\n-# Pas encore configuré.')),
+    signup ? row(signupButton({ signup }, null, null)) : null,
+    row(
+      emojiBtn('✏️', signup ? 'Modifier lien et texte' : 'Configurer', 'ag:su', Style.PRIMARY, { disabled: !canEdit }),
+      signup ? emojiBtn('🗑️', 'Retirer', 'ag:sudel', Style.DANGER, { disabled: !canEdit }) : null,
+    ),
+    signup ? row({
+      type: 3, custom_id: 'ag:sucol', placeholder: '🎨 Couleur du bouton', disabled: !canEdit,
+      options: Object.entries(SIGNUP_COLORS).map(([key, c]) => ({
+        label: c.label, value: key, emoji: { name: c.emoji }, default: key === signup.color,
+      })),
+    }) : null,
     row(backHome()),
   ])];
+}
+
+export function signupModal(current) {
+  const s = current || {};
+  return modal('m:signup:', '✍️ Bouton d\'inscription', [
+    {
+      id: 'url', label: 'Lien d\'inscription', required: true, max: 400, value: s.url,
+      description: 'Ton lien de parrainage pour créer un compte.', placeholder: 'https://www.bbdbuy.com/register?inviteCode=TONCODE',
+    },
+    { id: 'label', label: 'Texte du bouton', required: true, max: 60, value: s.label || 'S\'inscrire sur BBDBuy', placeholder: 'S\'inscrire et gagner un coupon' },
+    { id: 'emoji', label: 'Emoji (optionnel)', max: 8, value: s.emoji || '✍️', placeholder: '🎁', description: 'Un seul emoji, ou vide.' },
+    {
+      id: 'message', label: 'Message (optionnel)', long: true, max: 400, value: s.message,
+      description: 'Affiché avec le lien quand le bouton est en couleur.', placeholder: '🎁 Coupons offerts à l\'inscription !',
+    },
+  ]);
 }
 
 // Agent préréglé : juste le code.

@@ -3,7 +3,7 @@
 // qui ressemblent le plus : photo, prix, nombre de QC, bouton d'achat avec ton code et bouton QC.
 
 import { container, text, sep, section, thumb, row, link, escape } from './components.js';
-import { formatPrice, itemTitle, postContext, trackedLink } from './post.js';
+import { formatPrice, itemTitle, postContext, trackedLink, signupButton } from './post.js';
 import { buildAgentLink, canonicalUrl } from './links.js';
 import { ACCENTS } from './config.js';
 
@@ -63,5 +63,7 @@ export function imageResultsView(ctx, found, channelId) {
     blocks.push(/^https:\/\//.test(x.image || '') ? section(head, thumb(x.image)) : text(head));
     blocks.push(row(...buttons));
   }
+  const signup = found.length ? signupButton(ctx, null, channelId) : null;
+  if (signup) blocks.push(sep(), row(signup));
   return [container(blocks, (ACCENTS[ctx.cfg.accent] || ACCENTS.orange).color)];
 }

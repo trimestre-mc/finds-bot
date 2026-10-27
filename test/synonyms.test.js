@@ -24,3 +24,21 @@ test('« nike tech » et expressions de deux mots', () => {
   assert.ok(relevance(expandQuery('chrome hearts jeans'), item(null, '克罗心十字架牛仔裤')) > 0);
   assert.ok(relevance(expandQuery('pull noir'), item(null, '黑色毛衣')) > 0, 'mots français');
 });
+
+test('fautes de frappe, singulier, numéros collés, recherche élargie', async () => {
+  const { expandQuery, relevance, relaxQuery } = await import('../src/synonyms.js');
+  const first = (q) => expandQuery(q).map((g) => g.alt[0]);
+  assert.deepEqual(first('suprem tee'), ['supreme', 'tee']);
+  assert.deepEqual(first('jordna 4'), ['jordan', '4']);
+  assert.deepEqual(first('stone isand'), ['stone island']);
+  assert.deepEqual(first('chaussette nike'), ['socks', 'nike']);
+  assert.deepEqual(first('survêtement'), ['tracksuit']);
+  assert.deepEqual(first('nb550'), ['new balance', '550']);
+  const aj4 = expandQuery('jordan 4');
+  assert.ok(relevance(aj4, { title_en: 'AJ4 White Oreo' }) > 0);
+  assert.ok(relevance(aj4, { title_en: 'Air Jordan 4 Retro' }) > 0);
+  assert.equal(relevance(aj4, { title_en: 'Air Jordan 1 Low' }), 0);
+  assert.ok(relevance(expandQuery('new balance 550'), { title_en: 'NB550 white green' }) > 0);
+  assert.equal(relevance(expandQuery('lv bag'), { title_zh: '2025蔻家新款老花腋下包' }), 0);
+  assert.deepEqual(relaxQuery(expandQuery('nike hoodie rouge')).map((g) => g.alt[0]), ['nike', 'hoodie']);
+});
