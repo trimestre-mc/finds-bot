@@ -22,6 +22,7 @@ import { getSignup, setSignup, getCoupon, setCoupon, parseCouponLinks, SIGNUP_CO
 import { withDb } from './turso.js';
 import SCHEMA from '../schema.sql';
 import { searchByImage } from './imagesearch.js';
+import { describeImage } from './vision.js';
 import { expandQuery } from './synonyms.js';
 import { watchChannels } from './watch.js';
 import { translatePending, rewriteTitles, titleWait } from './translate.js';
@@ -677,6 +678,15 @@ async function handleApi(request, env, url) {
       text: (s.match(/"content":"[^"]{0,160}/g) || []).map((t) => t.slice(11)).join(' | ').slice(0, 600),
       platform, itemId,
     });
+  }
+
+  // Diagnostic : ce que le modèle de vision lit sur une photo (URL), avec un autre modèle au choix.
+  if (path === '/api/vision' && request.method === 'GET') {
+    try {
+      return json({ ok: true, seen: await describeImage(env, url.searchParams.get('url') || '', url.searchParams.get('model') || undefined) });
+    } catch (err) {
+      return json({ ok: false, error: String(err.message || err).slice(0, 300) });
+    }
   }
 
   // Diagnostic : recherche par image d'une photo (URL), comme dans un salon de recherche par image.

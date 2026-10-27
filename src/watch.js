@@ -10,7 +10,7 @@ import { extractItemRefs } from './links.js';
 import { messageText, collectQc } from './discover.js';
 import { convertView } from './views.js';
 import { postContext, logError } from './post.js';
-import { searchByImage, imageResultsView, isImage } from './imagesearch.js';
+import { smartImageSearch, imageResultsView, isImage } from './imagesearch.js';
 import { popularItemStatements } from './items.js';
 import { budget } from './budget.js';
 import { ACCENTS } from './config.js';
@@ -129,14 +129,14 @@ async function imageMessage(env, ctx, c, m, found) {
     calls++;
     let components;
     try {
-      const items = await searchByImage(a.url, a.filename);
+      const { items, seen } = await smartImageSearch(env, a);
       found.push(...items);
-      components = imageResultsView(ctx, items, c.channel_id);
+      components = imageResultsView(ctx, items, c.channel_id, seen);
     } catch (err) {
       console.log('image', String(err).slice(0, 120));
       components = [container([text('### 🔎 Recherche impossible pour le moment\n-# La recherche par image est surchargée. Reposte ta photo dans une minute.')], accent)];
     }
-    calls += 3;
+    calls += 6; // image, FinderQC (envoi + résultats), modèle de vision, recherche par texte
     await discordApi(env, 'PATCH', `/channels/${c.channel_id}/messages/${pending.id}`, { flags: COMPONENTS_V2, components, allowed_mentions: { parse: [] } });
     calls++;
     c.done++;
