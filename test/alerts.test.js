@@ -101,3 +101,30 @@ test('message reçu en direct : traité une seule fois (la position de lecture d
   assert.equal(env.DB.raw.prepare('SELECT converted FROM convert_channels').get().converted, 1);
   assert.equal(await handleLiveMessage(env, '999', m), 0); // salon non surveillé
 });
+
+test('alertes de recherche : seuls les nouveaux items qui correspondent arrivent en message privé, une fois', async () => {
+  const { toggleSearchAlert, checkSearchAlerts, watchesView } = await import('../src/alerts.js');
+  const { expandQuery } = await import('../src/synonyms.js');
+  const env = { DB: memoryDb(), DB2: memoryDb(), DISCORD_API: 'https://discord.test' };
+  const add = (db, id, title, price) => db.raw.prepare("INSERT INTO items (id, platform, item_id, url, title_en, price_cny, popularity) VALUES (?, 'weidian', ?, 'u', ?, ?, 1)").run(`weidian:${id}`, id, title, price);
+  add(env.DB, '1000001', 'Chrome Hearts Cross Hoodie', 300); // déjà là avant l'alerte : ignoré
+  assert.match(await toggleSearchAlert(env, 'u1', 'g', { q: 'chrome hearts hoodie', groups: expandQuery('chrome hearts hoodie') }), /Alerte créée/);
+  const dms = [];
+  globalThis.fetch = async (url, opts = {}) => {
+    const u = String(url);
+    if (u.endsWith('/users/@me/channels')) return Response.json({ id: 'dm1' });
+    if (u.endsWith('/channels/dm1/messages')) { dms.push(opts.body); return Response.json({ id: 'm' }); }
+    throw new Error(`fetch inattendu ${u}`);
+  };
+  assert.equal(await checkSearchAlerts(env), 0); // premier passage : point de départ
+  add(env.DB, '1000002', 'CH Horseshoe Zip Hoodie', 280);
+  add(env.DB, '1000003', 'Nike Tech Fleece Hoodie', 200); // autre marque
+  add(env.DB2, '1000004', 'Chrome Hearts Sweatshirt Black', 350); // autre base
+  assert.equal(await checkSearchAlerts(env), 1);
+  assert.match(dms[0], /CH Horseshoe Zip Hoodie/);
+  assert.match(dms[0], /Chrome Hearts Sweatshirt Black/);
+  assert.doesNotMatch(dms[0], /Nike Tech|Cross Hoodie/);
+  assert.equal(await checkSearchAlerts(env), 0); // rien de nouveau
+  assert.match(JSON.stringify(await watchesView(env, 'u1')), /chrome hearts hoodie/);
+  assert.match(await toggleSearchAlert(env, 'u1', 'g', { q: 'chrome hearts hoodie' }), /supprimée/);
+});

@@ -55,7 +55,7 @@ export const DROP_WINDOW_DAYS = 14;
 const ITEM_TEXT = "(' ' || LOWER(COALESCE(title_en,'') || ' ' || COALESCE(title_zh,'') || ' ' || COALESCE(shop_name,'')) || ' ')";
 const latinAlt = (s) => /^[a-z0-9' -]+$/.test(s);
 
-function where(params, money) {
+export function where(params, money) {
   const clauses = ['hidden = 0'];
   const binds = [];
   if (params.groups && params.groups.length) {

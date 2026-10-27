@@ -272,6 +272,7 @@ export async function settingsView(env, it, msg) {
   const { results: conv } = await env.DB.prepare('SELECT * FROM convert_channels WHERE guild_id = ?').bind(it.guild_id).all();
   const { results: qcCh } = await env.DB.prepare('SELECT * FROM qc_channels WHERE guild_id = ?').bind(it.guild_id).all();
   const { results: imgCh } = await env.DB.prepare('SELECT * FROM image_channels WHERE guild_id = ?').bind(it.guild_id).all().catch(() => ({ results: [] }));
+  const { results: aiCh } = await env.DB.prepare('SELECT * FROM aiqc_channels WHERE guild_id = ?').bind(it.guild_id).all().catch(() => ({ results: [] }));
   return [container([
     notice(msg),
     text('## ⚙️ Réglages'),
@@ -313,6 +314,11 @@ export async function settingsView(env, it, msg) {
     row({
       type: 8, custom_id: 'set:weekly', placeholder: 'Salon du top de la semaine (vide = désactivé)', channel_types: [0, 5],
       min_values: 0, max_values: 1, default_values: cfg.weeklyTop ? [{ id: cfg.weeklyTop, type: 'channel' }] : [],
+    }),
+    text(`**🤖 Analyse IA des QC**\n-# Dans ces salons, les membres postent juste leurs photos QC : l'IA répond avec les défauts visibles, la taille et les mesures.\n${aiCh.length ? aiCh.map((c) => `<#${c.channel_id}> · ${fmtInt(c.analyzed)} analyses`).join('\n') : '-# Aucun salon.'}`),
+    row({
+      type: 8, custom_id: 'set:aiqc', placeholder: 'Salons d\'analyse IA des QC', channel_types: [0, 5],
+      min_values: 0, max_values: 5, default_values: aiCh.map((c) => ({ id: c.channel_id, type: 'channel' })),
     }),
     row(emojiBtn('📸', cfg.forumQc ? 'QC sous les posts de forum : activé' : 'QC sous les posts de forum : désactivé', 'set:forumqc', cfg.forumQc ? Style.SUCCESS : Style.SECONDARY)),
     text(`**📸 Salons QC**\n-# Les membres y postent leurs photos QC avec le lien de l'item : chaque item gagne un bouton « QC communauté ».\n${qcCh.length ? qcCh.map((c) => `<#${c.channel_id}> · ${fmtInt(c.collected)} QC récupérés`).join('\n') : '-# Aucun salon.'}`),
@@ -420,6 +426,8 @@ export async function findView(env, sid, page) {
     row(
       emojiBtn('◀️', null, `pub:pg:${sid}:${page - 1}`, Style.SECONDARY, { disabled: page === 0 }),
       emojiBtn('▶️', null, `pub:pg:${sid}:${page + 1}`, Style.SECONDARY, { disabled: page >= pages - 1 }),
+      // Alerte de recherche : message privé dès qu'un nouvel item correspondant arrive (alerts.js).
+      s.params.q ? { type: 2, style: 1, emoji: emo(ctx.emojis, 'fb_bell'), label: 'M\'alerter des nouveautés', custom_id: `pub:salert:${sid}` } : null,
     ),
   ], (ACCENTS[ctx.cfg.accent] || ACCENTS.orange).color)];
 }

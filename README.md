@@ -23,7 +23,11 @@ montre leurs QC dans Discord et les poste en belles cartes avec tes liens d'affi
 
 **Sous chaque item** : Acheter (badge de l'agent) · **QC** · **Comparer** (le même article chez d'autres vendeurs : le moins
 cher, le plus vendu, le plus de QC) · lien d'origine · 🔔 **alerte de prix** (message privé si le prix baisse) · S'inscrire.
-**Dans la fenêtre QC** : votes **GL / RL** (le score apparaît sur la carte dès 3 votes) et **Partager dans le salon**.
+**Dans la fenêtre QC** : votes **GL / RL** (le score apparaît sur la carte dès 3 votes), **Partager dans le salon** et
+**🤖 Analyse IA** (Llama 4 Scout : défauts visibles, coutures, logo, couleur par rapport à la photo du vendeur, taille
+lue sur l'étiquette, mesure avec la règle ; un 2e avis, jamais une garantie ; 20 analyses nouvelles par jour, résultat
+gardé 30 jours). **Salons d'analyse IA** (⚙️ Réglages) : les membres y postent juste leurs photos QC, le bot répond.
+**Alertes de recherche** : « M'alerter des nouveautés » sous `/find`, message privé dès qu'un nouvel item correspond.
 **Recherche** : synonymes, fautes de frappe, mots chinois, numéros collés (aj4, nb550) et recherche en direct dans tout
 le catalogue FinderQC. **Salon de recherche par image** : la marque est lue sur la photo (Llama 4 Scout), puis 4 items.
 

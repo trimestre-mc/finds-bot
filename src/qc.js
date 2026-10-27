@@ -319,19 +319,27 @@ export function voteRow(item, en = false, emojis = null, view = 0) {
     { type: 2, style: 3, emoji: emo(emojis, 'fb_gl'), label: `GL · ${fmt(item.gl_votes || 0)}`, custom_id: `pub:vote:${item.id}:gl`.slice(0, 100) },
     { type: 2, style: 4, emoji: emo(emojis, 'fb_rl'), label: `RL · ${fmt(item.rl_votes || 0)}`, custom_id: `pub:vote:${item.id}:rl`.slice(0, 100) },
     { type: 2, style: 1, emoji: emo(emojis, 'fb_photos'), label: en ? 'Share in channel' : 'Partager dans le salon', custom_id: `pub:qcshare:${item.id}:${view}`.slice(0, 100) },
+    // Analyse des photos par l'IA (aiqc.js).
+    { type: 2, style: 2, emoji: emo(emojis, 'fb_bot'), label: en ? 'AI check' : 'Analyse IA', custom_id: `pub:aiqc:${item.id}:${view}`.slice(0, 100) },
   );
 }
 
 // Message public des QC partagées par un membre : les photos de la page qu'il regardait (communauté + lots
 // d'agents), qui les a partagées, et les boutons de la carte (acheter, toutes les QC, comparer…). null : rien à montrer.
-export async function qcShareMessage(env, item, view, userId, ctx, channelId = null) {
-  const en = ctx.cfg.lang === 'en';
+// Photos QC d'une page de la fenêtre QC (communauté en 1re page, puis lots d'agents). { qc, batches, photos }
+export async function qcPagePhotos(env, item, view) {
   const first = view * BATCHES_PER_VIEW;
   const qc = await fetchQc(item, Math.floor(first / BATCHES_PER_API_PAGE) + 1);
   const batches = qc.batches.slice(first % BATCHES_PER_API_PAGE, first % BATCHES_PER_API_PAGE + BATCHES_PER_VIEW);
   const community = view === 0 ? (await communityPhotos(env, item.id, 10)).photos.map((p) => p.url) : [];
   // Photos de la communauté (Discord) et des agents (déjà filtrées par fetchQcPage).
   const photos = [...new Set([...community, ...batches.flatMap((b) => b.photos)])].filter((u) => /^https:\/\//.test(u || '')).slice(0, 10);
+  return { qc, batches, photos };
+}
+
+export async function qcShareMessage(env, item, view, userId, ctx, channelId = null) {
+  const en = ctx.cfg.lang === 'en';
+  const { qc, batches, photos } = await qcPagePhotos(env, item, view);
   if (!photos.length) return null;
   const { agentButtons } = await import('./post.js'); // post.js importe déjà qc.js
   const { ACCENTS } = await import('./config.js');

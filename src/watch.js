@@ -17,8 +17,11 @@ import { budget } from './budget.js';
 import { ACCENTS } from './config.js';
 import { itemsWhereIds, groupByDb, onDb, batchByDb } from './shard.js';
 import { etxt } from './emojis.js';
+import { aiqcMessage } from './aiqc.js';
 
 const MAX_CALLS = 46;
+// Compteur de chaque type de salon (colonne = colonne + n).
+const COUNTER = { convert: 'converted = converted', image: 'searched = searched', aiqc: 'analyzed = analyzed' };
 const WORK_RESERVE = 10; // requêtes gardées pour répondre (une photo : 2, un lien : ~3)
 const MIN_ROUND_MS = 2000;
 const DISCORD_EPOCH = 1420070400000n;
@@ -34,13 +37,15 @@ export async function watchChannels(env, ms = 55000, exec = null) {
   const deadline = Date.now() + ms;
   let external = 0;
   const used = () => external + (env.DB.calls || 0);
-  const [conv, img] = await Promise.all([
+  const [conv, img, ai] = await Promise.all([
     env.DB.prepare('SELECT * FROM convert_channels ORDER BY added_at LIMIT 5').all(),
     env.DB.prepare('SELECT * FROM image_channels ORDER BY added_at LIMIT 5').all(),
+    env.DB.prepare('SELECT * FROM aiqc_channels ORDER BY added_at LIMIT 5').all().catch(() => ({ results: [] })),
   ]);
   const channels = [
     ...conv.results.map((c) => ({ ...c, kind: 'convert', table: 'convert_channels' })),
     ...img.results.map((c) => ({ ...c, kind: 'image', table: 'image_channels' })),
+    ...ai.results.map((c) => ({ ...c, kind: 'aiqc', table: 'aiqc_channels' })),
   ];
   if (!channels.length) return 0;
   // Premier passage : on répond aux messages postés depuis l'ajout du salon (pas à tout l'historique).
@@ -77,6 +82,7 @@ export async function watchChannels(env, ms = 55000, exec = null) {
         if (!ctx) ctx = await postContext(env);
         try {
           if (c.kind === 'convert') external += await convertMessage(env, ctx, c, m);
+          else if (c.kind === 'aiqc') external += await aiqcMessage(env, ctx, c, m);
           else external += await imageMessage(env, ctx, c, m, found, exec);
         } catch (err) {
           console.log('salon', c.channel_id, String(err).slice(0, 200));
@@ -90,7 +96,7 @@ export async function watchChannels(env, ms = 55000, exec = null) {
 
   // Positions de lecture et compteurs, en un seul lot.
   const stmts = channels.filter((c) => c.cursor !== c.last_message_id || c.done).map((c) => [env.DB, env.DB.prepare(
-    `UPDATE ${c.table} SET last_message_id = ?, ${c.kind === 'image' ? 'searched = searched' : 'converted = converted'} + ? WHERE channel_id = ?`,
+    `UPDATE ${c.table} SET last_message_id = ?, ${COUNTER[c.kind]} + ? WHERE channel_id = ?`,
   ).bind(c.cursor, c.done, c.channel_id)]);
   if (stmts.length) await batchByDb(stmts).catch((err) => console.log('salons', String(err).slice(0, 120)));
   if (found.length) await saveFound(env, found);
@@ -100,7 +106,7 @@ export async function watchChannels(env, ms = 55000, exec = null) {
 // Un message reçu en direct par la connexion permanente (gateway.js) : même traitement que la relecture, une seule
 // fois par message (la position de lecture du salon sert de verrou : un message plus ancien est ignoré).
 export async function handleLiveMessage(env, channelId, m) {
-  for (const [table, kind] of [['convert_channels', 'convert'], ['image_channels', 'image']]) {
+  for (const [table, kind] of [['convert_channels', 'convert'], ['image_channels', 'image'], ['aiqc_channels', 'aiqc']]) {
     const c = await env.DB.prepare(
       `UPDATE ${table} SET last_message_id = ? WHERE channel_id = ?
          AND (last_message_id IS NULL OR CAST(last_message_id AS INTEGER) < CAST(? AS INTEGER)) RETURNING *`,
@@ -110,10 +116,11 @@ export async function handleLiveMessage(env, channelId, m) {
     const ch = { ...c, kind, table, done: 0 };
     const found = [];
     if (kind === 'convert') await convertMessage(env, ctx, ch, m);
+    else if (kind === 'aiqc') await aiqcMessage(env, ctx, ch, m);
     else await imageMessage(env, ctx, ch, m, found, null);
     if (found.length) await saveFound(env, found);
     if (ch.done) {
-      await env.DB.prepare(`UPDATE ${table} SET ${kind === 'image' ? 'searched = searched' : 'converted = converted'} + ? WHERE channel_id = ?`)
+      await env.DB.prepare(`UPDATE ${table} SET ${COUNTER[kind]} + ? WHERE channel_id = ?`)
         .bind(ch.done, channelId).run().catch(() => {});
     }
     return ch.done;

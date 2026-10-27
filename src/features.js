@@ -5,7 +5,8 @@ import { discordApi, followup } from './discord.js';
 import { COMPONENTS_V2, container, text, escape, section, thumb } from './components.js';
 import { panel, update, openModal, later, userId } from './respond.js';
 import { buildAgentLink, canonicalUrl, extractItemRefs } from './links.js';
-import { communityQc, refreshQc, communityPhotos, qcWindow, qcShareMessage } from './qc.js';
+import { communityQc, refreshQc, communityPhotos, qcWindow, qcShareMessage, qcPagePhotos } from './qc.js';
+import { qcAnalysis, analysisView } from './aiqc.js';
 import { cachedIds, withoutCache } from './search.js';
 import { postContext, processQueue, logError, FORUM } from './post.js';
 import { getConfig, setConfig, getSignup, CURRENCIES, LANGS, ACCENTS } from './config.js';
@@ -19,8 +20,8 @@ import {
 } from './views.js';
 import { itemDb, itemById, batchByDb, deleteShopItems } from './shard.js';
 import { compareView } from './compare.js';
-import { loadEmojis } from './emojis.js';
-import { toggleWatch, watchesView } from './alerts.js';
+import { loadEmojis, emo } from './emojis.js';
+import { toggleWatch, watchesView, toggleSearchAlert, deleteSearchAlert } from './alerts.js';
 
 // ---------------------------------------------------------------- Indexeur GitHub
 
@@ -134,6 +135,16 @@ export async function handlePublicComponent(it, env, ctx) {
       .bind(key, 'qc_view', it.channel_id || null, Date.now()).run().catch(() => {}));
     return later(it, env, ctx, () => openQc(env, key, platform, itemId, 0), true);
   }
+  if (kind === 'salert') {
+    // « M'alerter des nouveautés » sous /find : crée (ou supprime) l'alerte de cette recherche, réponse privée.
+    const s = await loadSearch(env, sid);
+    if (!s) return panel([container([text('⌛ Recherche expirée, relance `/find`.')])]);
+    return panel([container([text(await toggleSearchAlert(env, userId(it), it.guild_id, s.params))])]);
+  }
+  if (kind === 'salertdel') {
+    await deleteSearchAlert(env, userId(it), sid);
+    return update(await watchesView(env, userId(it)));
+  }
   if (kind === 'watch') {
     // « 🔔 » d'une carte : suivre le prix de l'item (ou arrêter), réponse privée.
     const key = parts.slice(2).join(':');
@@ -171,6 +182,28 @@ export async function handlePublicComponent(it, env, ctx) {
     });
     walk(components);
     return update(components);
+  }
+  if (kind === 'aiqc' || kind === 'aiqcshare') {
+    // « 🤖 Analyse IA » sous les photos QC : analyse des photos de la page (fenêtre privée) ; « Partager » la poste.
+    const view = Math.max(0, Number(parts[parts.length - 1]) || 0);
+    const key = parts.slice(2, -1).join(':');
+    const [platform, itemId] = key.split(':');
+    if (!canonicalUrl(platform, itemId)) return null;
+    return later(it, env, ctx, async () => {
+      const item = (await itemById(env, key)) || { id: key, item_id: itemId, platform, url: canonicalUrl(platform, itemId) };
+      const { photos } = await qcPagePhotos(env, item, view);
+      const shots = photos.slice(0, 3);
+      const res = await qcAnalysis(env, shots, { ref: /^https:\/\//.test(item.image || '') ? item.image : null, what: item.title_en || item.title_zh || null });
+      const emojis = await loadEmojis(env);
+      const title = item.title_en || item.title_zh || null;
+      if (kind === 'aiqcshare') {
+        await followup(env, it.token, { flags: COMPONENTS_V2, allowed_mentions: { parse: [] }, components: analysisView(emojis, res, { title, photos: shots, who: userId(it) }) });
+        return [container([text('-# ✅ Analyse partagée dans le salon.')])];
+      }
+      const view0 = analysisView(emojis, res, { title, photos: shots });
+      if (res.result) view0[0].components.push({ type: 1, components: [{ type: 2, style: 1, label: 'Partager l\'analyse dans le salon', emoji: emo(emojis, 'fb_photos'), custom_id: `pub:aiqcshare:${key}:${view}`.slice(0, 100) }] });
+      return view0;
+    }, true);
   }
   if (kind === 'qcshare') {
     // « Partager dans le salon » d'une fenêtre QC : message public (suivi de l'interaction, aucune permission de
@@ -438,6 +471,17 @@ export async function handleFeatureComponent(it, env, ctx, a, b, c, d, values) {
       return update(await settingsView(env, it, values.length
         ? `🔎 Recherche par image active dans ${values.map((v) => `<#${v}>`).join(', ')}. Réponse sous chaque photo en 2 min maximum.`
         : '🔎 Recherche par image désactivée.'));
+    }
+    case 'set:aiqc': {
+      const stmts = [env.DB.prepare(`DELETE FROM aiqc_channels WHERE guild_id = ? AND channel_id NOT IN (${values.map(() => '?').join(',') || "''"})`)
+        .bind(it.guild_id, ...values)];
+      for (const ch of values) {
+        stmts.push(env.DB.prepare('INSERT OR IGNORE INTO aiqc_channels (channel_id, guild_id, added_at) VALUES (?, ?, ?)').bind(ch, it.guild_id, Date.now()));
+      }
+      await env.DB.batch(stmts);
+      return update(await settingsView(env, it, values.length
+        ? `🤖 Analyse IA des QC active dans ${values.map((v) => `<#${v}>`).join(', ')} : les membres y postent leurs photos QC, le bot répond tout de suite.`
+        : '🤖 Salons d\'analyse IA désactivés.'));
     }
     case 'set:convert': {
       const stmts = [env.DB.prepare(`DELETE FROM convert_channels WHERE guild_id = ? AND channel_id NOT IN (${values.map(() => '?').join(',') || "''"})`)

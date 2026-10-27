@@ -109,9 +109,9 @@ async function rewriteInHalves(env, titles, usage = []) {
 // Quota d'IA gratuit du compte Cloudflare : 10 000 neurons par jour, partagé entre la traduction des titres et la
 // lecture des photos (vision.js). Compté en neurons réels (renvoyés par Workers AI) dans la 1re base, même quand la
 // traduction tourne sur chaque base du catalogue (voir shard.js). La traduction s'arrête à TRANSLATE_NEURONS pour
-// laisser de quoi lire les photos postées.
+// laisser de quoi lire les photos postées et analyser des QC (aiqc.js).
 export const AI_NEURONS_PER_DAY = 9500;
-const TRANSLATE_NEURONS = 8000;
+const TRANSLATE_NEURONS = 6000;
 const NEURONS_PER_TITLE = 0.7; // estimation si la réponse ne donne pas le chiffre
 
 export async function aiNeurons(env) {

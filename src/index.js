@@ -23,7 +23,7 @@ import { getSignup, setSignup, getCoupon, setCoupon, parseCouponLinks, SIGNUP_CO
 import { withDb } from './turso.js';
 import SCHEMA from '../schema.sql';
 import { searchByImage } from './imagesearch.js';
-import { describeImage } from './vision.js';
+import { describeImage, analyzeQc } from './vision.js';
 import { uploadEmojis, refreshEmojis } from './emojis.js';
 import { expandQuery, suggestQueries } from './synonyms.js';
 import { watchChannels, imageJob, saveFound, handleLiveMessage } from './watch.js';
@@ -36,7 +36,7 @@ import {
   accessView, hasAdminPermission, deniedView, sourcesView,
 } from './ui.js';
 import { itemDb, itemById, itemDbs, perDb, allRows, countAll, batchByDb, groupByDb, itemsWhereIds, onDb, itemEnv, deleteShopItems } from './shard.js';
-import { checkWatches } from './alerts.js';
+import { checkWatches, checkSearchAlerts } from './alerts.js';
 import { sendDailyReport, dailyReport, sendWeeklyTop } from './report.js';
 
 // Une boutique est relue tous les 3 jours (quota gratuit D1 : 100 000 lignes écrites par jour).
@@ -105,6 +105,8 @@ async function handleScheduled(event, env, ctx) {
       if (!over) await runDiscovery(env).catch((e) => console.log('découverte', String(e)));
       // Alertes de prix : toutes les 10 min (quelques lignes lues seulement, même au plafond du mois).
       if (new Date().getUTCMinutes() % 10 === 0) await checkWatches(env).catch((e) => console.log('alertes prix', String(e)));
+      // Alertes de recherche : les nouveaux items depuis 5 min, comparés à toutes les alertes.
+      await checkSearchAlerts(env).catch((e) => console.log('alertes recherche', String(e)));
       // Rapport du jour au propriétaire, en message privé, vers 21 h (heure de Paris en hiver).
       if (new Date().getUTCHours() === 20) await sendDailyReport(env).catch((e) => console.log('rapport', String(e)));
       // Top de la semaine : le lundi vers 19 h (heure de Paris en hiver), s'il est activé dans les réglages.
@@ -719,6 +721,16 @@ async function handleApi(request, env, url) {
       text: (s.match(/"content":"[^"]{0,160}/g) || []).map((t) => t.slice(11)).join(' | ').slice(0, 600),
       platform, itemId,
     });
+  }
+
+  // Diagnostic : analyse IA de photos QC (urls séparées par des virgules ; ref = photo du vendeur).
+  if (path === '/api/aiqc' && request.method === 'GET') {
+    try {
+      const photos = (url.searchParams.get('urls') || '').split(',').filter(Boolean);
+      return json({ ok: true, result: await analyzeQc(env, photos, { ref: url.searchParams.get('ref') || null, what: url.searchParams.get('what') || null, model: url.searchParams.get('model') || undefined }) });
+    } catch (err) {
+      return json({ ok: false, error: String(err.message || err).slice(0, 300) });
+    }
   }
 
   // Diagnostic : ce que le modèle de vision lit sur une photo (URL), avec un autre modèle au choix.

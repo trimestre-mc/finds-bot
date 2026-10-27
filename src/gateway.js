@@ -161,11 +161,13 @@ export class Gateway extends DurableObject {
   async channelKind(channelId) {
     if (Date.now() - this.channelsAt > CHANNELS_TTL_MS) {
       const env = withDb(this.env);
-      const [conv, img] = await Promise.all([
+      const [conv, img, ai] = await Promise.all([
         env.DB.prepare('SELECT channel_id FROM convert_channels').all(),
         env.DB.prepare('SELECT channel_id FROM image_channels').all(),
+        env.DB.prepare('SELECT channel_id FROM aiqc_channels').all().catch(() => ({ results: [] })),
       ]);
-      this.channels = new Map([...conv.results.map((c) => [c.channel_id, 'convert']), ...img.results.map((c) => [c.channel_id, 'image'])]);
+      this.channels = new Map([...conv.results.map((c) => [c.channel_id, 'convert']), ...img.results.map((c) => [c.channel_id, 'image']),
+        ...ai.results.map((c) => [c.channel_id, 'aiqc'])]);
       this.channelsAt = Date.now();
     }
     return this.channels.get(channelId) || null;

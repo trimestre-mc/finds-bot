@@ -71,3 +71,39 @@ export async function describeImage(env, imageUrl, model = VISION_MODEL) {
   }
   return { brand: clean(raw.brand), model: clean(raw.model), item: clean(raw.item), color: clean(raw.color) };
 }
+
+// ---------------------------------------------------------------- Analyse des QC par l'IA
+
+const QC_PROMPT = (ctx) => `Tu es un expert en contrôle qualité (QC) de vêtements, chaussures et accessoires achetés via un agent en Chine.
+${ctx.ref ? 'La PREMIÈRE image est la photo du vendeur (le produit attendu). Les suivantes sont les photos QC (ce que l\'agent a reçu).' : 'Les images sont des photos QC (ce que l\'agent a reçu).'}
+${ctx.what ? `Article : ${ctx.what}.` : ''}
+Vérifie ce qui est visible : défauts (taches, trous, fils qui dépassent, colle), coutures, symétrie, logo/imprimé (placement, netteté, alignement), couleur${ctx.ref ? ' par rapport à la photo du vendeur' : ''}, étiquettes, finitions, forme.
+Si une étiquette de taille est lisible, donne la taille (ex : « Étiquette : taille M »). Si une règle graduée est visible, estime une mesure utile (ex : « Longueur ≈ 50 cm »).
+Ne juge PAS si c'est authentique. Ne invente rien : si un détail n'est pas visible, dis-le. Sois concret (« photo 2 : fil qui dépasse sur la manche gauche »).
+Réponds UNIQUEMENT avec un objet JSON : {"article": "marque et type d'article si reconnaissables, sinon null", "verdict": "ok" ou "a_verifier" ou "probleme", "points": [{"etat": "ok" ou "attention" ou "probleme", "texte": "phrase courte en français"}], "conseil": "une phrase en français"}. 3 à 6 points.`;
+
+// Photos (URLs) → analyse : { verdict, points: [{ etat, texte }], conseil } ou null. ref : photo du vendeur (facultative).
+export async function analyzeQc(env, photos, { ref = null, what = null, model = VISION_MODEL } = {}) {
+  if (!env.AI) return null;
+  const images = await Promise.all([ref, ...photos].filter(Boolean).slice(0, 5).map((u) => asDataUrl(u)));
+  const res = await env.AI.run(model, {
+    messages: [{ role: 'user', content: [{ type: 'text', text: QC_PROMPT({ ref: !!ref, what }) }, ...images.map((url) => ({ type: 'image_url', image_url: { url } }))] }],
+    max_tokens: 500,
+    temperature: 0.1,
+  });
+  const out = typeof res === 'string' ? res
+    : res && (res.response ?? (res.choices && res.choices[0] && res.choices[0].message && res.choices[0].message.content));
+  const raw = parseFirstObject(out);
+  if (!raw || !Array.isArray(raw.points)) {
+    console.log('analyse QC : réponse illisible', String(typeof out === 'string' ? out : JSON.stringify(res)).slice(0, 200));
+    return null;
+  }
+  const etat = (x) => (['ok', 'attention', 'probleme'].includes(x) ? x : 'attention');
+  return {
+    verdict: ['ok', 'a_verifier', 'probleme'].includes(raw.verdict) ? raw.verdict : 'a_verifier',
+    points: raw.points.slice(0, 6).map((p) => ({ etat: etat(p.etat), texte: String(p.texte || '').slice(0, 160) })).filter((p) => p.texte),
+    conseil: raw.conseil ? String(raw.conseil).slice(0, 200) : null,
+    article: clean(raw.article),
+    neurons: res && res.usage && res.usage.neurons,
+  };
+}

@@ -251,3 +251,28 @@ CREATE TABLE IF NOT EXISTS watches (
   PRIMARY KEY (user_id, item_id)
 );
 CREATE INDEX IF NOT EXISTS watches_item ON watches(item_id);
+
+-- Alertes de recherche : un membre enregistre une recherche (/find), le bot lui écrit en privé dès qu'un nouvel item
+-- correspondant est indexé. cursors : dernier rowid vu dans chaque base du catalogue (JSON).
+CREATE TABLE IF NOT EXISTS search_alerts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id TEXT NOT NULL,
+  guild_id TEXT,
+  q TEXT NOT NULL,
+  params TEXT NOT NULL,
+  cursors TEXT,
+  at INTEGER NOT NULL,
+  checked_at INTEGER,
+  sent INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS search_alerts_user ON search_alerts(user_id);
+CREATE INDEX IF NOT EXISTS search_alerts_checked ON search_alerts(checked_at);
+
+-- Salons d'analyse IA des QC : les membres y postent leurs photos QC, le bot répond avec l'analyse (aiqc.js).
+CREATE TABLE IF NOT EXISTS aiqc_channels (
+  channel_id TEXT PRIMARY KEY,
+  guild_id TEXT,
+  last_message_id TEXT,
+  analyzed INTEGER NOT NULL DEFAULT 0,
+  added_at INTEGER
+);
