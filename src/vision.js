@@ -113,8 +113,9 @@ export async function analyzeQc(env, photos, { ref = null, what = null, model = 
   const shots = photos.filter(Boolean).slice(0, 3);
   if (!shots.length) return null;
   const per = await Promise.all(shots.map((u, i) => runVision(env, model, QC_PROMPT({ ref: !!(ref && i === 0), what, n: i + 1 }), [...(ref && i === 0 ? [ref] : []), u])
-    .catch((err) => { console.log('analyse QC (photo)', String(err).slice(0, 160)); return { raw: null, neurons: 0 }; })));
+    .catch((err) => { console.log('analyse QC (photo)', String(err).slice(0, 160)); return { raw: null, neurons: 0, quota: /4006|daily free allocation/.test(String(err)) }; })));
   const ok = per.filter((p) => p.raw && Array.isArray(p.raw.points));
+  if (!ok.length && per.some((p) => p.quota)) throw new Error('4006 : quota d\'IA du jour épuisé');
   let neurons = per.reduce((n, p) => n + p.neurons, 0);
   if (!ok.length) {
     console.log('analyse QC : réponses illisibles', String((per[0] && per[0].out) || '').slice(0, 200));

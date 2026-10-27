@@ -723,6 +723,14 @@ async function handleApi(request, env, url) {
     });
   }
 
+  // Acceptation de la licence d'un modèle Workers AI qui l'exige (ex. Llama 3.2 Vision : envoyer « agree » une fois).
+  if (path === '/api/ai-agree' && request.method === 'POST') {
+    const model = url.searchParams.get('model') || '';
+    if (!/^@cf\/meta\/llama-3\.2-\d+b-vision-instruct$/.test(model)) return json({ ok: false, error: 'modèle non prévu' });
+    const res = await env.AI.run(model, { prompt: 'agree' }).catch((err) => ({ error: String(err.message || err).slice(0, 200) }));
+    return json({ ok: !res.error, res: res.error || String(res.response || '').slice(0, 200) });
+  }
+
   // Diagnostic : analyse IA de photos QC (urls séparées par des virgules ; ref = photo du vendeur).
   if (path === '/api/aiqc' && request.method === 'GET') {
     try {

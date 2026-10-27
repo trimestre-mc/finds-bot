@@ -61,3 +61,14 @@ test('salon d\'analyse IA : photos postées → « analyse en cours » puis le r
   assert.match(sent[1].body, /Demandé par <@42>/);
   assert.equal(await aiqcMessage(env, ctx, c, { ...m, attachments: [] }), 0); // pas de photo : rien
 });
+
+test('quota d\'IA épuisé chez Cloudflare : message « limite du jour », plus d\'essai', async () => {
+  let calls = 0;
+  const env = { DB: memoryDb(), AI: { run: async () => { calls++; throw new Error('4006: you have used up your daily free allocation of 10,000 neurons'); } } };
+  globalThis.fetch = async () => new Response(new Uint8Array(3000), { headers: { 'content-type': 'image/jpeg' } });
+  const res = await qcAnalysis(env, ['https://img.finderqc.com/9.jpg']);
+  assert.equal(res.reason, 'limite');
+  const before = calls;
+  assert.equal((await qcAnalysis(env, ['https://img.finderqc.com/10.jpg'])).reason, 'limite');
+  assert.equal(calls, before); // plus d'appel à l'IA aujourd'hui
+});

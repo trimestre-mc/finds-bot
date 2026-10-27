@@ -51,7 +51,17 @@ export async function qcAnalysis(env, photos, { ref = null, what = null } = {}) 
   const hit = await env.DB.prepare('SELECT ids, at FROM search_cache WHERE key = ?').bind(key).first().catch(() => null);
   if (hit && Date.now() - hit.at < CACHE_MS) return { result: JSON.parse(hit.ids), cached: true };
   if (!(await allowed(env))) return { result: null, reason: 'limite' };
-  const result = await analyzeQc(env, shots, { ref, what }).catch((err) => { console.log('analyse QC', String(err).slice(0, 160)); return null; });
+  let quota = false;
+  const result = await analyzeQc(env, shots, { ref, what }).catch((err) => {
+    console.log('analyse QC', String(err).slice(0, 160));
+    quota = /4006/.test(String(err));
+    return null;
+  });
+  if (quota) {
+    // Quota d'IA du jour épuisé chez Cloudflare : on le note, plus d'essai jusqu'à demain.
+    await aiNeurons(env).then((b) => b.add(AI_NEURONS_PER_DAY)).catch(() => {});
+    return { result: null, reason: 'limite' };
+  }
   if (!result) return { result: null, reason: 'echec' };
   await aiNeurons(env).then((b) => b.add(Math.round(result.neurons || 160))).catch(() => {});
   await env.DB.prepare('INSERT OR REPLACE INTO search_cache (key, ids, at) VALUES (?, ?, ?)').bind(key, JSON.stringify(result), Date.now()).run().catch(() => {});
