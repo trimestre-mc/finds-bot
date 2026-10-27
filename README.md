@@ -1,11 +1,13 @@
 # finds-bot
 
-Bot Discord de finds : il indexe automatiquement des milliers d'items Weidian (et des items Taobao / 1688 populaires),
-les traduit, les classe, et les poste en belles cartes avec tes liens d'affiliation, à la main ou automatiquement.
+Bot Discord de finds : il indexe des centaines de milliers d'items Weidian, Taobao et 1688, les traduit, les classe,
+montre leurs QC dans Discord et les poste en belles cartes avec tes liens d'affiliation. 100 % gratuit.
 
 - **Bot** : Cloudflare Worker (gratuit, 24 h/24) — `https://finds-bot.wheatenmoon5861.workers.dev`
-- **Base** : Cloudflare D1 · **IA** : Workers AI (titres, recherche multilingue)
-- **Indexeur** : GitHub Actions, 4 jobs en parallèle, lancés par le bot dès qu'il y a du travail
+- **Base** : deux bases Turso gratuites (Weidian dans la 1re, Taobao + 1688 dans la 2e, voir `src/shard.js`), D1 en secours
+- **IA** : Workers AI (titres en anglais, lecture des marques sur les photos)
+- **Indexeur** : GitHub Actions, 12 jobs en parallèle, lancés par le bot dès qu'il y a du travail ; synchro du catalogue FinderQC chaque minute
+- **Emojis** : 32 emojis d'application dessinés pour le bot (`emojis/make.py`, envoyés avec `emojis/upload.py`), utilisables dans tous les serveurs
 
 ## Commandes
 
@@ -14,6 +16,16 @@ les traduit, les classe, et les poste en belles cartes avec tes liens d'affiliat
 | `/menu` | admins + membres ajoutés | Panneau complet (tout en boutons) |
 | `/find recherche: categorie: prix_max:` | tout le monde | Chercher un item et l'acheter avec le bon lien |
 | `/convert lien:` | tout le monde | Transformer n'importe quel lien Weidian / Taobao / 1688 / d'agent en boutons d'achat avec ton code |
+| `/qc lien:` | tout le monde | Photos QC d'un item, dans Discord (ou celles d'un article qui ressemble) |
+| `/coupon` | tout le monde | Tes coupons et liens d'inscription (message public, réglé dans 🏷️ Agents) |
+| `/aide` | tout le monde | Guide « comment acheter » en 5 étapes, avec tes liens d'inscription |
+| `/suivis` | tout le monde | Les alertes de prix du membre (bouton 🔔 sous les items) |
+
+**Sous chaque item** : Acheter (badge de l'agent) · **QC** · **Comparer** (le même article chez d'autres vendeurs : le moins
+cher, le plus vendu, le plus de QC) · lien d'origine · 🔔 **alerte de prix** (message privé si le prix baisse) · S'inscrire.
+**Dans la fenêtre QC** : votes **GL / RL** (le score apparaît sur la carte dès 3 votes) et **Partager dans le salon**.
+**Recherche** : synonymes, fautes de frappe, mots chinois, numéros collés (aj4, nb550) et recherche en direct dans tout
+le catalogue FinderQC. **Salon de recherche par image** : la marque est lue sur la photo (Llama 4 Scout), puis 4 items.
 
 ## Le panneau `/menu`
 
@@ -36,7 +48,9 @@ les traduit, les classe, et les poste en belles cartes avec tes liens d'affiliat
 **Piloter**
 - 📊 **Stats** : clics par jour, par agent, items et salons qui convertissent le mieux (chaque bouton passe par `/go`, qui compte le clic puis redirige ; aucune donnée personnelle gardée)
 - ⚙️ **Réglages** : devise (€, $, £, CA$, A$, CHF), langue des cartes (FR/EN), couleur, salon par défaut, anti-doublon, 🔄 salons de **conversion automatique** des liens
-- 🏷️ **Agents** : BBDBuy / Kakobuy avec juste ton code (seul `AGENTS_OWNER_ID` peut les modifier)
+- 🏷️ **Agents** : BBDBuy / Kakobuy avec juste ton code, bouton **S'inscrire** (lien, texte, emoji, couleur) et message
+  de `/coupon` (seul `AGENTS_OWNER_ID` peut les modifier)
+- 📌 **Poster le guide** / 🎁 **Poster /coupon** dans un salon, à épingler
 - 👥 **Accès** · 🩺 **Santé** (indexeur, files, erreurs récentes)
 
 ## Sources de données et autorisations
@@ -70,10 +84,15 @@ Nouvelle installation : `npm run db:init`. Le schéma complet est dans `schema.s
 
 - Taobao et 1688 exigent une connexion : pas d'indexation de boutiques, mais les items populaires arrivent via Jadeship et tout lien se convertit avec `/convert`.
 - Si Weidian ralentit ou demande une vérification, l'indexeur s'arrête (rien n'est contourné) et reprend au passage suivant.
-- Quotas gratuits : Workers AI (~1 200 titres réécrits / jour ; la plupart des titres arrivent déjà en anglais), 50 requêtes externes par exécution du Worker.
-- Base D1 gratuite (100 000 lignes écrites, 5 millions lues par jour) : budgets d'écriture quotidiens (`src/budget.js`), recherche par catégorie (index) et cache partagé des recherches. Au-delà d'un budget, le travail reprend le lendemain.
+- Workers AI gratuit : 10 000 neurons / jour, comptés en coût réel (`ai_neurons`) : ~12 000 titres traduits par jour
+  (0,63 neuron par titre) et la lecture des photos postées. 50 requêtes externes par exécution du Worker.
+- Turso gratuit, par base : 10 M lignes écrites et 500 M lues par mois. Budgets d'écriture lissés jour par jour
+  (`src/budget.js`), compteur de lectures du mois (`reads:month`) qui coupe le travail de fond à `READS_MONTH_CAP`.
+  Jamais de `COUNT(*)` ni de tri complet de la table des items dans un passage automatique (le Worker signale toute
+  requête qui lit plus de 20 000 lignes : « lecture lourde » dans les logs). Diagnostic : `GET /api/db-stats`.
 - QC : une photo QC n'existe que si l'item a été acheté via un agent. Les items jamais achetés n'en ont nulle part ; le salon QC de la communauté comble ce vide.
 
 ## Tests
 
-`npm test` (liens, catégories, découverte) · `npm run test:e2e` (Worker local + faux Discord + vraie indexation Weidian)
+`npm test` (38 tests : recherche, deux bases, budgets, alertes, votes, comparateur, recherche par image…) ·
+`npm run test:e2e` (Worker local + faux Discord + vraie indexation Weidian ; recherche en direct coupée avec `LIVE_SEARCH=0`)

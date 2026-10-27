@@ -420,6 +420,41 @@ export async function convertView(env, ref, known, ctx = null) {
 
 
 
+// Guide « comment acheter » (/aide, ou épinglé dans un salon par un admin) : les étapes, avec les liens
+// d'inscription et les coupons du propriétaire, et les outils du bot à chaque étape.
+export async function guideView(env) {
+  const [coupon, ctx] = await Promise.all([getCoupon(env), postContext(env)]);
+  const e = (n) => etxt(ctx.emojis, n);
+  const agent = ctx.agents[0];
+  const links = ((coupon && coupon.links) || []).map((l) => ({ ...link(l.label, l.url), emoji: emo(ctx.emojis, 'fb_coupon') }));
+  const signup = signupButton(ctx, null, null);
+  if (signup && !links.some((l) => l.url === signup.url)) links.unshift(signup);
+  const accent = (ACCENTS[ctx.cfg.accent] || ACCENTS.orange).color;
+  return [container([
+    text(`## ${e('fb_bot')} Comment acheter tes reps\n-# 5 étapes, tout se fait ici sur Discord.`),
+    sep(),
+    text(`### ${e('fb_signup')} 1 · Crée ton compte chez l'agent\n` +
+      `L'agent${agent ? ` (**${escape(agent.name)}**)` : ''} achète l'article en Chine pour toi, le contrôle et te l'envoie. ` +
+      (links.length ? 'Inscris-toi avec les liens ci-dessous pour avoir les **coupons de bienvenue**.' : 'Inscris-toi sur son site.')),
+    links.length ? row(...links.slice(0, 5)) : null,
+    text(`### ${e('fb_search')} 2 · Trouve ton article\n` +
+      `• \`/find\` + ce que tu cherches (ex : *nike tech*, *chaussette nike*, *jordan 4*)\n` +
+      `• Poste une **photo** dans le salon de recherche par image : le bot reconnaît la marque et trouve l'article\n` +
+      `• Les **salons par catégorie** postent les meilleurs items tout seuls`),
+    text(`### ${e('fb_qc')} 3 · Vérifie les QC\n` +
+      `Bouton **QC** sous chaque item : les vraies photos d'autres acheteurs. Vote **GL** (bon) ou **RL** (à refaire), ` +
+      `et **Comparer** montre le même article chez d'autres vendeurs : le moins cher, le plus vendu, le plus de QC.`),
+    text(`### ${e('fb_cart')} 4 · Achète avec le bouton\n` +
+      `**Acheter sur ${escape(agent ? agent.name : 'l\'agent')}** ouvre l'article chez l'agent avec le bon code. Tu as un lien Weidian, ` +
+      `Taobao ou 1688 ? \`/convert\` le transforme.`),
+    text(`### ${e('fb_box')} 5 · Reçois et partage\n` +
+      `L'agent t'envoie ses photos QC avant l'expédition. Poste-les avec le lien de l'item pour aider les autres, ` +
+      `ou partage celles que tu regardes avec **Partager dans le salon**.`),
+    sep(),
+    text(`-# ${e('fb_coupon')} \`/coupon\` : les réductions du moment  ·  ${e('fb_search')} \`/find\`  ·  ${e('fb_link')} \`/convert\`  ·  ${e('fb_qc')} \`/qc\``),
+  ], accent)];
+}
+
 // Message de /coupon (public) : le texte choisi par le propriétaire et ses liens, sinon le bouton d'inscription.
 export async function couponView(env) {
   const [coupon, ctx] = await Promise.all([getCoupon(env), postContext(env)]);

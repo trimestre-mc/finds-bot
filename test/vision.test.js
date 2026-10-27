@@ -44,3 +44,20 @@ test('photo : la marque lue par le modèle de vision passe devant, la recherche 
   assert.deepEqual(searched, ['chrome hearts hoodie']);
   assert.deepEqual(items.map((x) => x.id), ['1000002', '1000004', '1000001', '1000003']);
 });
+
+test('photo : FinderQC indisponible, la marque lue suffit (recherche par texte)', async () => {
+  globalThis.fetch = async (url) => {
+    const u = String(url);
+    if (u.startsWith('https://cdn.discordapp.com') || u.startsWith('https://media.discordapp.net')) {
+      return new Response(new Uint8Array(5000), { headers: { 'content-type': 'image/jpeg' } });
+    }
+    if (u.includes('/searchImage/')) return new Response('busy', { status: 429 });
+    if (u.includes('/spu/webSpuList')) return Response.json({ code: 0, data: { list: [product('1000004', 'CH Horseshoe Zip Hoodie'), product('1000006', 'Chrome Hearts Cross Hoodie')] } });
+    throw new Error(`fetch inattendu ${u}`);
+  };
+  const env = { DB: memoryDb(), AI: { run: async () => ({ response: '{"brand":"Chrome Hearts","item":"hoodie"}' }) } };
+  const { items } = await smartImageSearch(env, { url: 'https://cdn.discordapp.com/attachments/1/2/p.jpg', filename: 'p.jpg' });
+  assert.deepEqual(items.map((x) => x.id), ['1000004', '1000006']);
+  const noBrand = { DB: memoryDb(), AI: { run: async () => ({ response: '{"brand":null,"item":"hoodie"}' }) } };
+  await assert.rejects(smartImageSearch(noBrand, { url: 'https://cdn.discordapp.com/attachments/1/2/p.jpg', filename: 'p.jpg' }));
+});

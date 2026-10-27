@@ -65,3 +65,33 @@ test('comparer : le même article chez d\'autres vendeurs, le moins cher et le p
   await compareView(env, item.id); // en cache : rien de redemandé
   assert.equal(calls, before);
 });
+
+test('partager des QC : message public avec les photos, qui a partagé et les boutons d\'achat', async () => {
+  const env = { DB: memoryDb(), DISCORD_APP_ID: 'app', DISCORD_API: 'https://discord.test' };
+  env.DB.raw.prepare("INSERT INTO agents (name, template, position) VALUES ('BBDBuy', 'https://bbd.example/{id}', 1)").run();
+  env.DB.raw.prepare("INSERT INTO items (id, platform, item_id, url, title_en, qc_count) VALUES ('weidian:7863670229', 'weidian', '7863670229', 'https://weidian.com/item.html?itemID=7863670229', 'Nike Tech Fleece Hoodie', 2)").run();
+  const sent = [];
+  globalThis.fetch = async (url, opts = {}) => {
+    const u = String(url);
+    if (u.includes('finderqc')) {
+      return Response.json({ code: 0, data: { spuInfo: { qcPhotosCount: 2, spuQcName: [{ name: 'BBDBuy', spuImg: [{ url: 'https://img.finderqc.com/qc1.jpg' }, { url: 'https://img.finderqc.com/qc2.jpg' }] }] } } });
+    }
+    if (u.startsWith('https://discord.test')) { sent.push({ url: u, method: opts.method, body: JSON.parse(opts.body || 'null') }); return Response.json({ id: '1' }); }
+    throw new Error(`fetch inattendu ${u}`);
+  };
+  const waits = [];
+  const window = { components: [{ type: 17, components: [{ type: 10, content: '## QC' }] }] };
+  const res = await handlePublicComponent({ token: 'tok', channel_id: '555', member: { user: { id: '42' } }, message: window,
+    data: { custom_id: 'pub:qcshare:weidian:7863670229:0' } }, env, { waitUntil: (p) => waits.push(p) });
+  assert.equal((await res.json()).type, 6); // réponse différée : la fenêtre sera mise à jour
+  await Promise.all(waits);
+  const post = sent.find((s) => s.method === 'POST' && s.url.endsWith('/webhooks/app/tok'));
+  assert.ok(post, 'message public envoyé');
+  assert.equal((post.body.flags & 64), 0, 'pas éphémère');
+  const body = JSON.stringify(post.body);
+  assert.match(body, /Partagé par <@42>/);
+  assert.match(body, /qc1\.jpg/);
+  assert.match(body, /Acheter sur BBDBuy/);
+  const edit = sent.find((s) => s.method === 'PATCH');
+  assert.match(JSON.stringify(edit.body), /Partagé dans le salon/);
+});

@@ -33,6 +33,16 @@ export const COMMANDS = [
   },
   {
     ...base,
+    name: 'suivis',
+    description: 'Tes alertes de prix : les items que tu suis (bouton 🔔 sous les items)',
+  },
+  {
+    ...base,
+    name: 'aide',
+    description: 'Comment acheter tes reps avec un agent, étape par étape (coupons de bienvenue inclus)',
+  },
+  {
+    ...base,
     name: 'coupon',
     description: 'Les coupons et liens d\'inscription aux agents (réductions sur ta première commande)',
   },

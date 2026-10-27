@@ -75,8 +75,12 @@ async function visionAllowed(env) {
 // bonne marque passent devant ; s'il en manque, une recherche par texte (« chrome hearts hoodie ») complète.
 // Renvoie { items, seen } (seen : ce que le modèle a reconnu, ou null).
 export async function smartImageSearch(env, attachment) {
-  const [shapes, seen] = await Promise.all([
-    searchByImage(attachment.url, attachment.filename, 12),
+  // FinderQC parfois surchargé : un 2e essai ; s'il échoue encore, la marque lue sur la photo suffit (recherche par
+  // texte). « Impossible » seulement si les deux manquent.
+  const once = () => searchByImage(attachment.url, attachment.filename, 12);
+  const [found, seen] = await Promise.all([
+    once().catch(() => new Promise((r) => setTimeout(r, 1500)).then(once))
+      .catch((err) => { console.log('recherche image FinderQC', String(err).slice(0, 160)); return null; }),
     visionAllowed(env).then(async (ok) => {
       if (!ok) return null;
       const seen = await describeImage(env, smallImageUrl(attachment));
@@ -85,6 +89,8 @@ export async function smartImageSearch(env, attachment) {
     })
       .catch((err) => { console.log('vision', String(err).slice(0, 120)); return null; }),
   ]);
+  if (!found && !(seen && seen.brand)) throw new Error('recherche par image indisponible');
+  const shapes = found || [];
   if (!seen || !seen.brand) return { items: shapes.slice(0, RESULTS), seen };
   const brandGroups = expandQuery(seen.brand).filter((g) => g.kind === 'brand');
   const groups = brandGroups.length ? brandGroups : expandQuery(seen.brand);

@@ -1,11 +1,11 @@
 // Fonctions ajoutées au panneau et au bot : suivi des clics, /find et /convert publics, drops automatiques,
 // conversion automatique des liens, filtres, liste noire, historique, réglages, santé.
 
-import { discordApi } from './discord.js';
+import { discordApi, followup } from './discord.js';
 import { COMPONENTS_V2, container, text, escape, section, thumb } from './components.js';
 import { panel, update, openModal, later, userId } from './respond.js';
 import { buildAgentLink, canonicalUrl, extractItemRefs } from './links.js';
-import { communityQc, refreshQc, communityPhotos, qcWindow } from './qc.js';
+import { communityQc, refreshQc, communityPhotos, qcWindow, qcShareMessage } from './qc.js';
 import { cachedIds, withoutCache } from './search.js';
 import { postContext, processQueue, logError, FORUM } from './post.js';
 import { getConfig, setConfig, getSignup, CURRENCIES, LANGS, ACCENTS } from './config.js';
@@ -14,12 +14,13 @@ import { CATEGORY_BY_KEY } from './categories.js';
 import { expandQuery } from './synonyms.js';
 import { homeView, loadSearch, createSearch, resultsView, filtersView, catalogsView } from './ui.js';
 import {
-  schedulesView, scheduleView, scheduleModal, statsView, historyView, settingsView, healthView, findView, convertView, couponView,
+  schedulesView, scheduleView, scheduleModal, statsView, historyView, settingsView, healthView, findView, convertView, couponView, guideView,
   categoryChannelsView, categoryChannels, categoryRhythm, CATEGORY_RHYTHMS, categoryRhythmModal, rhythmOf,
 } from './views.js';
 import { itemDb, itemById, batchByDb, deleteShopItems } from './shard.js';
 import { compareView } from './compare.js';
 import { loadEmojis } from './emojis.js';
+import { toggleWatch, watchesView } from './alerts.js';
 
 // ---------------------------------------------------------------- Indexeur GitHub
 
@@ -74,6 +75,8 @@ export async function handleGo(url, env, ctx) {
 export async function handlePublicCommand(it, env, ctx) {
   const opts = Object.fromEntries((it.data.options || []).map((o) => [o.name, o.value]));
   if (it.data.name === 'coupon') return panel(await couponView(env), false);
+  if (it.data.name === 'aide') return panel(await guideView(env), true);
+  if (it.data.name === 'suivis') return panel(await watchesView(env, userId(it)), true);
   if (it.data.name === 'find') {
     return later(it, env, ctx, async () => {
       const q = String(opts.recherche || '').slice(0, 100);
@@ -131,6 +134,13 @@ export async function handlePublicComponent(it, env, ctx) {
       .bind(key, 'qc_view', it.channel_id || null, Date.now()).run().catch(() => {}));
     return later(it, env, ctx, () => openQc(env, key, platform, itemId, 0), true);
   }
+  if (kind === 'watch') {
+    // « 🔔 » d'une carte : suivre le prix de l'item (ou arrêter), réponse privée.
+    const key = parts.slice(2).join(':');
+    const [platform, itemId] = key.split(':');
+    if (!canonicalUrl(platform, itemId)) return null;
+    return panel([container([text(await toggleWatch(env, userId(it), it.guild_id, key))])]);
+  }
   if (kind === 'cmp') {
     // « Comparer » d'une carte : le même article chez d'autres vendeurs (fenêtre privée).
     const key = parts.slice(2).join(':');
@@ -161,6 +171,37 @@ export async function handlePublicComponent(it, env, ctx) {
     });
     walk(components);
     return update(components);
+  }
+  if (kind === 'qcshare') {
+    // « Partager dans le salon » d'une fenêtre QC : message public (suivi de l'interaction, aucune permission de
+    // salon nécessaire) ; la fenêtre privée reste, avec une ligne de confirmation en haut.
+    const view = Math.max(0, Number(parts[parts.length - 1]) || 0);
+    const key = parts.slice(2, -1).join(':');
+    const [platform, itemId] = key.split(':');
+    if (!canonicalUrl(platform, itemId)) return null;
+    return later(it, env, ctx, async () => {
+      const components = JSON.parse(JSON.stringify((it.message && it.message.components) || []));
+      const notice = (msg) => {
+        const box = components.find((c) => c.type === 17);
+        if (box) {
+          if (box.components[0] && box.components[0].type === 10 && /^-# (✅|ℹ️)/.test(box.components[0].content)) box.components.shift();
+          box.components.unshift(text(`-# ${msg}`));
+        }
+        return components;
+      };
+      // Pas deux fois le même partage dans le même salon en 10 minutes.
+      const recentKey = `share:${it.channel_id}:${key}:${view}`;
+      const recent = await env.DB.prepare('SELECT at FROM search_cache WHERE key = ?').bind(recentKey).first().catch(() => null);
+      if (recent && Date.now() - recent.at < 10 * 60000) return notice('ℹ️ Ces QC viennent déjà d\'être partagées dans ce salon.');
+      const item = (await itemById(env, key)) || { id: key, item_id: itemId, platform, url: canonicalUrl(platform, itemId) };
+      const message = await qcShareMessage(env, item, view, userId(it), await postContext(env), it.channel_id);
+      if (!message) return notice('ℹ️ Pas de photos QC à partager sur cette page.');
+      await followup(env, it.token, message);
+      await env.DB.prepare('INSERT OR REPLACE INTO search_cache (key, ids, at) VALUES (?, ?, ?)').bind(recentKey, '[]', Date.now()).run().catch(() => {});
+      ctx.waitUntil(env.DB.prepare('INSERT INTO clicks (item_id, agent, channel_id, at) VALUES (?, ?, ?, ?)')
+        .bind(key, 'qc_share', it.channel_id || null, Date.now()).run().catch(() => {}));
+      return notice('✅ Partagé dans le salon : tout le monde peut voir ces QC.');
+    });
   }
   if (kind === 'qcreq') {
     // « Demander un QC » : message dans le salon QC (une demande par item et par 24 h).

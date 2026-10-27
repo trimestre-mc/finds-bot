@@ -239,3 +239,15 @@ CREATE TABLE IF NOT EXISTS qc_votes (
   at INTEGER NOT NULL,
   PRIMARY KEY (item_id, user_id)
 );
+
+-- Alertes de prix : un membre suit un item, le bot le prévient en message privé si le prix baisse.
+CREATE TABLE IF NOT EXISTS watches (
+  user_id TEXT NOT NULL,
+  item_id TEXT NOT NULL,
+  price REAL,                       -- prix (¥) au moment du suivi ou de la dernière alerte
+  guild_id TEXT,
+  at INTEGER NOT NULL,
+  notified_at INTEGER,
+  PRIMARY KEY (user_id, item_id)
+);
+CREATE INDEX IF NOT EXISTS watches_item ON watches(item_id);

@@ -51,7 +51,20 @@ test('carte : achat d\'abord, puis QC, annonce d\'origine ; titre nettoyé', asy
   const item = { id: 'weidian:7863670229', platform: 'weidian', item_id: '7863670229', url: 'https://weidian.com/item.html?itemID=7863670229',
     title_en: 'Cross-border Nike Tech Fleece Hoodie', price_cny: 199, popularity: 1234, qc_count: 56, category: 'hoodies' };
   const msg = buildItemMessage(item, await postContext(env));
-  assert.deepEqual(buttons(msg.components).map((b) => b.label), ['Acheter sur BBDBuy', 'QC · 56', 'Weidian']);
+  assert.deepEqual(buttons(msg.components).map((b) => b.label || b.custom_id), ['Acheter sur BBDBuy', 'QC · 56', 'Weidian', 'pub:watch:weidian:7863670229']);
   assert.equal(cardTitle(item), 'Nike Tech Fleece Hoodie');
   assert.match(JSON.stringify(msg), /1 234 ventes/);
+});
+
+test('/menu et /aide restent dans les limites de Discord (40 composants)', async () => {
+  const { homeView } = await import('../src/ui.js');
+  const { guideView } = await import('../src/views.js');
+  const env = { DB: memoryDb() };
+  await setCoupon(env, { title: 'Promos', links: parseCouponLinks('BBDBuy | https://a.example/x\nKakobuy | https://b.example/y') });
+  const home = await homeView(env, { guild_id: 'g', member: { user: { id: 'u' } } });
+  assert.ok(count(home) <= 40, `menu : ${count(home)} composants`);
+  assert.ok(buttons(home).some((b) => b.custom_id === 'guide:post'));
+  const guide = await guideView(env);
+  assert.ok(count(guide) <= 40);
+  assert.deepEqual(buttons(guide).map((b) => b.url), ['https://a.example/x', 'https://b.example/y']);
 });

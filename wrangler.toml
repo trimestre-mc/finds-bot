@@ -14,6 +14,11 @@ database_id = "491d8592-7575-4b7e-8858-ccba2b5a3e7b"
 [ai]
 binding = "AI"
 
+# Le bot s'appelle lui-même pour les recherches par image (une exécution à part, avec son propre quota de requêtes).
+[[services]]
+binding = "SELF"
+service = "finds-bot"
+
 [vars]
 DISCORD_APP_ID = "1564065839194448043"
 DISCORD_PUBLIC_KEY = "d10bd37d232a95ebe948df712c3f68b7eeb8d5e70af9986852beb1112e89f871"

@@ -4,7 +4,8 @@
 import { InteractionType, Reply, verifyRequest, discordApi, json, reply } from './discord.js';
 import { panel, update, openModal, later, userId } from './respond.js';
 import { COMMANDS } from './commands.js';
-import { modalValues, escape, fmtInt } from './components.js';
+import { modalValues, escape, fmtInt, COMPONENTS_V2 } from './components.js';
+import { guideView, couponView } from './views.js';
 import {
   parseItemLink, isValidTemplate, canonicalUrl, buildAgentLink, AGENT_PRESETS, isValidCode, presetTemplate,
 } from './links.js';
@@ -25,7 +26,7 @@ import { searchByImage } from './imagesearch.js';
 import { describeImage } from './vision.js';
 import { uploadEmojis, refreshEmojis } from './emojis.js';
 import { expandQuery } from './synonyms.js';
-import { watchChannels } from './watch.js';
+import { watchChannels, imageJob, saveFound } from './watch.js';
 import { translatePending, rewriteTitles, titleWait, quickTitles, applyGlossary } from './translate.js';
 import { fetchWeidianItem } from './weidian.js';
 import { extractWeidian, ingest, resolveQueue, scanSource, runDiscovery } from './discover.js';
@@ -35,6 +36,8 @@ import {
   accessView, hasAdminPermission, deniedView, sourcesView,
 } from './ui.js';
 import { itemDb, itemById, itemDbs, perDb, allRows, countAll, batchByDb, groupByDb, itemsWhereIds, onDb, itemEnv, deleteShopItems } from './shard.js';
+import { checkWatches } from './alerts.js';
+import { sendDailyReport, dailyReport } from './report.js';
 
 // Une boutique est relue tous les 3 jours (quota gratuit D1 : 100 000 lignes écrites par jour).
 const REINDEX_HOURS = 72;
@@ -97,6 +100,10 @@ async function handleScheduled(event, env, ctx) {
   if (event.cron === '*/5 * * * *') {
     ctx.waitUntil((async () => {
       if (!over) await runDiscovery(env).catch((e) => console.log('découverte', String(e)));
+      // Alertes de prix : toutes les 30 min (quelques lignes lues seulement, même au plafond du mois).
+      if (new Date().getUTCMinutes() % 30 === 0) await checkWatches(env).catch((e) => console.log('alertes prix', String(e)));
+      // Rapport du jour au propriétaire, en message privé, vers 21 h (heure de Paris en hiver).
+      if (new Date().getUTCHours() === 20) await sendDailyReport(env).catch((e) => console.log('rapport', String(e)));
       // Toutes les 15 min, dans chaque base (la sélection des items à vérifier parcourt une partie de la table).
       if (new Date().getUTCMinutes() % 15 === 0) {
         for (const e of open) await runQcChecks(e, 15).catch((err) => console.log('qc', String(err)));
@@ -107,7 +114,7 @@ async function handleScheduled(event, env, ctx) {
   if (event.cron === '*/2 * * * *' || event.cron === '1-59/2 * * * *') {
     // Salons de conversion et de recherche par image, relus toutes les 3 s : une exécution chaque minute
     // (minutes paires et impaires ; « */1 » serait fusionné avec « * * * * * » et ne se déclencherait pas).
-    ctx.waitUntil(watchChannels(env).catch((e) => console.log('salons', String(e))));
+    ctx.waitUntil(watchChannels(env, 55000, ctx).catch((e) => console.log('salons', String(e))));
     return;
   }
   if (event.cron === '*/3 * * * *') {
@@ -229,6 +236,19 @@ async function onComponent(it, env, ctx) {
 
   switch (`${a}:${b || ''}`) {
     case 'home:': return update(await homeView(env, it));
+    case 'guide:post':
+    case 'coupon:post': {
+      // Le guide (ou les coupons) posté dans ce salon par le bot, pour l'épingler.
+      try {
+        await discordApi(env, 'POST', `/channels/${it.channel_id}/messages`, {
+          flags: COMPONENTS_V2, allowed_mentions: { parse: [] },
+          components: a === 'guide' ? await guideView(env) : await couponView(env),
+        });
+        return update(await homeView(env, it, `✅ ${a === 'guide' ? 'Guide' : 'Message /coupon'} posté dans ce salon : clique dessus → Épingler pour le garder en haut.`));
+      } catch (err) {
+        return update(await homeView(env, it, `❌ Je ne peux pas écrire dans ce salon (${escape(String(err.message || err).slice(0, 80))}).`));
+      }
+    }
 
     case 'search:new': return openModal(searchModal());
     case 'search:trending': {
@@ -756,6 +776,14 @@ async function handleApi(request, env, url) {
     return json({ ok: true, statements: stmts.length, added });
   }
 
+  // Recherche d'une photo d'un salon de recherche par image, lancée par watch.js dans une exécution à part.
+  if (path === '/api/watch/image' && request.method === 'POST') {
+    const job = await request.json();
+    const found = await imageJob(env, job);
+    if (found.length) await saveFound(env, found);
+    return json({ ok: true, items: found.length });
+  }
+
   // Emojis du bot (emojis d'application Discord, voir emojis.js) : envoi par lots de 20, ou relecture de la liste.
   if (path === '/api/emojis' && request.method === 'POST') {
     const body = await request.json();
@@ -764,6 +792,9 @@ async function handleApi(request, env, url) {
   if (path === '/api/emojis' && request.method === 'GET') {
     return json({ ok: true, map: await refreshEmojis(env) });
   }
+
+  // Aperçu du rapport du jour (sans l'envoyer).
+  if (path === '/api/report' && request.method === 'GET') return json({ ok: true, components: await dailyReport(env) });
 
   // Diagnostic : état de chaque base du catalogue (taille approchée par le dernier rowid, compteurs du mois).
   if (path === '/api/db-stats' && request.method === 'GET') {

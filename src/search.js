@@ -149,10 +149,10 @@ async function rankedIds(env, params, money) {
   // Recherche par mots : les plus pertinents d'abord (mots trouvés dans le titre anglais, bon type d'article),
   // puis le tri choisi. On parcourt l'index de popularité et on s'arrête à 5000 trouvés (quota de lectures Turso),
   // puis cache partagé de 6 h.
-  // Lecture bornée : au plus les SCAN_ROWS items les plus vendus (20 000 si le quota de lectures du mois est atteint).
+  // Lecture bornée : au plus les SCAN_ROWS items les plus vendus (3 000 si le quota de lectures du mois est atteint).
   // Chaque base du catalogue lit sa moitié, avec son propre quota.
   const parts = await Promise.all(perDb(env).map(async (e) => {
-    const scan = (await readsOver(e)) ? 20000 : SCAN_ROWS;
+    const scan = (await readsOver(e)) ? 3000 : SCAN_ROWS;
     return (await e.DB.prepare(
       `SELECT id, title_en, title_zh, shop_name, category, popularity, first_seen, price_cny FROM (
          SELECT * FROM items INDEXED BY items_popularity ORDER BY popularity DESC, first_seen DESC LIMIT ?
@@ -178,8 +178,16 @@ async function rankedIds(env, params, money) {
 
 async function plainIds(env, params, money) {
   const w = where(params, money);
+  if ((params.category || params.autoCategory) && (!params.sort || params.sort === 'popular') && !params.latest) {
+    // Catégorie, les plus vendus d'abord (salons par catégorie, drops) : on parcourt l'index de popularité et on
+    // s'arrête aux MAX_BULK premiers de la catégorie, au lieu de lire toute la catégorie (jusqu'à ~100 000 lignes).
+    const results = await allRows(env,
+      `SELECT id, popularity, first_seen, price_cny FROM items INDEXED BY items_popularity ${w.sql} ORDER BY popularity DESC, first_seen DESC LIMIT ?`,
+      ...w.binds, MAX_BULK);
+    return sortRows(results, params).slice(0, MAX_BULK).map((r) => r.id);
+  }
   if (params.category || params.autoCategory) {
-    // Avec une catégorie : on lit seulement cette catégorie (index), puis on trie ici.
+    // Autres tris dans une catégorie : on lit seulement cette catégorie (index), puis on trie ici.
     const results = await allRows(env, `SELECT id, popularity, first_seen, price_cny FROM items INDEXED BY items_category ${w.sql}`, ...w.binds);
     return sortRows(results, params).slice(0, MAX_BULK).map((r) => r.id);
   }

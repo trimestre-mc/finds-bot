@@ -106,6 +106,8 @@ export function agentButtons(ctx, item, channelId, community = null) {
     /^https:\/\//.test(item.image || '') ? { type: 2, style: 2, label: ctx.cfg.lang === 'en' ? 'Compare' : 'Comparer',
       emoji: emo(ctx.emojis, 'fb_compare'), custom_id: `pub:cmp:${item.id}`.slice(0, 100) } : null,
     { ...link(platform, trackedLink(ctx, item, 'source', item.url, channelId)), emoji: emo(ctx.emojis, PLATFORM_EMOJI[item.platform] || 'fb_link') },
+    // Alerte de prix (message privé si le prix baisse), voir alerts.js.
+    { type: 2, style: 2, emoji: emo(ctx.emojis, 'fb_bell'), custom_id: `pub:watch:${item.id}`.slice(0, 100) },
     signupButton(ctx, item, channelId),
   ].filter(Boolean);
   const rows = [];

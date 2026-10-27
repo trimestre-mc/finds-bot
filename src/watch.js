@@ -1,7 +1,8 @@
 // Surveillance des salons de conversion et de recherche par image, presque en direct.
 // Le bot n'a pas de connexion permanente à Discord (Workers gratuit) : chaque minute, une exécution relit les
-// salons toutes les quelques secondes pendant ~55 s. Une photo ou un lien posté reçoit une réponse en quelques
-// secondes : « 🔎 Recherche en cours… » tout de suite, puis les résultats à la place.
+// salons pendant ~55 s, à un rythme réglé sur ses requêtes disponibles (pas de trou en fin de minute). Une photo
+// reçoit tout de suite « Recherche en cours… » ; la recherche elle-même tourne dans une autre exécution du bot
+// (env.SELF, son propre quota de requêtes) qui remplace ce message par les résultats.
 // Workers gratuit : 50 requêtes externes par exécution (Discord, FinderQC et la base Turso comptent toutes).
 
 import { COMPONENTS_V2, container, text } from './components.js';
@@ -18,15 +19,15 @@ import { itemsWhereIds, groupByDb, onDb, batchByDb } from './shard.js';
 import { etxt } from './emojis.js';
 
 const MAX_CALLS = 46;
-const WORK_RESERVE = 14; // requêtes gardées pour répondre (une recherche d'image en coûte ~5)
-const ROUND_MS = 3000;
+const WORK_RESERVE = 10; // requêtes gardées pour répondre (une photo : 2, un lien : ~3)
+const MIN_ROUND_MS = 2000;
 const DISCORD_EPOCH = 1420070400000n;
 
 // Identifiant Discord correspondant à une date : « messages postés après l'ajout du salon ».
 const snowflakeAt = (ms) => String((BigInt(Math.floor(ms)) - DISCORD_EPOCH) << 22n);
 const newer = (a, b) => BigInt(a) > BigInt(b);
 
-export async function watchChannels(env, ms = 55000) {
+export async function watchChannels(env, ms = 55000, exec = null) {
   const deadline = Date.now() + ms;
   let external = 0;
   const used = () => external + (env.DB.calls || 0);
@@ -49,6 +50,9 @@ export async function watchChannels(env, ms = 55000) {
   let ctx = null;
   const found = [];
   const pollLimit = MAX_CALLS - WORK_RESERVE;
+  // Rythme : les relectures disponibles réparties sur toute la minute (au moins toutes les 2 s).
+  const rounds = Math.max(1, Math.floor((pollLimit - used()) / channels.length));
+  const roundMs = Math.max(MIN_ROUND_MS, Math.floor(ms / rounds));
   while (Date.now() < deadline) {
     const round = Date.now();
     for (const c of channels) {
@@ -70,14 +74,14 @@ export async function watchChannels(env, ms = 55000) {
         if (!ctx) ctx = await postContext(env);
         try {
           if (c.kind === 'convert') external += await convertMessage(env, ctx, c, m);
-          else external += await imageMessage(env, ctx, c, m, found);
+          else external += await imageMessage(env, ctx, c, m, found, exec);
         } catch (err) {
           console.log('salon', c.channel_id, String(err).slice(0, 200));
         }
       }
     }
     if (used() >= pollLimit) break;
-    const wait = ROUND_MS - (Date.now() - round);
+    const wait = roundMs - (Date.now() - round);
     if (wait > 0) await new Promise((r) => setTimeout(r, wait));
   }
 
@@ -85,15 +89,8 @@ export async function watchChannels(env, ms = 55000) {
   const stmts = channels.filter((c) => c.cursor !== c.last_message_id || c.done).map((c) => [env.DB, env.DB.prepare(
     `UPDATE ${c.table} SET last_message_id = ?, ${c.kind === 'image' ? 'searched = searched' : 'converted = converted'} + ? WHERE channel_id = ?`,
   ).bind(c.cursor, c.done, c.channel_id)]);
-  // Items trouvés : chacun dans sa base (voir shard.js), sur le budget de cette base.
-  for (const [db, keys] of groupByDb(env, found.map((x) => `${x.platform}:${x.id}`))) {
-    const e = onDb(env, db);
-    const b = await budget(e, 'items');
-    const { stmts: add, count } = popularItemStatements(e, found.filter((x) => keys.includes(`${x.platform}:${x.id}`)).slice(0, b.left), 'finderqc');
-    stmts.push(...add.map((st) => [db, st]));
-    if (count) await b.use(count).catch(() => {});
-  }
   if (stmts.length) await batchByDb(stmts).catch((err) => console.log('salons', String(err).slice(0, 120)));
+  if (found.length) await saveFound(env, found);
   return channels.reduce((n, c) => n + c.done, 0);
 }
 
@@ -116,8 +113,9 @@ async function convertMessage(env, ctx, c, m) {
   return calls + 1;
 }
 
-// Photo(s) dans un message : « recherche en cours » tout de suite, puis les items qui ressemblent.
-async function imageMessage(env, ctx, c, m, found) {
+// Photo(s) dans un message : « recherche en cours » tout de suite, puis la recherche dans une autre exécution du
+// bot (son propre quota de requêtes ; sans env.SELF, ici même). Renvoie le nombre de requêtes faites.
+async function imageMessage(env, ctx, c, m, found, exec) {
   const images = (m.attachments || []).filter(isImage).slice(0, 2);
   let calls = 0;
   const accent = (ACCENTS[ctx.cfg.accent] || ACCENTS.orange).color;
@@ -128,19 +126,54 @@ async function imageMessage(env, ctx, c, m, found) {
       message_reference: { message_id: m.id, fail_if_not_exists: false },
     });
     calls++;
-    let components;
-    try {
-      const { items, seen } = await smartImageSearch(env, a);
-      found.push(...items);
-      components = imageResultsView(ctx, items, c.channel_id, seen);
-    } catch (err) {
-      console.log('image', String(err).slice(0, 120));
-      components = [container([text('### 🔎 Recherche impossible pour le moment\n-# La recherche par image est surchargée. Reposte ta photo dans une minute.')], accent)];
-    }
-    calls += 6; // image, FinderQC (envoi + résultats), modèle de vision, recherche par texte
-    await discordApi(env, 'PATCH', `/channels/${c.channel_id}/messages/${pending.id}`, { flags: COMPONENTS_V2, components, allowed_mentions: { parse: [] } });
-    calls++;
     c.done++;
+    const job = { channel_id: c.channel_id, pending_id: pending.id, attachment: { url: a.url, proxy_url: a.proxy_url, filename: a.filename } };
+    if (env.SELF && exec) {
+      // Si l'autre exécution ne répond pas, la recherche se fait ici (le membre a toujours sa réponse).
+      exec.waitUntil(env.SELF.fetch('https://finds-bot/api/watch/image', {
+        method: 'POST', headers: { Authorization: `Bearer ${env.INDEXER_SECRET}`, 'Content-Type': 'application/json' }, body: JSON.stringify(job),
+      }).then((res) => { if (!res.ok) throw new Error(`HTTP ${res.status}`); })
+        .catch(async (err) => {
+          console.log('recherche image (autre exécution)', String(err).slice(0, 120));
+          await saveFound(env, await imageJob(env, job, ctx)).catch(() => {});
+        }));
+      calls++;
+    } else {
+      const items = await imageJob(env, job, ctx);
+      found.push(...items);
+      calls += 7;
+    }
   }
   return calls;
+}
+
+// Recherche d'une photo et mise à jour du message « Recherche en cours… ». Renvoie les items proposés.
+export async function imageJob(env, job, ctx = null) {
+  ctx = ctx || await postContext(env);
+  const accent = (ACCENTS[ctx.cfg.accent] || ACCENTS.orange).color;
+  let items = [];
+  let components;
+  try {
+    const res = await smartImageSearch(env, job.attachment);
+    items = res.items;
+    components = imageResultsView(ctx, items, job.channel_id, res.seen);
+  } catch (err) {
+    console.log('image', String(err).slice(0, 200));
+    components = [container([text(`### ${etxt(ctx.emojis, 'fb_warn')} Recherche impossible pour le moment\n-# La recherche par image ne répond pas. Reposte ta photo dans une minute.`)], accent)];
+  }
+  await discordApi(env, 'PATCH', `/channels/${job.channel_id}/messages/${job.pending_id}`, { flags: COMPONENTS_V2, components, allowed_mentions: { parse: [] } });
+  return items;
+}
+
+// Items proposés par une recherche d'image : enregistrés dans leur base (voir shard.js), sur le budget de cette base.
+export async function saveFound(env, found) {
+  const stmts = [];
+  for (const [db, keys] of groupByDb(env, found.map((x) => `${x.platform}:${x.id}`))) {
+    const e = onDb(env, db);
+    const b = await budget(e, 'items');
+    const { stmts: add, count } = popularItemStatements(e, found.filter((x) => keys.includes(`${x.platform}:${x.id}`)).slice(0, b.left), 'finderqc');
+    stmts.push(...add.map((st) => [db, st]));
+    if (count) await b.use(count).catch(() => {});
+  }
+  if (stmts.length) await batchByDb(stmts).catch((err) => console.log('items trouvés', String(err).slice(0, 120)));
 }

@@ -94,6 +94,7 @@ export async function homeView(env, it, msg) {
       emojiBtn('👥', 'Accès', 'acc'),
       emojiBtn('🩺', 'Santé', 'health'),
     ),
+    row(emojiBtn('📌', 'Poster le guide ici', 'guide:post'), emojiBtn('🎁', 'Poster /coupon ici', 'coupon:post')),
   ])];
 }
 
