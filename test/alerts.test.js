@@ -54,3 +54,14 @@ test('rapport du jour : activité, catalogue et quotas, envoyé une seule fois p
   assert.equal(await sendDailyReport(env), false);
   assert.equal(sent.filter((u) => u.endsWith('/channels/dm/messages')).length, 1);
 });
+
+test('écran Santé : quotas des deux bases et de l\'IA', async () => {
+  const { healthView } = await import('../src/views.js');
+  const env = { DB: memoryDb(), DB2: memoryDb(), READS_MONTH_CAP: '480000000', BUDGET_MONTH_ROWS: '9000000' };
+  env.DB.raw.prepare("INSERT INTO settings (key, value) VALUES ('reads:month', '{\"month\":\"2026-10\",\"rows\":498000000}')").run();
+  const v = JSON.stringify(await healthView(env));
+  assert.match(v, /Base 1 \(Weidian\)\*\* : lectures 498,0 M/);
+  assert.match(v, /indexation en pause/);
+  assert.match(v, /Base 2 \(Taobao \+ 1688\)/);
+  assert.match(v, /IA du jour/);
+});

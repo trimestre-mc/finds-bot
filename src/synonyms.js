@@ -191,6 +191,20 @@ function tokens(q) {
 
 // Groupes d'une recherche : [{ alt: [équivalents], cat, kind }]. Les expressions de trois puis deux mots passent
 // avant les mots seuls. Un numéro de modèle après une marque accepte aussi la forme collée (« jordan 4 » → aj4).
+// Noms chinois des marques → nom anglais (« 迪赛 » → « Diesel »), pour le glossaire de la traduction des titres.
+// Les mots trop vagues (科技 = technologie, 气垫 = coussin d'air, 四叶草 = trèfle) sont exclus.
+const VAGUE = new Set(['科技', '气垫', '四叶草', '巴黎', '鳄鱼']);
+const title = (s) => s.replace(/\b([a-z])/g, (c) => c.toUpperCase()).replace(/\bOf\b/g, 'of');
+export function chineseBrandNames() {
+  const out = [];
+  for (const b of BRANDS) {
+    const name = b.alt.find((a) => /^[a-z0-9 '&-]+$/.test(a) && a.length > 2);
+    if (!name) continue;
+    for (const zh of b.alt) if (/[\u4e00-\u9fff]/.test(zh) && !VAGUE.has(zh)) out.push([zh, title(name)]);
+  }
+  return out;
+}
+
 export function expandQuery(q) {
   const words = tokens(q);
   const groups = [];

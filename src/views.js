@@ -9,7 +9,8 @@ import { CATEGORY_BY_KEY, CATEGORIES } from './categories.js';
 import { getConfig, getCoupon, CURRENCIES, ACCENTS, LANGS } from './config.js';
 import { loadSearch, bigCounts } from './ui.js';
 import { communityQc, qcSummary } from './qc.js';
-import { itemsWhereIds, countAll } from './shard.js';
+import { itemsWhereIds, countAll, itemDbs } from './shard.js';
+import { aiNeurons, AI_NEURONS_PER_DAY } from './translate.js';
 import { etxt, emo } from './emojis.js';
 
 const notice = (msg) => (msg ? text(`> ${msg}`) : null);
@@ -337,6 +338,21 @@ export async function healthView(env) {
   const noPhoto = { n: counts.noPhoto };
   const untranslated = { n: counts.untranslated };
   const st = Object.fromEntries(shops.results.map((r) => [r.status, r.n]));
+  // Quotas gratuits : lectures et écritures du mois de chaque base, neurons d'IA du jour (compteurs du bot).
+  const okq = (cond) => (cond ? '🟢' : '🟠');
+  const readsCap = Number(env.READS_MONTH_CAP) || 480000000;
+  const writesCap = Number(env.BUDGET_MONTH_ROWS) || 9000000;
+  const M = (n) => `${(Number(n || 0) / 1e6).toFixed(1).replace('.', ',')} M`;
+  const quotas = await Promise.all(itemDbs(env).map(async (db, i) => {
+    const { results } = await db.prepare("SELECT key, value FROM settings WHERE key IN ('reads:month', 'budget:month')").all();
+    const v = Object.fromEntries(results.map((r) => { try { return [r.key, JSON.parse(r.value)]; } catch { return [r.key, {}]; } }));
+    const reads = (v['reads:month'] || {}).rows || 0;
+    const written = (v['budget:month'] || {}).rows || 0;
+    return `${okq(reads < readsCap)} **Base ${i + 1}${i ? ' (Taobao + 1688)' : env.DB2 ? ' (Weidian)' : ''}** : lectures ${M(reads)} / ${M(readsCap)} · écritures ${M(written)} / ${M(writesCap)}` +
+      (reads >= readsCap ? ' · ⏸️ indexation en pause jusqu\'au 1er' : '');
+  }));
+  const neurons = await aiNeurons(env);
+  quotas.push(`${okq(neurons.used < AI_NEURONS_PER_DAY)} **IA du jour** : ${fmtInt(Math.round(neurons.used))} / ${fmtInt(AI_NEURONS_PER_DAY)} neurons`);
   const ok = (cond) => (cond ? '🟢' : '🟠');
   return [container([
     text('## 🩺 Santé du bot'),
@@ -352,6 +368,7 @@ export async function healthView(env) {
       `${ok(jade && Date.now() - Number(jade.value) < 8 * 3600000)} **Dernière collecte Jadeship** : ${jade ? ago(Number(jade.value)) : 'jamais'}`,
       `${ok(rates && Date.now() - Number(rates.value) < 12 * 3600000)} **Taux de change** : ${rates ? ago(Number(rates.value)) : 'jamais'}`,
       `${ok(!srcErr.n)} **Sources Discord en erreur** : ${srcErr.n}`,
+      ...quotas,
     ].join('\n')),
     sep(),
     text(`**Dernières erreurs**\n${logs.results.map((l) => `-# ${ago(l.at)} · ${escape(l.kind)} · ${escape(String(l.message).slice(0, 140))}`).join('\n') || '-# Aucune erreur récente. 👌'}`),

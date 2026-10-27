@@ -1,6 +1,8 @@
 // Titres : un modèle de langage (Workers AI, quota gratuit) réécrit les titres chinois des vendeurs
 // en titres produit courts et propres en anglais. m2m100 sert de secours.
 
+import { chineseBrandNames } from './synonyms.js';
+
 const MT_MODEL = '@cf/meta/m2m100-1.2b';
 // Gemma 4 : meilleurs titres que Llama 3.3 70B sur nos tests (marques reconnues) et ~5 fois moins cher en neurons.
 const LLM_MODEL = '@cf/google/gemma-4-26b-a4b-it';
@@ -35,6 +37,9 @@ const GLOSSARY = (() => {
     const en = m[2].trim().replace(/\.$/, '');
     for (const zh of m[1].split('/')) if (/[\u4e00-\u9fff]/.test(zh)) pairs.push([zh.trim().replace(/^.*: /, ''), en]);
   }
+  // Plus les noms chinois des marques connues de la recherche (synonyms.js), s'ils ne sont pas déjà dans la liste.
+  const known = new Set(pairs.map(([zh]) => zh));
+  for (const [zh, en] of chineseBrandNames()) if (!known.has(zh)) pairs.push([zh, en]);
   return pairs.filter(([zh]) => zh.length >= 2).sort((a, b) => b[0].length - a[0].length);
 })();
 
