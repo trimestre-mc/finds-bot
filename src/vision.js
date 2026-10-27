@@ -97,12 +97,16 @@ const MERGE_MODEL = '@cf/google/gemma-4-26b-a4b-it';
 const etat = (x) => (['ok', 'attention', 'probleme'].includes(x) ? x : 'attention');
 
 async function runVision(env, model, prompt, urls) {
-  const images = await Promise.all(urls.map((u) => asDataUrl(u)));
-  const res = await env.AI.run(model, {
-    messages: [{ role: 'user', content: [{ type: 'text', text: prompt }, ...images.map((url) => ({ type: 'image_url', image_url: { url } }))] }],
-    max_tokens: 600,
-    temperature: 0.1,
-  });
+  // Llama 3.2 Vision : une seule image par requête, dans le champ « image » (la photo QC, sans la photo du vendeur).
+  const single = /llama-3\.2-\d+b-vision/.test(model);
+  const images = await Promise.all((single ? urls.slice(-1) : urls).map((u) => asDataUrl(u)));
+  const res = await env.AI.run(model, single
+    ? { messages: [{ role: 'user', content: prompt }], image: images[0], max_tokens: 600, temperature: 0.1 }
+    : {
+      messages: [{ role: 'user', content: [{ type: 'text', text: prompt }, ...images.map((url) => ({ type: 'image_url', image_url: { url } }))] }],
+      max_tokens: 600,
+      temperature: 0.1,
+    });
   const out = typeof res === 'string' ? res
     : res && (res.response ?? (res.choices && res.choices[0] && res.choices[0].message && res.choices[0].message.content));
   return { raw: parseFirstObject(out), neurons: (res && res.usage && res.usage.neurons) || 0, out };
