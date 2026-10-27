@@ -111,7 +111,7 @@ async function rewriteInHalves(env, titles, usage = []) {
 // traduction tourne sur chaque base du catalogue (voir shard.js). La traduction s'arrête à TRANSLATE_NEURONS pour
 // laisser de quoi lire les photos postées et analyser des QC (aiqc.js).
 export const AI_NEURONS_PER_DAY = 9500;
-const TRANSLATE_NEURONS = 6000;
+const TRANSLATE_NEURONS = 4500;
 const NEURONS_PER_TITLE = 0.7; // estimation si la réponse ne donne pas le chiffre
 
 export async function aiNeurons(env) {

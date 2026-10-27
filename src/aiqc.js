@@ -4,14 +4,17 @@
 // postent juste leurs photos. Résultat gardé 30 jours par lot de photos (search_cache) ; au plus AIQC_PER_DAY
 // analyses nouvelles par jour (quota d'IA partagé avec la traduction et la recherche par photo).
 
-import { COMPONENTS_V2, container, text, sep, gallery, escape } from './components.js';
+import { COMPONENTS_V2, container, text, sep, gallery, escape, section, thumb, row, link } from './components.js';
 import { discordApi } from './discord.js';
 import { analyzeQc, smallImageUrl } from './vision.js';
 import { aiNeurons, AI_NEURONS_PER_DAY } from './translate.js';
-import { etxt } from './emojis.js';
+import { etxt, emo, AGENT_EMOJI } from './emojis.js';
 import { ACCENTS } from './config.js';
+import { searchByImage } from './imagesearch.js';
+import { trackedLink, formatPrice } from './post.js';
+import { buildAgentLink, canonicalUrl } from './links.js';
 
-export const AIQC_PER_DAY = 20;
+export const AIQC_PER_DAY = 40; // plafond de sécurité ; la vraie limite est le quota d'IA du jour (neurons)
 const CACHE_MS = 30 * 86400000;
 const PHOTOS = 3;
 
@@ -56,11 +59,11 @@ export async function qcAnalysis(env, photos, { ref = null, what = null } = {}) 
 }
 
 // Carte de l'analyse. title : article analysé ; photos : montrées en petit (facultatif).
-export function analysisView(emojis, res, { title = null, photos = [], who = null } = {}) {
+export function analysisView(emojis, res, { title = null, photos = [], who = null, match = null } = {}) {
   const e = (n) => etxt(emojis, n);
   if (!res.result) {
     const why = res.reason === 'limite'
-      ? `L'analyse IA a atteint sa limite du jour (${AIQC_PER_DAY} analyses). Réessaie demain, ou demande l'avis des membres (votes GL / RL).`
+      ? 'L\'analyse IA a atteint sa limite du jour (quota d\'IA gratuit). Réessaie demain, ou demande l\'avis des membres (votes GL / RL).'
       : res.reason === 'photos' ? 'Je n\'ai pas trouvé de photos à analyser.' : 'L\'IA n\'a pas pu analyser ces photos. Réessaie dans un moment.';
     return [container([text(`### ${e('fb_bot')} Analyse IA des QC\n${why}`)], 0x64748b)];
   }
@@ -77,6 +80,7 @@ export function analysisView(emojis, res, { title = null, photos = [], who = nul
     r.conseil ? text(`💡 ${escape(r.conseil)}`) : null,
     text(`-# Avis automatique de l'IA sur ${Math.min(photos.length || PHOTOS, PHOTOS)} photo(s), pas une garantie : zoome sur les photos et compare avec les votes GL / RL des membres.` +
       (who ? `  ·  Demandé par <@${who}>` : '') + (res.cached ? '  ·  analyse déjà faite' : '')),
+    ...(match || []),
   ], v.color)];
 }
 
@@ -104,11 +108,35 @@ export async function aiqcMessage(env, ctx, c, m) {
     const item = await itemById(env, `${refItem.platform}:${refItem.itemId}`).catch(() => null);
     if (item) { ref = /^https:\/\//.test(item.image || '') ? item.image : null; title = item.title_en || item.title_zh; }
   }
-  const res = await qcAnalysis(env, shots.map(smallImageUrl), { ref, what: title });
+  // En même temps : l'article qui ressemble le plus (recherche par image FinderQC, sans quota d'IA), avec ses
+  // boutons d'achat et de QC. Sauf si le membre a donné le lien de l'item.
+  const [res, found] = await Promise.all([
+    qcAnalysis(env, shots.map(smallImageUrl), { ref, what: title }),
+    refItem ? Promise.resolve([]) : searchByImage(shots[0].url, shots[0].filename, 3).catch(() => []),
+  ]);
   c.done++;
   await discordApi(env, 'PATCH', `/channels/${c.channel_id}/messages/${pending.id}`, {
     flags: COMPONENTS_V2, allowed_mentions: { parse: [] },
-    components: analysisView(ctx.emojis, res, { title, who: m.author && m.author.id }),
+    components: analysisView(ctx.emojis, res, { title, who: m.author && m.author.id, match: found[0] ? matchBlocks(ctx, found[0], c.channel_id) : null }),
   });
-  return 6;
+  return 8;
+}
+
+// « L'article qui ressemble le plus » sous l'analyse : photo, prix, ventes, QC, et les boutons acheter / QC / comparer.
+function matchBlocks(ctx, x, channelId) {
+  const e = (n) => etxt(ctx.emojis, n);
+  const item = { id: `${x.platform}:${x.id}`, platform: x.platform, item_id: x.id, url: canonicalUrl(x.platform, x.id) };
+  const meta = [formatPrice(x.price, ctx.money), x.sold ? `${e('fb_fire')} ${x.sold}` : null, x.qc ? `${e('fb_qc')} ${x.qc} QC` : null].filter(Boolean);
+  const head = `${e('fb_search')} **L'article qui ressemble le plus**\n${escape(String(x.title || '').slice(0, 80))}\n${meta.join('  ·  ')}\n-# Vérifie que c'est bien le tien avant de comparer.`;
+  const agent = ctx.agents && ctx.agents[0];
+  return [
+    sep(),
+    /^https:\/\//.test(x.image || '') ? section(head, thumb(x.image)) : text(head),
+    row(
+      agent ? { ...link(`Acheter sur ${agent.name}`.slice(0, 80), trackedLink(ctx, item, agent.name, buildAgentLink(agent.template, item), channelId)),
+        emoji: emo(ctx.emojis, AGENT_EMOJI[agent.preset] || 'fb_cart') } : { ...link('Voir l\'annonce', item.url), emoji: emo(ctx.emojis, 'fb_link') },
+      { type: 2, style: 1, label: x.qc ? `QC · ${x.qc}` : 'Photos QC', emoji: emo(ctx.emojis, 'fb_qc'), custom_id: `pub:qc:${item.id}`.slice(0, 100) },
+      { type: 2, style: 2, label: 'Comparer', emoji: emo(ctx.emojis, 'fb_compare'), custom_id: `pub:cmp:${item.id}`.slice(0, 100) },
+    ),
+  ];
 }
