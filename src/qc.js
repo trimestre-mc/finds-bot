@@ -9,6 +9,7 @@ import { canonicalUrl } from './links.js';
 import { detectCategory, isDeadLink } from './categories.js';
 import { budget, rowsWritten } from './budget.js';
 import { itemDb, onDb, perDb, groupByDb, batchByDb } from './shard.js';
+import { emo, etxt } from './emojis.js';
 
 const UA = 'finds-bot/1.0 (+https://github.com/trimestre-mc/finds-bot)';
 const API = 'https://server.finderqc.com/api/spu/webSpuInfo';
@@ -162,11 +163,11 @@ export async function communityQc(env, itemId) {
 }
 
 // Bouton QC d'une carte : toujours présent, il ouvre les QC dans Discord (fenêtre visible par la personne qui clique).
-export function qcButtons(item, community, lang = 'fr') {
+export function qcButtons(item, community, lang = 'fr', emojis = null) {
   const en = lang === 'en';
   const n = (item.qc_count || 0) + (community ? community.images : 0);
   const label = n ? `QC · ${fmt(n)}` : (en ? 'QC photos' : 'Photos QC');
-  return [{ type: 2, style: 1, label, emoji: { name: '📸' }, custom_id: `pub:qc:${item.id}`.slice(0, 100) }];
+  return [{ type: 2, style: 1, label, emoji: emo(emojis, 'fb_qc'), custom_id: `pub:qc:${item.id}`.slice(0, 100) }];
 }
 
 // Photos QC de la communauté (les plus récentes), avec des liens Discord tout frais.
@@ -255,7 +256,7 @@ export async function qcWindow(env, item, view = 0, opts = {}) {
   }
   const title = escape((item.title_en || item.title_zh || `${item.platform} ${item.item_id}`).slice(0, 80));
   const known = qc.count || (qc.failed ? item.qc_count : 0);
-  const head = `## 📸 ${title}\n-# ${known ? (en ? `${fmt(known)} QC photos` : `${fmt(known)} photos QC`) : (en ? 'No agent QC yet' : 'Pas encore de QC d\'agents')}` +
+  const head = `## ${etxt(opts.emojis, 'fb_qc')} ${title}\n-# ${known ? (en ? `${fmt(known)} QC photos` : `${fmt(known)} photos QC`) : (en ? 'No agent QC yet' : 'Pas encore de QC d\'agents')}` +
     (batches.length ? `  ·  ${en ? 'batches' : 'lots'} ${first + 1}–${first + batches.length}${hasNext ? '' : ` / ${totalBatchesSeen}`}` : '');
   if (!blocks.length && qc.running) {
     blocks.push(text(en ? '⏳ QC photos for this item are being fetched right now. Come back in a few minutes.'
@@ -303,7 +304,17 @@ export async function qcWindow(env, item, view = 0, opts = {}) {
     { type: 2, style: 2, emoji: { name: '◀️' }, custom_id: `pub:qcp:${item.id}:${view - 1}`, disabled: view === 0 },
     { type: 2, style: 2, label: en ? 'More QC' : 'Plus de QC', emoji: { name: '▶️' }, custom_id: `pub:qcp:${item.id}:${view + 1}`, disabled: !hasNext },
   ) : null;
-  return [container([text(head), sep(), ...blocks, nav, retry, ask], opts.accent || 0x5865f2)];
+  // Avis des membres sur les QC de cet item (GL = bon, RL = à refaire), seulement s'il y a des photos.
+  const votes = view === 0 && (batches.length || (opts.community && opts.community.length)) ? voteRow(item, en, opts.emojis) : null;
+  return [container([text(head), sep(), ...blocks, votes, nav, retry, ask], opts.accent || 0x5865f2)];
+}
+
+// Boutons de vote GL/RL (avec le nombre de votes) ; un clic met juste à jour les chiffres.
+export function voteRow(item, en = false, emojis = null) {
+  return row(
+    { type: 2, style: 3, emoji: emo(emojis, 'fb_gl'), label: `GL · ${fmt(item.gl_votes || 0)}`, custom_id: `pub:vote:${item.id}:gl`.slice(0, 100) },
+    { type: 2, style: 4, emoji: emo(emojis, 'fb_rl'), label: `RL · ${fmt(item.rl_votes || 0)}`, custom_id: `pub:vote:${item.id}:rl`.slice(0, 100) },
+  );
 }
 
 // Sous un post de forum : photos QC (communauté + dernier lot des agents) et bouton « Plus de QC ».

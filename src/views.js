@@ -10,6 +10,7 @@ import { getConfig, getCoupon, CURRENCIES, ACCENTS, LANGS } from './config.js';
 import { loadSearch, bigCounts } from './ui.js';
 import { communityQc, qcSummary } from './qc.js';
 import { itemsWhereIds, countAll } from './shard.js';
+import { etxt, emo } from './emojis.js';
 
 const notice = (msg) => (msg ? text(`> ${msg}`) : null);
 const backHome = () => emojiBtn('🏠', 'Menu', 'home');
@@ -380,8 +381,8 @@ export async function findView(env, sid, page) {
   const blocks = items.flatMap((item) => {
     const qc = (item.qc_count || 0) + (communities[item.id] ? communities[item.id].images : 0);
     const line = `**${escape(cardTitle(item, 80))}**\n### ${formatPrice(item.price_cny, ctx.money)}\n-# ` +
-      [item.popularity ? `🔥 ${fmtInt(item.popularity)}` : null, qc ? `📸 ${fmtInt(qc)} QC` : null,
-        `🏪 ${escape((item.shop_name || PLATFORM_NAMES[item.platform]).slice(0, 30))}`].filter(Boolean).join('  ·  ');
+      [item.popularity ? `${etxt(ctx.emojis, 'fb_fire')} ${fmtInt(item.popularity)}` : null, qc ? `${etxt(ctx.emojis, 'fb_qc')} ${fmtInt(qc)} QC` : null,
+        `${etxt(ctx.emojis, 'fb_shop')} ${escape((item.shop_name || PLATFORM_NAMES[item.platform]).slice(0, 30))}`].filter(Boolean).join('  ·  ');
     const rows = agentButtons(ctx, item, null, communities[item.id]);
     return [item.image ? section(line, thumb(item.image)) : text(line), ...rows, sep()];
   });
@@ -391,7 +392,7 @@ export async function findView(env, sid, page) {
     for (let i = blocks.length - 1; i > 0; i--) if (blocks[i] && blocks[i].type === 1 && blocks[i - 1] && blocks[i - 1].type === 1) blocks.splice(i, 1);
   }
   return [container([
-    text(`## 🔎 ${escape(s.params.q || 'Résultats')}\n-# ${fmtInt(total)} résultats  ·  page ${page + 1}/${pages}`),
+    text(`## ${etxt(ctx.emojis, 'fb_search')} ${escape(s.params.q || 'Résultats')}\n-# ${fmtInt(total)} résultats  ·  page ${page + 1}/${pages}`),
     sep(),
     ...blocks,
     row(
@@ -422,16 +423,16 @@ export async function convertView(env, ref, known, ctx = null) {
 // Message de /coupon (public) : le texte choisi par le propriétaire et ses liens, sinon le bouton d'inscription.
 export async function couponView(env) {
   const [coupon, ctx] = await Promise.all([getCoupon(env), postContext(env)]);
-  const links = ((coupon && coupon.links) || []).map((l) => link(l.label, l.url, '🎁'));
+  const links = ((coupon && coupon.links) || []).map((l) => ({ ...link(l.label, l.url), emoji: emo(ctx.emojis, 'fb_coupon') }));
   const signup = signupButton(ctx, null, null);
   if (!links.length && signup) links.push(signup);
   if (!links.length) {
-    return [container([text('## 🎁 Coupons\nAucun coupon pour l\'instant, reviens bientôt !')], (ACCENTS[ctx.cfg.accent] || ACCENTS.orange).color)];
+    return [container([text(`## ${etxt(ctx.emojis, 'fb_gift')} Coupons\nAucun coupon pour l'instant, reviens bientôt !`)], (ACCENTS[ctx.cfg.accent] || ACCENTS.orange).color)];
   }
   const title = (coupon && coupon.title) || 'Coupons & réductions';
   const message = (coupon && coupon.message) || 'Inscris-toi avec ces liens pour avoir des coupons sur ta première commande. 🎁';
   return [container([
-    text(`## 🎁 ${escape(title)}\n${escape(message)}`),
+    text(`## ${etxt(ctx.emojis, 'fb_gift')} ${escape(title)}\n${escape(message)}`),
     sep(),
     row(...links.slice(0, 5)),
   ], (ACCENTS[ctx.cfg.accent] || ACCENTS.orange).color)];

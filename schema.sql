@@ -46,7 +46,9 @@ CREATE TABLE IF NOT EXISTS items (
   source TEXT,                               -- shop, jadeship, manuel
   last_posted INTEGER,
   first_seen INTEGER,
-  last_seen_run TEXT
+  last_seen_run TEXT,
+  gl_votes INTEGER NOT NULL DEFAULT 0,       -- votes des membres sur les QC (GL = bon, RL = à refaire)
+  rl_votes INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS items_shop ON items(shop_id);
 CREATE INDEX IF NOT EXISTS items_untranslated ON items(title_en) WHERE title_en IS NULL;
@@ -227,4 +229,13 @@ CREATE TABLE IF NOT EXISTS qc_requests (
   item_id TEXT PRIMARY KEY,
   user_id TEXT,
   at INTEGER NOT NULL
+);
+
+-- Votes GL/RL des membres sur les QC d'un item (un vote par membre, modifiable).
+CREATE TABLE IF NOT EXISTS qc_votes (
+  item_id TEXT NOT NULL,
+  user_id TEXT NOT NULL,
+  vote INTEGER NOT NULL,            -- 1 = GL, -1 = RL
+  at INTEGER NOT NULL,
+  PRIMARY KEY (item_id, user_id)
 );

@@ -23,9 +23,10 @@ import { withDb } from './turso.js';
 import SCHEMA from '../schema.sql';
 import { searchByImage } from './imagesearch.js';
 import { describeImage } from './vision.js';
+import { uploadEmojis, refreshEmojis } from './emojis.js';
 import { expandQuery } from './synonyms.js';
 import { watchChannels } from './watch.js';
-import { translatePending, rewriteTitles, titleWait } from './translate.js';
+import { translatePending, rewriteTitles, titleWait, quickTitles, applyGlossary } from './translate.js';
 import { fetchWeidianItem } from './weidian.js';
 import { extractWeidian, ingest, resolveQueue, scanSource, runDiscovery } from './discover.js';
 import {
@@ -654,7 +655,11 @@ async function handleApi(request, env, url) {
     const { titles, model } = await request.json();
     const t = Date.now();
     try {
-      return json({ titles: await rewriteTitles(env, (titles || []).slice(0, 30), model || undefined), ms: Date.now() - t });
+      const list = (titles || []).slice(0, 30);
+      if (model === 'quick') return json({ titles: await quickTitles(env, list), glossary: list.map(applyGlossary), ms: Date.now() - t });
+      const usage = [];
+      const out = await rewriteTitles(env, list, model && model !== 'short' ? model : undefined, { short: model === 'short', usage });
+      return json({ titles: out, usage: usage[0], ms: Date.now() - t });
     } catch (err) {
       return json({ error: String(err.message || err).slice(0, 300) });
     }
@@ -743,7 +748,21 @@ async function handleApi(request, env, url) {
     const wanted = /^CREATE (TABLE|INDEX) IF NOT EXISTS \w+ ON (items|link_queue|settings)\b|^CREATE TABLE IF NOT EXISTS (items|link_queue|settings) /;
     const stmts = SCHEMA.split(';').map((x) => x.replace(/--[^\n]*/g, '').trim()).filter((x) => wanted.test(x));
     await env.DB2.batch(stmts.map((sql) => env.DB2.prepare(sql)));
-    return json({ ok: true, statements: stmts.length });
+    // Colonnes ajoutées après la création des tables (déjà là : ignoré).
+    const added = [];
+    for (const col of ['gl_votes INTEGER NOT NULL DEFAULT 0', 'rl_votes INTEGER NOT NULL DEFAULT 0']) {
+      try { await env.DB2.prepare(`ALTER TABLE items ADD COLUMN ${col}`).run(); added.push(col.split(' ')[0]); } catch {}
+    }
+    return json({ ok: true, statements: stmts.length, added });
+  }
+
+  // Emojis du bot (emojis d'application Discord, voir emojis.js) : envoi par lots de 20, ou relecture de la liste.
+  if (path === '/api/emojis' && request.method === 'POST') {
+    const body = await request.json();
+    return json({ ok: true, ...await uploadEmojis(env, body.emojis || [], !!body.replace) });
+  }
+  if (path === '/api/emojis' && request.method === 'GET') {
+    return json({ ok: true, map: await refreshEmojis(env) });
   }
 
   // Diagnostic : état de chaque base du catalogue (taille approchée par le dernier rowid, compteurs du mois).

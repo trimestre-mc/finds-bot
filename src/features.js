@@ -18,6 +18,8 @@ import {
   categoryChannelsView, categoryChannels, categoryRhythm, CATEGORY_RHYTHMS, categoryRhythmModal, rhythmOf,
 } from './views.js';
 import { itemDb, itemById, batchByDb, deleteShopItems } from './shard.js';
+import { compareView } from './compare.js';
+import { loadEmojis } from './emojis.js';
 
 // ---------------------------------------------------------------- Indexeur GitHub
 
@@ -129,6 +131,37 @@ export async function handlePublicComponent(it, env, ctx) {
       .bind(key, 'qc_view', it.channel_id || null, Date.now()).run().catch(() => {}));
     return later(it, env, ctx, () => openQc(env, key, platform, itemId, 0), true);
   }
+  if (kind === 'cmp') {
+    // « Comparer » d'une carte : le même article chez d'autres vendeurs (fenêtre privée).
+    const key = parts.slice(2).join(':');
+    const [platform, itemId] = key.split(':');
+    if (!canonicalUrl(platform, itemId)) return null;
+    ctx.waitUntil(env.DB.prepare('INSERT INTO clicks (item_id, agent, channel_id, at) VALUES (?, ?, ?, ?)')
+      .bind(key, 'compare', it.channel_id || null, Date.now()).run().catch(() => {}));
+    return later(it, env, ctx, () => compareView(env, key), true);
+  }
+  if (kind === 'vote') {
+    // Vote GL/RL sur les QC : un vote par membre (modifiable), chiffres mis à jour dans la fenêtre.
+    const vote = parts[parts.length - 1] === 'gl' ? 1 : -1;
+    const key = parts.slice(2, -1).join(':');
+    const [platform, itemId] = key.split(':');
+    if (!canonicalUrl(platform, itemId)) return null;
+    await env.DB.prepare(
+      `INSERT INTO qc_votes (item_id, user_id, vote, at) VALUES (?, ?, ?, ?)
+       ON CONFLICT(item_id, user_id) DO UPDATE SET vote = excluded.vote, at = excluded.at`,
+    ).bind(key, userId(it), vote, Date.now()).run();
+    const c = await env.DB.prepare('SELECT COALESCE(SUM(vote = 1), 0) AS gl, COALESCE(SUM(vote = -1), 0) AS rl FROM qc_votes WHERE item_id = ?').bind(key).first();
+    ctx.waitUntil(itemDb(env, key).prepare('UPDATE items SET gl_votes = ?, rl_votes = ? WHERE id = ?').bind(c.gl, c.rl, key).run().catch(() => {}));
+    const components = JSON.parse(JSON.stringify((it.message && it.message.components) || []));
+    const walk = (list) => (list || []).forEach((x) => {
+      if (x.custom_id === `pub:vote:${key}:gl`.slice(0, 100)) x.label = `GL · ${c.gl}`;
+      if (x.custom_id === `pub:vote:${key}:rl`.slice(0, 100)) x.label = `RL · ${c.rl}`;
+      walk(x.components);
+      if (x.accessory) walk([x.accessory]);
+    });
+    walk(components);
+    return update(components);
+  }
   if (kind === 'qcreq') {
     // « Demander un QC » : message dans le salon QC (une demande par item et par 24 h).
     const key = parts.slice(2).join(':');
@@ -157,6 +190,7 @@ async function openQc(env, key, platform, itemId, view = 0) {
   const cfg = await getConfig(env);
   return qcWindow(env, item, view, {
     community, qcChannel: qcCh[0] && qcCh[0].channel_id, lang: cfg.lang, accent: (ACCENTS[cfg.accent] || ACCENTS.orange).color,
+    emojis: await loadEmojis(env),
   });
 }
 

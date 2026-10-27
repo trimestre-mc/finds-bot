@@ -15,6 +15,7 @@ import { popularItemStatements } from './items.js';
 import { budget } from './budget.js';
 import { ACCENTS } from './config.js';
 import { itemsWhereIds, groupByDb, onDb, batchByDb } from './shard.js';
+import { etxt } from './emojis.js';
 
 const MAX_CALLS = 46;
 const WORK_RESERVE = 14; // requêtes gardées pour répondre (une recherche d'image en coûte ~5)
@@ -123,7 +124,7 @@ async function imageMessage(env, ctx, c, m, found) {
   for (const a of images) {
     const pending = await discordApi(env, 'POST', `/channels/${c.channel_id}/messages`, {
       flags: COMPONENTS_V2, allowed_mentions: { parse: [] },
-      components: [container([text('### 🔎 Recherche en cours…\n-# Je cherche les items qui ressemblent à ta photo.')], accent)],
+      components: [container([text(`### ${etxt(ctx.emojis, 'fb_loading')} Recherche en cours…\n-# Je lis ta photo et je cherche les items qui ressemblent.`)], accent)],
       message_reference: { message_id: m.id, fail_if_not_exists: false },
     });
     calls++;

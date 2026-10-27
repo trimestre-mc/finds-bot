@@ -7,8 +7,10 @@ import { formatPrice, itemTitle, postContext, trackedLink, signupButton } from '
 import { buildAgentLink, canonicalUrl } from './links.js';
 import { ACCENTS } from './config.js';
 import { describeImage, smallImageUrl } from './vision.js';
+import { aiNeurons, AI_NEURONS_PER_DAY } from './translate.js';
 import { expandQuery, relevance } from './synonyms.js';
 import { finderSearch, liveQuery } from './livesearch.js';
+import { etxt, emo, AGENT_EMOJI, PLATFORM_EMOJI } from './emojis.js';
 
 const API = 'https://server.finderqc.com/api/searchImage';
 const UA = 'finds-bot/1.0 (+https://finds-bot.wheatenmoon5861.workers.dev)';
@@ -55,7 +57,10 @@ export function toResults(list) {
 // traduction des titres).
 const VISION_PER_DAY = 200;
 
+const VISION_NEURONS = 40; // estimation par photo (Llama 4 Scout, image réduite à 512 px)
+
 async function visionAllowed(env) {
+  if ((await aiNeurons(env)).used >= AI_NEURONS_PER_DAY) return false;
   const day = new Date().toISOString().slice(0, 10);
   const row = await env.DB.prepare(
     `INSERT INTO settings (key, value) VALUES ('ai_vision', json_object('day', ?1, 'used', 1))
@@ -72,7 +77,12 @@ async function visionAllowed(env) {
 export async function smartImageSearch(env, attachment) {
   const [shapes, seen] = await Promise.all([
     searchByImage(attachment.url, attachment.filename, 12),
-    visionAllowed(env).then((ok) => (ok ? describeImage(env, smallImageUrl(attachment)) : null))
+    visionAllowed(env).then(async (ok) => {
+      if (!ok) return null;
+      const seen = await describeImage(env, smallImageUrl(attachment));
+      await aiNeurons(env).then((b) => b.add(VISION_NEURONS)).catch(() => {});
+      return seen;
+    })
       .catch((err) => { console.log('vision', String(err).slice(0, 120)); return null; }),
   ]);
   if (!seen || !seen.brand) return { items: shapes.slice(0, RESULTS), seen };
@@ -102,20 +112,22 @@ export async function smartImageSearch(env, attachment) {
 
 // Réponse du bot : les items qui ressemblent, chacun avec achat (1er agent, lien suivi) et QC dans Discord.
 export function imageResultsView(ctx, found, channelId, seen = null) {
-  const what = seen && seen.brand ? `\n-# Repéré sur ta photo : **${escape(seen.brand)}**${seen.model ? ` ${escape(seen.model)}` : ''}${seen.item ? ` · ${escape(seen.item)}` : ''}` : '';
-  const blocks = [text(found.length ? `### 🔎 Items qui ressemblent à ta photo${what}` : '### 🔎 Aucun item ne ressemble à cette photo')];
+  const e = (n) => etxt(ctx.emojis, n);
+  const what = seen && seen.brand ? `\n${e('fb_verified')} Repéré sur ta photo : **${escape(seen.brand)}**${seen.model ? ` ${escape(seen.model)}` : ''}${seen.item ? ` · ${escape(seen.item)}` : ''}` : '';
+  const blocks = [text(found.length ? `### ${e('fb_search')} Items qui ressemblent à ta photo${what}` : `### ${e('fb_search')} Aucun item ne ressemble à cette photo`)];
   for (const x of found) {
     const item = { id: `${x.platform}:${x.id}`, platform: x.platform, item_id: x.id, url: canonicalUrl(x.platform, x.id), title_en: x.title };
     const meta = [formatPrice(x.price, ctx.money)];
-    if (x.qc) meta.push(`📸 ${fmt(x.qc)} QC`);
-    if (x.sold) meta.push(`🔥 ${fmt(x.sold)}`);
+    if (x.qc) meta.push(`${e('fb_qc')} ${fmt(x.qc)} QC`);
+    if (x.sold) meta.push(`${e('fb_fire')} ${fmt(x.sold)}`);
     const head = `**${escape(itemTitle(item).slice(0, 80))}**\n${meta.join('  ·  ')}`;
     const agent = ctx.agents[0];
     const buttons = [
       agent
-        ? link(`Acheter sur ${agent.name}`.slice(0, 80), trackedLink(ctx, item, agent.name, buildAgentLink(agent.template, item), channelId), '🛒')
-        : link('Voir l\'annonce', item.url, '🔗'),
-      { type: 2, style: 1, label: x.qc ? `QC · ${fmt(x.qc)}` : 'Photos QC', emoji: { name: '📸' }, custom_id: `pub:qc:${item.id}`.slice(0, 100) },
+        ? { ...link(`Acheter sur ${agent.name}`.slice(0, 80), trackedLink(ctx, item, agent.name, buildAgentLink(agent.template, item), channelId)),
+          emoji: emo(ctx.emojis, AGENT_EMOJI[agent.preset] || 'fb_cart') }
+        : { ...link('Voir l\'annonce', item.url), emoji: emo(ctx.emojis, PLATFORM_EMOJI[item.platform] || 'fb_link') },
+      { type: 2, style: 1, label: x.qc ? `QC · ${fmt(x.qc)}` : 'Photos QC', emoji: emo(ctx.emojis, 'fb_qc'), custom_id: `pub:qc:${item.id}`.slice(0, 100) },
     ];
     blocks.push(sep());
     blocks.push(/^https:\/\//.test(x.image || '') ? section(head, thumb(x.image)) : text(head));
