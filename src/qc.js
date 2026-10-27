@@ -358,6 +358,37 @@ const SYNC_LIMIT = 10000; // résultats max par filtre côté FinderQC
 const SYNC_MAX_CENTS = 2000000; // au-delà de 20 000 ¥ : une dernière tranche ouverte
 const SYNC_PAGES_PER_RUN = 8; // temps CPU limité, et FinderQC doit rester disponible pour les fenêtres QC
 
+// Un produit du catalogue FinderQC (liste ou recherche) → enregistrement de l'item (titre, prix, ventes, nombre de
+// QC) ; un item déjà connu n'est réécrit que si quelque chose a changé. Item Weidian sans boutique connue : sa
+// boutique sera retrouvée puis indexée en entier.
+export function finderItemStatements(env, x, now = Date.now()) {
+  const platform = PLATFORMS[x.mallType];
+  const id = String(x.itemId || '');
+  if (!platform || !/^\d{6,14}$/.test(id)) return [];
+  const key = `${platform}:${id}`;
+  const title = x.enTitle || x.originalTitle || null;
+  const qc = Math.max(0, Number(x.qcPhotosCount) || 0);
+  const image = /^https:\/\//.test(x.originalThubnaiURL || x.picUrl || '') ? (x.originalThubnaiURL || x.picUrl) : null;
+  const stmts = [env.DB.prepare(
+    `INSERT INTO items (id, platform, item_id, title_en, price_cny, image, url, popularity, source, first_seen, category, qc_count, qc_checked_at, hidden)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'finderqc', ?, ?, ?, ?, ?)
+     ON CONFLICT(id) DO UPDATE SET qc_count = excluded.qc_count, qc_checked_at = excluded.qc_checked_at,
+       popularity = MAX(items.popularity, excluded.popularity), image = COALESCE(items.image, excluded.image),
+       title_en = COALESCE(items.title_en, excluded.title_en), price_cny = COALESCE(items.price_cny, excluded.price_cny)
+     WHERE items.qc_count IS NOT excluded.qc_count OR items.popularity < excluded.popularity
+       OR items.image IS NULL OR items.title_en IS NULL`,
+  ).bind(key, platform, id, title ? String(title).slice(0, 200) : null, x.cnPrice != null ? Number(x.cnPrice) : null,
+    image, canonicalUrl(platform, id), Math.max(0, Number(x.oneYear) || 0), now, detectCategory(title), qc, now,
+    isDeadLink(title, x.cnPrice) ? 2 : 0)];
+  if (platform === 'weidian') {
+    stmts.push(env.DB.prepare(
+      `INSERT OR IGNORE INTO link_queue (item_id, source, added_at)
+       SELECT ?, 'finderqc', ? WHERE NOT EXISTS (SELECT 1 FROM items WHERE id = ? AND shop_id IS NOT NULL)`,
+    ).bind(id, now, key));
+  }
+  return stmts;
+}
+
 async function listPage(filter, page) {
   const qs = new URLSearchParams({ ...filter, page: String(page), pageSize: String(SYNC_PAGE_SIZE) });
   const res = await fetch(`https://server.finderqc.com/api/spu/webSpuList?${qs}`, { headers: { 'User-Agent': UA } });
@@ -423,31 +454,9 @@ export async function syncQcCatalog(env) {
       continue;
     }
     for (const x of page.list) {
-      const platform = PLATFORMS[x.mallType];
-      const id = String(x.itemId || '');
-      if (!platform || !/^\d{6,14}$/.test(id)) continue;
-      const key = `${platform}:${id}`;
-      const title = x.enTitle || x.originalTitle || null;
-      const qc = Math.max(0, Number(x.qcPhotosCount) || 0);
-      const image = /^https:\/\//.test(x.originalThubnaiURL || x.picUrl || '') ? (x.originalThubnaiURL || x.picUrl) : null;
-      stmts.push(env.DB.prepare(
-        `INSERT INTO items (id, platform, item_id, title_en, price_cny, image, url, popularity, source, first_seen, category, qc_count, qc_checked_at, hidden)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'finderqc', ?, ?, ?, ?, ?)
-         ON CONFLICT(id) DO UPDATE SET qc_count = excluded.qc_count, qc_checked_at = excluded.qc_checked_at,
-           popularity = MAX(items.popularity, excluded.popularity), image = COALESCE(items.image, excluded.image),
-           title_en = COALESCE(items.title_en, excluded.title_en), price_cny = COALESCE(items.price_cny, excluded.price_cny)
-         WHERE items.qc_count IS NOT excluded.qc_count OR items.popularity < excluded.popularity
-           OR items.image IS NULL OR items.title_en IS NULL`,
-      ).bind(key, platform, id, title ? String(title).slice(0, 200) : null, x.cnPrice != null ? Number(x.cnPrice) : null,
-        image, canonicalUrl(platform, id), Math.max(0, Number(x.oneYear) || 0), now, detectCategory(title), qc, now,
-        isDeadLink(title, x.cnPrice) ? 2 : 0));
-      // Boutique Weidian inconnue : retrouvée puis indexée en entier par l'indexeur.
-      if (platform === 'weidian') {
-        stmts.push(env.DB.prepare(
-          `INSERT OR IGNORE INTO link_queue (item_id, source, added_at)
-           SELECT ?, 'finderqc', ? WHERE NOT EXISTS (SELECT 1 FROM items WHERE id = ? AND shop_id IS NOT NULL)`,
-        ).bind(id, now, key));
-      }
+      const out = finderItemStatements(env, x, now);
+      if (!out.length) continue;
+      stmts.push(...out);
       written++;
       state.seen++;
     }

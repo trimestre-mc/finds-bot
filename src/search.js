@@ -1,6 +1,7 @@
 // Recherche dans les items indexés.
 
 import { relevance, relaxQuery } from './synonyms.js';
+import { addLiveResults } from './livesearch.js';
 import { translate } from './translate.js';
 import { detectCategory } from './categories.js';
 
@@ -128,6 +129,8 @@ export async function allResultIds(env, params, money) {
   if (params.groups && params.groups.length) {
     // Peu de résultats avec tous les mots : on complète sans le moins important (couleur, puis type, puis mot
     // inconnu). Les résultats exacts restent en tête.
+    // Tout le catalogue FinderQC en direct (pas pour une recherche limitée à une boutique).
+    if (!params.shop && params.live !== false) await addLiveResults(env, params, money);
     let groups = params.groups;
     const ids = [];
     for (let tries = 0; groups && tries < 3 && ids.length < FEW_RESULTS; tries++, groups = relaxQuery(groups)) {
@@ -202,7 +205,7 @@ export function inferCategory(variants) {
 const CACHE_MS = 6 * 3600000;
 function cacheKey(params) {
   const { _ids, public: _p, shopName, ...rest } = params;
-  return 'v2' + JSON.stringify(Object.keys(rest).sort().map((k) => [k, rest[k]]));
+  return 'v3' + JSON.stringify(Object.keys(rest).sort().map((k) => [k, rest[k]]));
 }
 
 export async function cachedIds(env, params, money) {
