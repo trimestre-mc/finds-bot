@@ -1,4 +1,4 @@
-// Alertes de prix : « 🔔 Suivre » sous un item. Toutes les 30 minutes, le bot revérifie le prix des items suivis
+// Alertes de prix : « 🔔 Suivre » sous un item. Toutes les 10 minutes, le bot revérifie le prix des items suivis
 // (FinderQC, une requête par item, quelques items par passage) ; si le prix baisse, chaque membre qui le suit
 // reçoit un message privé avec la carte de l'item. Un membre suit au plus MAX_PER_USER items.
 
@@ -11,7 +11,7 @@ import { etxt, emo } from './emojis.js';
 import { finderItem } from './livesearch.js';
 
 const MAX_PER_USER = 50;
-const ITEMS_PER_RUN = 8;
+const ITEMS_PER_RUN = 10;
 const DMS_PER_RUN = 8;
 const UA = 'finds-bot/1.0 (+https://github.com/trimestre-mc/finds-bot)';
 

@@ -103,8 +103,8 @@ async function handleScheduled(event, env, ctx) {
   if (event.cron === '*/5 * * * *') {
     ctx.waitUntil((async () => {
       if (!over) await runDiscovery(env).catch((e) => console.log('découverte', String(e)));
-      // Alertes de prix : toutes les 30 min (quelques lignes lues seulement, même au plafond du mois).
-      if (new Date().getUTCMinutes() % 30 === 0) await checkWatches(env).catch((e) => console.log('alertes prix', String(e)));
+      // Alertes de prix : toutes les 10 min (quelques lignes lues seulement, même au plafond du mois).
+      if (new Date().getUTCMinutes() % 10 === 0) await checkWatches(env).catch((e) => console.log('alertes prix', String(e)));
       // Rapport du jour au propriétaire, en message privé, vers 21 h (heure de Paris en hiver).
       if (new Date().getUTCHours() === 20) await sendDailyReport(env).catch((e) => console.log('rapport', String(e)));
       // Top de la semaine : le lundi vers 19 h (heure de Paris en hiver), s'il est activé dans les réglages.
