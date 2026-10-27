@@ -755,7 +755,9 @@ async function handleApi(request, env, url) {
   if (path === '/api/channel-check' && request.method === 'GET') {
     try {
       const msgs = await discordApi(env, 'GET', `/channels/${encodeURIComponent(url.searchParams.get('id') || '')}/messages?limit=5`);
-      return json({ ok: true, messages: msgs.map((m) => ({ id: m.id, bot: !!(m.author && m.author.bot), text: url.searchParams.get('text') ? (m.content || '').slice(0, 300) : (m.content || '').length, attachments: (m.attachments || []).length, embeds: (m.embeds || []).length })) });
+      return json({ ok: true, messages: msgs.map((m) => ({ id: m.id, bot: !!(m.author && m.author.bot), text: url.searchParams.get('text') ? (m.content || '').slice(0, 300) : (m.content || '').length,
+        attachments: url.searchParams.get('files') ? (m.attachments || []).map((a) => ({ url: a.url, proxy_url: a.proxy_url, filename: a.filename, type: a.content_type, size: a.size })) : (m.attachments || []).length,
+        embeds: (m.embeds || []).length })) });
     } catch (err) {
       return json({ ok: false, error: String(err.message || err).slice(0, 200) });
     }

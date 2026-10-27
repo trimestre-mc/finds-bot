@@ -3,26 +3,23 @@
 
 export const VISION_MODEL = '@cf/meta/llama-4-scout-17b-16e-instruct';
 
+const BRAND_CUES = 'Iconic designs: Chrome Hearts = gothic/fleur crosses, daggers, horseshoe, "Made in Hollywood"; Supreme = red box logo, ' +
+  'or "Supreme" in gothic Old English letters (often embossed or tonal); Stone Island = compass badge on the left arm; Nike = swoosh; ' +
+  'Jordan = jumpman, Air Jordan silhouettes; Bape = ape head, shark hoodie, camo; Fear of God Essentials = "ESSENTIALS" text; ' +
+  'Trapstar = "IT\'S A SECRET" or T logo; Gallery Dept = paint splatter, "GALLERY DEPT."; Denim Tears = cotton wreath; Corteiz = Alcatraz ' +
+  'logo; Sp5der = spider web; Hellstar = flames and star; Moncler = round badge with rooster; Canada Goose = round arctic patch; ' +
+  'Louis Vuitton = LV monogram; Gucci = GG, green-red stripe; Dior = oblique pattern; Balenciaga = distressed logo; Ralph Lauren = ' +
+  'polo pony; Lacoste = crocodile; Arc\'teryx = bird fossil logo; The North Face = half dome logo; Off-White = diagonal stripes, arrows.';
+
 const PROMPT = 'You identify fashion items in photos for a resale search engine. Look at logos, tags, prints and design. ' +
   'Reply with ONLY a JSON object, no other text: {"brand": "brand name or null", "model": "model or line name if recognizable ' +
   '(e.g. Tech Fleece, Air Jordan 4, Box Logo) or null", "item": "short English item type (e.g. hoodie, sneakers, bag)", ' +
-  '"color": "main color in English"}. Use null when unsure; never guess a brand without a visible logo or iconic design. ' +
-  'Iconic designs: Chrome Hearts = gothic/fleur crosses, daggers, horseshoe, "Made in Hollywood"; Supreme = red box logo; ' +
-  'Stone Island = compass badge on the left arm; Nike = swoosh; Jordan = jumpman, Air Jordan silhouettes; Bape = ape head, ' +
-  'shark hoodie, camo; Fear of God Essentials = "ESSENTIALS" text; Trapstar = "IT\'S A SECRET" or T logo; Gallery Dept = paint ' +
-  'splatter, "GALLERY DEPT."; Denim Tears = cotton wreath; Corteiz = Alcatraz logo; Sp5der = spider web; Hellstar = flames and ' +
-  'star; Moncler = round badge with rooster; Canada Goose = round arctic patch; Louis Vuitton = LV monogram; Gucci = GG, ' +
-  'green-red stripe; Dior = oblique pattern; Balenciaga = distressed logo; Ralph Lauren = polo pony; Lacoste = crocodile; ' +
-  'Arc\'teryx = bird fossil logo; The North Face = half dome logo; Off-White = diagonal stripes, arrows.';
+  '"color": "main color in English"}. Use null when unsure; never guess a brand without a visible logo or iconic design. ' + BRAND_CUES;
 
-// Petite version de l'image (le proxy de Discord sait la réduire) : moins de données et moins de quota d'IA.
+// Image d'une pièce jointe Discord. L'adresse d'origine (cdn.discordapp.com) : le proxy de redimensionnement
+// (media.discordapp.net) refuse les requêtes venant de Cloudflare (403).
 export function smallImageUrl(attachment) {
-  const base = attachment.proxy_url || attachment.url;
-  if (!/^https:\/\/(media|cdn)\.discordapp\.(net|com)\//.test(base)) return base;
-  const u = new URL(base.replace('cdn.discordapp.com', 'media.discordapp.net'));
-  u.searchParams.set('width', '512');
-  u.searchParams.set('height', '512');
-  return u.toString();
+  return attachment.url || attachment.proxy_url;
 }
 
 async function asDataUrl(url) {
@@ -77,6 +74,7 @@ export async function describeImage(env, imageUrl, model = VISION_MODEL) {
 const QC_PROMPT = (ctx) => `Tu es un expert en contrôle qualité (QC) de vêtements, chaussures et accessoires achetés via un agent en Chine.
 ${ctx.ref ? 'La PREMIÈRE image est la photo du vendeur (le produit attendu). Les suivantes sont les photos QC (ce que l\'agent a reçu).' : 'Les images sont des photos QC (ce que l\'agent a reçu).'}
 ${ctx.what ? `Article : ${ctx.what}.` : ''}
+Pour reconnaître la marque, lis les logos avec soin (écriture gothique, logo en relief ou ton sur ton). Repères : ${BRAND_CUES}
 Vérifie ce qui est visible : défauts (taches, trous, fils qui dépassent, colle), coutures, symétrie, logo/imprimé (placement, netteté, alignement), couleur${ctx.ref ? ' par rapport à la photo du vendeur' : ''}, étiquettes, finitions, forme.
 Si une étiquette de taille est lisible, donne la taille (ex : « Étiquette : taille M »). Si une règle graduée est visible, estime une mesure utile (ex : « Longueur ≈ 50 cm »).
 Ne juge PAS si c'est authentique. Ne invente rien : si un détail n'est pas visible, dis-le. Sois concret (« photo 2 : fil qui dépasse sur la manche gauche »).
