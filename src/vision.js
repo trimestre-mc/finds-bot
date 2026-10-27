@@ -58,6 +58,15 @@ const GROQ_URL = 'https://api.groq.com/openai/v1/chat/completions';
 const GROQ_VISION = 'qwen/qwen3.8-27b';
 const GROQ_TEXT = 'openai/gpt-oss-120b';
 
+// Paramètres d'un modèle Groq. Qwen (photos) : sans « réflexion » (elle consomme la limite de 1 000 jetons de réponse
+// par minute de l'offre gratuite) ; GPT-OSS (fusion) : réflexion courte, non renvoyée.
+function groqBody(model, messages, maxTokens) {
+  const body = { model, messages, max_tokens: maxTokens, temperature: 0.1 };
+  if (/^qwen\//.test(model)) body.reasoning_effort = 'none';
+  else if (/gpt-oss/.test(model)) { body.reasoning_effort = 'low'; body.include_reasoning = false; body.max_tokens = maxTokens + 400; }
+  return body;
+}
+
 // messages au format OpenAI ; kind : 'vision' ou 'text'. Renvoie { text, neurons, provider }.
 export async function chat(env, { messages, kind = 'vision', cfModel, maxTokens = 600, cfExtra = {} }) {
   if (env.GROQ_API_KEY) {
@@ -65,17 +74,12 @@ export async function chat(env, { messages, kind = 'vision', cfModel, maxTokens 
       const send = () => fetch(GROQ_URL, {
         method: 'POST',
         headers: { Authorization: `Bearer ${env.GROQ_API_KEY}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          model: kind === 'vision' ? (env.GROQ_VISION_MODEL || GROQ_VISION) : (env.GROQ_TEXT_MODEL || GROQ_TEXT),
-          messages, max_tokens: maxTokens + 1500, temperature: 0.1,
-          // Modèles qui « réfléchissent » (Qwen 3, GPT-OSS) : réflexion courte et cachée, réponse seule.
-          reasoning_effort: 'low', reasoning_format: 'hidden',
-        }),
+        body: JSON.stringify(groqBody(kind === 'vision' ? (env.GROQ_VISION_MODEL || GROQ_VISION) : (env.GROQ_TEXT_MODEL || GROQ_TEXT), messages, maxTokens)),
       });
       let res = await send();
-      // Limite par minute de l'offre gratuite : on attend ce que Groq demande (10 s au plus), puis un 2e essai.
-      for (let i = 0; i < 2 && res.status === 429; i++) {
-        const wait = Math.min(10, Number(res.headers.get('retry-after')) || 3);
+      // Limite par minute de l'offre gratuite (jetons de réponse) : on attend ce que Groq demande (20 s au plus).
+      for (let i = 0; i < 3 && res.status === 429; i++) {
+        const wait = Math.min(20, Number(res.headers.get('retry-after')) || 5);
         await new Promise((r) => setTimeout(r, wait * 1000));
         res = await send();
       }
@@ -83,7 +87,7 @@ export async function chat(env, { messages, kind = 'vision', cfModel, maxTokens 
         const d = await res.json();
         return { text: String((d.choices && d.choices[0] && d.choices[0].message && d.choices[0].message.content) || ''), neurons: 0, provider: 'groq' };
       }
-      console.log('groq', res.status, (await res.text()).slice(0, 160));
+      console.log('groq', res.status, (await res.text()).slice(0, 500));
     } catch (err) {
       console.log('groq', String(err).slice(0, 160));
     }
@@ -130,7 +134,7 @@ Points d'expert selon le type d'article :
 Étiquettes : lis-les entièrement. Chaussures : pointures US / UK / EUR / cm, code produit (ex : FQ8138-001), dates ; vérifie que les pointures sont cohérentes entre elles (ex : US 11 = UK 10 = EUR 45 = 29 cm) et que les étiquettes gauche et droite concordent. Vêtements : taille (S, M, L…) et composition.
 Si une règle graduée est visible, estime une mesure utile (ex : « Longueur ≈ 70 cm ») et dis si elle paraît cohérente avec la taille de l'étiquette.
 ${ctx.ref ? 'Si la photo du vendeur montre plusieurs coloris (collage), ne compare pas la couleur avec elle.' : ''}
-Indique le numéro de la photo QC (photo ${ctx.n || 1}). Ne te contredis pas. Évite les phrases vagues (« belle finition ») : dis ce que tu vois.
+Indique le numéro de la photo QC (photo ${ctx.n || 1}). Ne te contredis pas. Évite les phrases vagues (« belle finition ») : dis ce que tu vois. Sois bref : des faits, pas de longues phrases.
 Ne juge PAS si c'est authentique. Ne invente rien : si un détail n'est pas visible, dis-le. Sois concret (« photo 2 : fil qui dépasse sur la manche gauche »).
 Réponds UNIQUEMENT avec un objet JSON : {"photos": ["ce que tu vois précisément sur la photo QC"], "article": "marque et type d'article si reconnaissables, sinon null", "verdict": "ok" ou "a_verifier" ou "probleme", "points": [{"etat": "ok" ou "attention" ou "probleme", "texte": "phrase courte en français"}], "conseil": "une phrase en français"}. 2 à 5 points.`;
 
@@ -150,7 +154,7 @@ async function runVision(env, model, prompt, urls) {
   const images = await Promise.all(urls.map((u) => asDataUrl(u)));
   const res = await chat(env, {
     messages: [{ role: 'user', content: [{ type: 'text', text: prompt }, ...images.map((url) => ({ type: 'image_url', image_url: { url } }))] }],
-    cfModel: model, maxTokens: 600,
+    cfModel: model, maxTokens: 450,
   });
   return { raw: parseFirstObject(res.text), neurons: res.neurons, out: res.text, provider: res.provider };
 }
@@ -188,11 +192,12 @@ export async function analyzeQc(env, photos, { ref = null, what = null, model = 
         { role: 'system', content: 'Tu es un expert QC de reps (vêtements, chaussures, sacs, bijoux achetés via un agent en Chine). On te donne les observations faites photo par photo (en JSON). '
           + 'Fusionne-les en une analyse finale en français, comme un expert : garde les faits précis (tailles lues, codes, mesures, défauts avec le numéro de photo), '
           + 'supprime les doublons et les contradictions (un fait lu sur une photo l\'emporte sur « pas visible » sur une autre), pas de phrases vagues. '
+          + 'Toutes les photos montrent le même article (gros plans + vue d\'ensemble) : ne le compte jamais comme deux articles, même si la couleur paraît varier avec la lumière. '
           + 'Ne confonds pas la pointure (ex : US 11) avec le modèle (ex : Air Jordan 4) ; le modèle vient du design, pas de l\'étiquette de taille. '
           + 'Note la qualité visible de 0 à 10 (10 = parfait, 7 = petits défauts sans gravité, 4 ou moins = défaut à faire corriger ou retour). '
           + 'Liste les photos importantes qui manquent pour ce type d\'article (ex : étiquette intérieure, profil, semelle, dos, logo de près, couture de près), seulement si elles manquent vraiment. '
-          + 'Réponds UNIQUEMENT en JSON : {"article": "marque + type précis (ex : Nike short, Air Jordan 4) ou null", "verdict": "ok" ou "a_verifier" ou "probleme", '
-          + '"note": nombre de 0 à 10, "points": [{"etat": "ok" ou "attention" ou "probleme", "texte": "phrase courte"}], "manque": ["photo à demander"], "conseil": "une phrase"}. 3 à 6 points. /no_think' },
+          + 'Réponds UNIQUEMENT en JSON : {"article": "marque + type, 5 mots max (ex : Supreme hoodie gris, Air Jordan 4) ou null", "verdict": "ok" ou "a_verifier" ou "probleme", '
+          + '"note": nombre de 0 à 10, "points": [{"etat": "ok" ou "attention" ou "probleme", "texte": "phrase courte"}], "manque": ["photo à demander, 6 mots max"], "conseil": "une phrase"}. 3 à 6 points. /no_think' },
         { role: 'user', content: JSON.stringify(observations) },
       ],
     });
