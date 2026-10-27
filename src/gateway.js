@@ -26,6 +26,7 @@ export class Gateway extends DurableObject {
     this.channels = new Map();
     this.channelsAt = 0;
     this.handled = 0;
+    this.seen = 0;
   }
 
   // Appelé chaque minute par le cron (et à la main) : vérifie la connexion, la relance si besoin.
@@ -39,7 +40,7 @@ export class Gateway extends DurableObject {
   }
 
   status() {
-    return { connected: this.alive(), session: !!this.session, lastEvent: this.lastEvent, handled: this.handled, channels: this.channels.size };
+    return { connected: this.alive(), session: !!this.session, lastEvent: this.lastEvent, seen: this.seen, handled: this.handled, channels: this.channels.size };
   }
 
   alive() {
@@ -141,6 +142,7 @@ export class Gateway extends DurableObject {
       await this.ctx.storage.put({ session: this.session, resumeUrl: this.resumeUrl, seq: this.seq });
       return;
     }
+    if (type === 'MESSAGE_CREATE') this.seen++;
     if (type !== 'MESSAGE_CREATE' || !d || (d.author && d.author.bot)) return;
     if (this.seq != null && this.seq % 20 === 0) this.ctx.storage.put('seq', this.seq).catch(() => {});
     const kind = await this.channelKind(d.channel_id);
