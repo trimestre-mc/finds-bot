@@ -141,9 +141,11 @@ export async function allResultIds(env, params, money) {
 async function rankedIds(env, params, money) {
   const w = where(params, money);
   // Recherche par mots : les plus pertinents d'abord (mots trouvés dans le titre anglais, bon type d'article),
-  // puis le tri choisi. Lecture de toute la table une fois, puis cache partagé de 6 h.
+  // puis le tri choisi. On parcourt l'index de popularité et on s'arrête à 5000 trouvés (quota de lectures Turso),
+  // puis cache partagé de 6 h.
   const { results } = await env.DB.prepare(
-    `SELECT id, title_en, title_zh, shop_name, category, popularity, first_seen, price_cny FROM items ${w.sql} ORDER BY popularity DESC LIMIT 5000`,
+    `SELECT id, title_en, title_zh, shop_name, category, popularity, first_seen, price_cny FROM items INDEXED BY items_popularity ${w.sql}
+     ORDER BY popularity DESC, first_seen DESC LIMIT 5000`,
   ).bind(...w.binds).all();
   const scored = results.map((r) => ({ ...r, score: relevance(params.groups, r) })).filter((r) => r.score > 0);
   const sorted = sortRows(scored, params);

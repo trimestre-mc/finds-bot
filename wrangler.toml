@@ -23,10 +23,10 @@ PUBLIC_URL = "https://finds-bot.wheatenmoon5861.workers.dev"  # boutons suivis (
 GITHUB_REPO = "trimestre-mc/finds-bot"  # avec le secret GITHUB_TOKEN : indexation immédiate à l'ajout d'un catalogue
 # Base Turso (secrets TURSO_URL, TURSO_TOKEN) : budgets d'écriture quotidiens adaptés à son quota gratuit
 # (10 M lignes écrites / mois ≈ 330 000 / jour). Sans Turso, le bot utilise D1 et ses budgets par défaut.
-BUDGET_ITEMS = "90000"
-BUDGET_PAGES = "40000"
-BUDGET_CATEGORIZE = "30000"
-BUDGET_QCSYNC = "150000"
-BUDGET_MONTH_ROWS = "8500000"  # Turso gratuit : 10 M lignes écrites / mois, marge pour posts et clics
+BUDGET_ITEMS = "200000"
+BUDGET_PAGES = "200000"
+BUDGET_CATEGORIZE = "200000"
+BUDGET_QCSYNC = "200000"
+BUDGET_MONTH_ROWS = "9000000"  # Turso gratuit : 10 M lignes écrites / mois, marge pour posts, clics et traductions
 
 # Secrets (wrangler secret put ...) : DISCORD_BOT_TOKEN, INDEXER_SECRET, GITHUB_TOKEN (optionnel)

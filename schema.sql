@@ -12,7 +12,8 @@ CREATE TABLE IF NOT EXISTS shops (
   source TEXT,                      -- manuel, bulk, discord:<salon>, jadeship
   tier TEXT,                        -- trusted, high, mid (annuaire Jadeship)
   added_by TEXT,
-  added_at INTEGER
+  added_at INTEGER,
+  score INTEGER NOT NULL DEFAULT 0  -- priorité d'indexation : ventes de l'item qui a fait découvrir la boutique
 );
 
 -- Items indexés (ou ajoutés à la main pour Taobao / 1688)

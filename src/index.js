@@ -514,7 +514,7 @@ async function dueShops(env, limit, shard = { n: 1, i: 0 }) {
         OR (status IN ('ok', 'error') AND (last_indexed IS NULL OR last_indexed < ?))
         OR (status = 'indexing' AND (last_indexed IS NULL OR last_indexed < ?)))
        AND CAST(id AS INTEGER) % ? = ?
-     ORDER BY CASE status WHEN 'pending' THEN 0 ELSE 1 END, last_indexed LIMIT ?`,
+     ORDER BY CASE status WHEN 'pending' THEN 0 ELSE 1 END, score DESC, last_indexed LIMIT ?`,
   ).bind(now - REINDEX_HOURS * 3600 * 1000, now - 3 * 3600 * 1000, shard.n, shard.i, limit).all();
   return results;
 }
@@ -640,16 +640,17 @@ async function handleApi(request, env, url) {
   }
 
   if (path === '/api/indexer/jobs' && request.method === 'GET') {
+    // Juste « y a-t-il du travail ? » : LIMIT 1, jamais de COUNT sur toute la table (quota de lectures Turso :
+    // un COUNT par job et par lancement lisait ~470 000 lignes à chaque fois).
     const sh = shardOf(url);
-    const missing = await env.DB.prepare(
-      "SELECT COUNT(*) AS n FROM items WHERE platform = 'weidian' AND images IS NULL AND CAST(item_id AS INTEGER) % ? = ?",
-    ).bind(sh.n, sh.i).first();
-    const links = await env.DB.prepare('SELECT COUNT(*) AS n FROM link_queue WHERE CAST(item_id AS INTEGER) % ? = ?').bind(sh.n, sh.i).first();
+    const [items, pages] = await Promise.all([budget(env, 'items'), budget(env, 'pages')]);
+    const any = async (sql) => ((await env.DB.prepare(sql).bind(sh.n, sh.i).first()) ? 1 : 0);
     return json({
       // Budget du jour épuisé : rien à faire jusqu'à demain pour ce type de travail.
-      shops: (await budget(env, 'items')).left ? await dueShops(env, 10, sh) : [],
-      missingImages: (await budget(env, 'pages')).left ? missing.n : 0,
-      linkQueue: (await budget(env, 'pages')).left ? links.n : 0,
+      shops: items.left ? await dueShops(env, 10, sh) : [],
+      missingImages: pages.left
+        ? await any("SELECT 1 FROM items INDEXED BY items_noimg WHERE images IS NULL AND platform = 'weidian' AND CAST(item_id AS INTEGER) % ? = ? LIMIT 1") : 0,
+      linkQueue: pages.left ? await any('SELECT 1 FROM link_queue WHERE CAST(item_id AS INTEGER) % ? = ? LIMIT 1') : 0,
       jadeship: sh.i === 0 && await jadeshipDue(env),
     });
   }
@@ -711,7 +712,8 @@ async function handleApi(request, env, url) {
   // Items Weidian dont il faut trouver la boutique : l'indexeur lit leur page (boutique + photos).
   if (path === '/api/indexer/link-queue' && request.method === 'GET') {
     const sh = shardOf(url);
-    const { results } = await env.DB.prepare('SELECT item_id FROM link_queue WHERE CAST(item_id AS INTEGER) % ? = ? ORDER BY added_at LIMIT ?')
+    // Ordre d'arrivée (rowid), sans tri : SQLite s'arrête dès qu'il en a assez au lieu de lire toute la file.
+    const { results } = await env.DB.prepare('SELECT item_id FROM link_queue WHERE CAST(item_id AS INTEGER) % ? = ? LIMIT ?')
       .bind(sh.n, sh.i, Math.min(Number(url.searchParams.get('limit')) || 500, 2000)).all();
     return json({ items: results.map((r) => r.item_id) });
   }
@@ -736,6 +738,11 @@ async function handleApi(request, env, url) {
            SELECT ?, 'weidian', ?, ?, 'pending', COALESCE((SELECT source FROM link_queue WHERE item_id = ?), 'jadeship'), NULL, ?
            WHERE NOT EXISTS (SELECT 1 FROM blacklist WHERE shop_id = ?)`,
         ).bind(shopId, r.shopName || null, `https://weidian.com/?userid=${shopId}`, id, Date.now(), shopId));
+        // Priorité de la boutique : ventes de l'item qui l'a fait découvrir (les boutiques qui vendent le plus d'abord).
+        stmts.push(env.DB.prepare(
+          `UPDATE shops SET score = (SELECT COALESCE(popularity, 0) + 50 * (COALESCE(qc_count, 0) > 0) FROM items WHERE id = ?)
+           WHERE id = ? AND score < (SELECT COALESCE(popularity, 0) + 50 * (COALESCE(qc_count, 0) > 0) FROM items WHERE id = ?)`,
+        ).bind(`weidian:${id}`, shopId, `weidian:${id}`));
         stmts.push(env.DB.prepare(
           `UPDATE items SET shop_id = ?, shop_name = COALESCE(shop_name, ?), images = COALESCE(images, ?), title_en = COALESCE(title_en, ?),
              category = CASE WHEN category = 'other' AND title_en IS NULL THEN NULL ELSE category END WHERE id = ?`,
@@ -767,10 +774,13 @@ async function handleApi(request, env, url) {
 
   if (path === '/api/indexer/missing-images' && request.method === 'GET') {
     const sh = shardOf(url);
+    // Parcours de l'index de popularité jusqu'à avoir assez d'items : on lit ~limite × nombre de jobs lignes,
+    // pas toute la table (le tri de tous les items sans photos lisait ~470 000 lignes par appel).
+    if (!(await budget(env, 'pages')).left) return json({ items: [] });
     const { results } = await env.DB.prepare(
-      `SELECT item_id FROM items WHERE platform = 'weidian' AND images IS NULL AND CAST(item_id AS INTEGER) % ? = ?
+      `SELECT item_id FROM items INDEXED BY items_popularity WHERE images IS NULL AND platform = 'weidian' AND CAST(item_id AS INTEGER) % ? = ?
        ORDER BY popularity DESC, first_seen DESC LIMIT ?`,
-    ).bind(sh.n, sh.i, Math.min(Number(url.searchParams.get('limit')) || 500, 8000)).all();
+    ).bind(sh.n, sh.i, Math.min(Number(url.searchParams.get('limit')) || 500, 2000)).all();
     return json({ items: results.map((r) => r.item_id) });
   }
 
