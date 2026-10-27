@@ -14,7 +14,7 @@ import { CATEGORY_BY_KEY } from './categories.js';
 import { expandQuery } from './synonyms.js';
 import { homeView, loadSearch, createSearch, resultsView, filtersView, catalogsView } from './ui.js';
 import {
-  schedulesView, scheduleView, scheduleModal, statsView, historyView, settingsView, healthView, findView, convertView,
+  schedulesView, scheduleView, scheduleModal, statsView, historyView, settingsView, healthView, findView, convertView, couponView,
   categoryChannelsView, categoryChannels, categoryRhythm, CATEGORY_RHYTHMS, categoryRhythmModal, rhythmOf,
 } from './views.js';
 import { itemDb, itemById, batchByDb, deleteShopItems } from './shard.js';
@@ -71,6 +71,7 @@ export async function handleGo(url, env, ctx) {
 
 export async function handlePublicCommand(it, env, ctx) {
   const opts = Object.fromEntries((it.data.options || []).map((o) => [o.name, o.value]));
+  if (it.data.name === 'coupon') return panel(await couponView(env), false);
   if (it.data.name === 'find') {
     return later(it, env, ctx, async () => {
       const q = String(opts.recherche || '').slice(0, 100);
@@ -536,5 +537,5 @@ async function requestQc(env, it, key, platform, itemId) {
     components: [container([item.image ? section(lines, thumb(item.image)) : text(lines)], 0x5865f2)],
   });
   await env.DB.prepare('INSERT OR REPLACE INTO qc_requests (item_id, user_id, at) VALUES (?, ?, ?)').bind(key, userId(it), Date.now()).run().catch(() => {});
-  return [container([text(`✅ Demande envoyée dans <#${channel}>. Dès qu'un membre poste ses QC avec le lien, elles apparaîtront dans « Voir les QC ».`)])];
+  return [container([text(`✅ Demande envoyée dans <#${channel}>. Dès qu'un membre poste ses QC avec le lien, elles apparaîtront dans le bouton « 📸 QC ».`)])];
 }

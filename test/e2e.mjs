@@ -272,9 +272,9 @@ try {
   const cardText = posted ? allText(posted.body) : '';
   const pics = posted && findComp(posted.body, (c) => c.type === 12);
   checkPages('carte postée : galerie de photos', pics && pics.items.length >= 2 && pics.items.length <= 4, pics && `${pics.items.length} photos`);
-  check('carte postée : prix en € en avant', /### 💶 \d+,\d{2} €  ·  ¥\d/.test(cardText), cardText.split('\n').find((l) => l.includes('💶')));
+  check('carte postée : prix en € en avant', /## \d+,\d{2} €  ·  ¥\d/.test(cardText), cardText.split('\n').find((l) => l.includes('¥')));
   const buy = posted && findComp(posted.body, (c) => c.type === 2 && c.label === 'Acheter sur BBDBuy');
-  const view = posted && findComp(posted.body, (c) => c.type === 2 && c.label === 'Voir l\'annonce Weidian');
+  const view = posted && findComp(posted.body, (c) => c.type === 2 && c.label === 'Weidian');
   check('carte postée : bouton « Acheter sur BBDBuy » avec code, à côté de « Voir l\'annonce »',
     buy && view && /^https:\/\/finds-bot\.test\/go\/weidian%3A\d+\/BBDBuy\?c=333$/.test(buy.url) && !cardText.includes('Acheter sur'), buy && buy.url);
   const go = await fetch(WORKER + buy.url.replace('https://finds-bot.test', ''), { redirect: 'manual' });
@@ -399,7 +399,7 @@ try {
   await click(`s:sel:${sidQ}:0`, [qcOpt]);
   const qcCard = await waitCall((c) => c.method === 'POST' && /\/channels\/\d+\/messages$/.test(c.path) && calls.indexOf(c) >= mark);
   const qcBtn = qcCard && findComp(qcCard.body, (c) => c.type === 2 && c.custom_id === 'pub:qc:weidian:7779545401');
-  check('carte : bouton « 📸 Voir les QC (4 280) » à côté des boutons d\'achat', qcBtn && qcBtn.label === 'Voir les QC (4 280)' && validate('carte QC', qcCard.body),
+  check('carte : bouton « 📸 QC · 4 280 » à côté des boutons d\'achat', qcBtn && qcBtn.label === 'QC · 4 280' && validate('carte QC', qcCard.body),
     qcBtn && qcBtn.label);
   mark = calls.length;
   const qcClick = await interact({ type: 3, member: { user: { id: '42' }, permissions: '0' }, message: { id: 'm1' }, data: { custom_id: qcBtn.custom_id, component_type: 2 } });

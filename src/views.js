@@ -1,12 +1,12 @@
 // Écrans : drops automatiques, statistiques, historique, réglages, santé, et vues publiques (/find, /convert).
 
 import {
-  Style, container, section, text, sep, row, thumb, btn, emojiBtn, modal, escape, fmtInt, ago,
+  Style, container, section, text, sep, row, thumb, btn, emojiBtn, modal, escape, fmtInt, ago, link,
 } from './components.js';
-import { formatPrice, itemTitle, PLATFORM_NAMES, postContext, agentButtons } from './post.js';
+import { formatPrice, itemTitle, PLATFORM_NAMES, postContext, agentButtons, signupButton, cardTitle } from './post.js';
 import { searchIds, itemsByIds } from './search.js';
 import { CATEGORY_BY_KEY, CATEGORIES } from './categories.js';
-import { getConfig, CURRENCIES, ACCENTS, LANGS } from './config.js';
+import { getConfig, getCoupon, CURRENCIES, ACCENTS, LANGS } from './config.js';
 import { loadSearch, bigCounts } from './ui.js';
 import { communityQc, qcSummary } from './qc.js';
 import { itemsWhereIds, countAll } from './shard.js';
@@ -378,11 +378,18 @@ export async function findView(env, sid, page) {
     return [container([text(`## 🔎 ${escape(s.params.q || 'Recherche')}\nAucun item trouvé. Essaie en anglais (ex : *hoodie*, *jordan 4*, *bag*).`)])];
   }
   const blocks = items.flatMap((item) => {
-    const line = `**${escape(itemTitle(item).slice(0, 80))}**\n${formatPrice(item.price_cny, ctx.money)}  ·  🏪 ${escape((item.shop_name || PLATFORM_NAMES[item.platform]).slice(0, 30))}` +
-      (item.popularity ? `  ·  🔥 ${fmtInt(item.popularity)}` : '');
+    const qc = (item.qc_count || 0) + (communities[item.id] ? communities[item.id].images : 0);
+    const line = `**${escape(cardTitle(item, 80))}**\n### ${formatPrice(item.price_cny, ctx.money)}\n-# ` +
+      [item.popularity ? `🔥 ${fmtInt(item.popularity)}` : null, qc ? `📸 ${fmtInt(qc)} QC` : null,
+        `🏪 ${escape((item.shop_name || PLATFORM_NAMES[item.platform]).slice(0, 30))}`].filter(Boolean).join('  ·  ');
     const rows = agentButtons(ctx, item, null, communities[item.id]);
-    return [item.image ? section(line, thumb(item.image)) : text(line), rows[0], rows.length > 1 ? rows[rows.length - 1] : null, sep(false)];
+    return [item.image ? section(line, thumb(item.image)) : text(line), ...rows, sep()];
   });
+  // Discord : 40 composants au plus par message. Avec beaucoup d'agents, on garde la 1re ligne de boutons de chaque item.
+  const size = (c) => 1 + (c.components || []).reduce((n, x) => n + size(x), 0) + (c.accessory ? 1 : 0);
+  if (blocks.filter(Boolean).reduce((n, c) => n + size(c), 0) > 34) {
+    for (let i = blocks.length - 1; i > 0; i--) if (blocks[i] && blocks[i].type === 1 && blocks[i - 1] && blocks[i - 1].type === 1) blocks.splice(i, 1);
+  }
   return [container([
     text(`## 🔎 ${escape(s.params.q || 'Résultats')}\n-# ${fmtInt(total)} résultats  ·  page ${page + 1}/${pages}`),
     sep(),
@@ -399,7 +406,8 @@ export async function convertView(env, ref, known, ctx = null) {
   const item = known || { id: `${ref.platform}:${ref.itemId}`, item_id: ref.itemId, platform: ref.platform, url: ref.url };
   const platform = PLATFORM_NAMES[item.platform];
   const head = known
-    ? `**${escape(itemTitle(known).slice(0, 90))}**\n${formatPrice(known.price_cny, ctx.money)}  ·  🏪 ${escape(known.shop_name || platform)}`
+    ? `**${escape(cardTitle(known, 90))}**\n### ${formatPrice(known.price_cny, ctx.money)}\n-# 🏪 ${escape(known.shop_name || platform)}` +
+      (known.popularity ? `  ·  🔥 ${fmtInt(known.popularity)}` : '')
     : `**Lien ${platform} converti** · \`${ref.itemId}\``;
   const rows = agentButtons(ctx, item, null, await communityQc(env, item.id));
   return [container([
@@ -410,5 +418,23 @@ export async function convertView(env, ref, known, ctx = null) {
 }
 
 
+
+// Message de /coupon (public) : le texte choisi par le propriétaire et ses liens, sinon le bouton d'inscription.
+export async function couponView(env) {
+  const [coupon, ctx] = await Promise.all([getCoupon(env), postContext(env)]);
+  const links = ((coupon && coupon.links) || []).map((l) => link(l.label, l.url, '🎁'));
+  const signup = signupButton(ctx, null, null);
+  if (!links.length && signup) links.push(signup);
+  if (!links.length) {
+    return [container([text('## 🎁 Coupons\nAucun coupon pour l\'instant, reviens bientôt !')], (ACCENTS[ctx.cfg.accent] || ACCENTS.orange).color)];
+  }
+  const title = (coupon && coupon.title) || 'Coupons & réductions';
+  const message = (coupon && coupon.message) || 'Inscris-toi avec ces liens pour avoir des coupons sur ta première commande. 🎁';
+  return [container([
+    text(`## 🎁 ${escape(title)}\n${escape(message)}`),
+    sep(),
+    row(...links.slice(0, 5)),
+  ], (ACCENTS[ctx.cfg.accent] || ACCENTS.orange).color)];
+}
 
 export { qcSummary };

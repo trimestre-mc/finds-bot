@@ -57,7 +57,7 @@ export function imageResultsView(ctx, found, channelId) {
       agent
         ? link(`Acheter sur ${agent.name}`.slice(0, 80), trackedLink(ctx, item, agent.name, buildAgentLink(agent.template, item), channelId), '🛒')
         : link('Voir l\'annonce', item.url, '🔗'),
-      { type: 2, style: 1, label: x.qc ? `Voir les QC (${fmt(x.qc)})` : 'Photos QC', emoji: { name: '📸' }, custom_id: `pub:qc:${item.id}`.slice(0, 100) },
+      { type: 2, style: 1, label: x.qc ? `QC · ${fmt(x.qc)}` : 'Photos QC', emoji: { name: '📸' }, custom_id: `pub:qc:${item.id}`.slice(0, 100) },
     ];
     blocks.push(sep());
     blocks.push(/^https:\/\//.test(x.image || '') ? section(head, thumb(x.image)) : text(head));

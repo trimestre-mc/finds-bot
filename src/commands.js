@@ -1,4 +1,4 @@
-// Commandes : /menu (panneau admin), /find et /convert (ouvertes à tous les membres).
+// Commandes : /menu (panneau admin), /find, /qc, /convert et /coupon (ouvertes à tous les membres).
 // Enregistrées via POST /api/setup, qui remplace aussi les anciennes commandes.
 
 import { CATEGORIES } from './categories.js';
@@ -30,6 +30,11 @@ export const COMMANDS = [
     name: 'qc',
     description: 'Voir les photos QC d\'un item (Weidian, Taobao, 1688 ou lien d\'agent)',
     options: [{ type: STRING, name: 'lien', description: 'Le lien de l\'item', required: true, max_length: 500 }],
+  },
+  {
+    ...base,
+    name: 'coupon',
+    description: 'Les coupons et liens d\'inscription aux agents (réductions sur ta première commande)',
   },
   {
     ...base,

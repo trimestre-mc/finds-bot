@@ -69,6 +69,26 @@ export async function setSignup(env, value) {
   else await env.DB.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('signup', ?)").bind(JSON.stringify(value)).run();
 }
 
+// Message de /coupon : titre, texte et jusqu'à 5 liens (texte + adresse), choisis par le propriétaire.
+export async function getCoupon(env) {
+  const row = await env.DB.prepare("SELECT value FROM settings WHERE key = 'coupon'").first();
+  try { return row ? JSON.parse(row.value) : null; } catch { return null; }
+}
+
+export async function setCoupon(env, value) {
+  if (!value) await env.DB.prepare("DELETE FROM settings WHERE key = 'coupon'").run();
+  else await env.DB.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('coupon', ?)").bind(JSON.stringify(value)).run();
+}
+
+// Lignes « Texte | https://… » (une par lien) → [{ label, url }] ; les lignes invalides sont ignorées.
+export function parseCouponLinks(raw) {
+  return String(raw || '').split('\n').map((line) => {
+    const m = line.match(/^\s*(.*?)\s*[|:–-]?\s*(https:\/\/\S+)\s*$/);
+    if (!m) return null;
+    return { label: (m[1] || 'Ouvrir').slice(0, 80), url: m[2] };
+  }).filter(Boolean).slice(0, 5);
+}
+
 export async function setConfig(env, key, value) {
   if (!KEYS.includes(key)) throw new Error(`réglage inconnu : ${key}`);
   if (value == null) await env.DB.prepare('DELETE FROM settings WHERE key = ?').bind(`cfg_${key}`).run();

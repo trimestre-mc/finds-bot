@@ -165,7 +165,7 @@ export async function communityQc(env, itemId) {
 export function qcButtons(item, community, lang = 'fr') {
   const en = lang === 'en';
   const n = (item.qc_count || 0) + (community ? community.images : 0);
-  const label = n ? (en ? `View QC (${fmt(n)})` : `Voir les QC (${fmt(n)})`) : (en ? 'QC photos' : 'Photos QC');
+  const label = n ? `QC · ${fmt(n)}` : (en ? 'QC photos' : 'Photos QC');
   return [{ type: 2, style: 1, label, emoji: { name: '📸' }, custom_id: `pub:qc:${item.id}`.slice(0, 100) }];
 }
 

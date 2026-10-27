@@ -8,7 +8,7 @@ import { getRate, getAgents, formatPrice, itemTitle, POSTS_PER_MINUTE, PLATFORM_
 import { buildAgentLink, AGENT_PRESETS } from './links.js';
 import { searchIds, itemsByIds, idsToPost, PAGE_SIZE, MAX_BULK, SORTS } from './search.js';
 import { CATEGORIES, CATEGORY_BY_KEY } from './categories.js';
-import { formatMoney, getConfig, getSignup, SIGNUP_COLORS } from './config.js';
+import { formatMoney, getConfig, getSignup, getCoupon, SIGNUP_COLORS } from './config.js';
 import { communityQc, qcSummary } from './qc.js';
 import { countAll, allRows } from './shard.js';
 
@@ -372,7 +372,7 @@ export async function confirmDeleteShopView(env, shopId) {
 // ---------------------------------------------------------------- Agents
 
 export async function agentsView(env, msg, canEdit = true) {
-  const [agents, signup] = await Promise.all([getAgents(env), getSignup(env)]);
+  const [agents, signup, coupon] = await Promise.all([getAgents(env), getSignup(env), getCoupon(env)]);
   const cards = agents.map((a, i) => section(
     `**${i + 1}. ${escape(a.name)}**\n-# ` + (a.code
       ? `Code : \`${escape(a.code)}\`  ·  [tester le lien](${buildAgentLink(a.template, EXAMPLE_ITEM)})`
@@ -411,8 +411,29 @@ export async function agentsView(env, msg, canEdit = true) {
         label: c.label, value: key, emoji: { name: c.emoji }, default: key === signup.color,
       })),
     }) : null,
+    sep(),
+    text('### 🎁 Message /coupon\n-# Ce que voient les membres qui tapent `/coupon` : ton texte et jusqu\'à 5 liens (inscription, coupons…).' +
+      (coupon ? `\n**${escape(coupon.title || 'Coupons')}** · ${(coupon.links || []).length} lien(s)` : '\n-# Pas encore configuré (le bouton d\'inscription est utilisé à la place).')),
+    row(emojiBtn('🎁', coupon ? 'Modifier /coupon' : 'Configurer /coupon', 'ag:cp', Style.PRIMARY, { disabled: !canEdit })),
     row(backHome()),
   ])];
+}
+
+export function couponModal(current) {
+  const c = current || {};
+  return modal('m:coupon:', '🎁 Message /coupon', [
+    { id: 'title', label: 'Titre', max: 80, value: c.title || 'Coupons & réductions', placeholder: 'Coupons & réductions' },
+    {
+      id: 'message', label: 'Message', long: true, max: 1000, value: c.message,
+      placeholder: 'Inscris-toi avec mes liens : coupons offerts sur ta première commande !',
+    },
+    {
+      id: 'links', label: 'Liens (un par ligne : Texte | lien)', long: true, max: 1500, required: true,
+      value: (c.links || []).map((l) => `${l.label} | ${l.url}`).join('\n'),
+      description: 'Jusqu\'à 5 liens. Exemple : BBDBuy -15 % | https://…',
+      placeholder: 'BBDBuy : coupons | https://www.bbdbuy.com/…\nKakobuy : -10 % | https://www.kakobuy.com/…',
+    },
+  ]);
 }
 
 export function signupModal(current) {

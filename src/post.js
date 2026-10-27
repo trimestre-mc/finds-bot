@@ -5,7 +5,7 @@ import { buildAgentLink } from './links.js';
 import { COMPONENTS_V2, container, gallery, text, sep, row, link, escape, Style } from './components.js';
 import { fetchWeidianItem } from './weidian.js';
 import { getConfig, getMoney, getSignup, formatMoney, formatCny, refreshRates, ACCENTS, LANGS, SIGNUP_COLORS } from './config.js';
-import { forumTagFor } from './categories.js';
+import { forumTagFor, CATEGORY_BY_KEY } from './categories.js';
 import { qcButtons, refreshQc, communityQc, postForumQc } from './qc.js';
 import { itemDb, itemsWhereIds, batchByDb } from './shard.js';
 
@@ -86,44 +86,60 @@ export function trackedLink(ctx, item, agentName, direct, channelId) {
   return `${ctx.base}/go/${encodeURIComponent(item.id)}/${encodeURIComponent(agentName)}${c}`;
 }
 
-// Boutons d'une carte : agents + annonce d'origine, puis une ligne QC si des photos QC existent.
+// Boutons d'une carte, dans l'ordre d'importance : acheter (un bouton par agent), QC, annonce d'origine, puis
+// l'inscription si elle est configurée. Lignes de 5 boutons au plus.
 export function agentButtons(ctx, item, channelId, community = null) {
   const t = LANGS[ctx.cfg.lang];
   const platform = PLATFORM_NAMES[item.platform] || item.platform;
-  const buttons = ctx.agents.slice(0, 14).map((a) => link(t.buy(a.name).slice(0, 80),
+  const agents = ctx.agents.slice(0, 12);
+  // Un seul agent : « Acheter sur BBDBuy » ; plusieurs : juste leur nom, plus lisible côte à côte.
+  const buys = agents.map((a) => link((agents.length > 1 ? a.name : t.buy(a.name)).slice(0, 80),
     trackedLink(ctx, item, a.name, buildAgentLink(a.template, item), channelId), '🛒'));
-  buttons.push(link(t.view(platform).slice(0, 80), trackedLink(ctx, item, 'source', item.url, channelId), '🔗'));
+  const buttons = [
+    ...buys,
+    ...qcButtons(item, community, ctx.cfg.lang),
+    link(platform, trackedLink(ctx, item, 'source', item.url, channelId), '🔗'),
+    signupButton(ctx, item, channelId),
+  ].filter(Boolean);
   const rows = [];
   for (let i = 0; i < buttons.length; i += 5) rows.push(row(...buttons.slice(i, i + 5)));
-  // Le bouton QC rejoint la dernière ligne s'il reste de la place, sinon il a sa propre ligne.
-  const qc = qcButtons(item, community, ctx.cfg.lang);
-  const last = rows[rows.length - 1];
-  if (last.components.length + qc.length <= 5) last.components.unshift(...qc);
-  else rows.push(row(...qc));
-  const signup = signupButton(ctx, item, channelId);
-  if (signup) rows.push(row(signup));
   return rows;
 }
 
-// Carte d'un item posté dans un salon (Components V2).
+const nf = (n) => Number(n || 0).toLocaleString('fr-FR').replace(/\u202f|\u00a0/g, ' ');
+
+// Titre lisible : sans les mots de vendeur inutiles en tête, coupé proprement.
+export function cardTitle(item, max = 100) {
+  const raw = itemTitle(item).replace(/^(cross[- ]border|wholesale|hot[- ]selling|new|high[- ]quality)\b[\s,:-]*/gi, '').trim() || itemTitle(item);
+  return raw.length > max ? `${raw.slice(0, max - 1).replace(/[\s,;:-]+\S*$/, '')}…` : raw;
+}
+
+// Carte d'un item posté dans un salon (Components V2) : photos, titre, prix, puis les infos utiles en une ligne.
 export function buildItemMessage(item, ctx, images = [], channelId = null, community = null) {
   const t = LANGS[ctx.cfg.lang];
+  const en = ctx.cfg.lang === 'en';
   const platform = PLATFORM_NAMES[item.platform] || item.platform;
   const dropped = item.prev_price && item.price_cny && item.prev_price > item.price_cny;
   const price = item.price_cny != null
-    ? `### 💶 ${formatMoney(item.price_cny, ctx.money)}  ·  ${formatCny(item.price_cny)}` +
+    ? `## ${formatMoney(item.price_cny, ctx.money)}  ·  ${formatCny(item.price_cny)}` +
       (dropped ? `\n📉 ${t.drop(`~~${formatMoney(item.prev_price, ctx.money)}~~`)}` : '')
-    : `### 💶 ${t.noPrice}`;
+    : `## ${t.noPrice}`;
   const pics = images.length ? images : item.image ? [item.image] : [];
-  const meta = [`🏪 ${escape(item.shop_name || platform)}`, platform];
-  if (item.popularity) meta.push(`🔥 ${t.sold(item.popularity)}`);
+  const cat = CATEGORY_BY_KEY[item.category];
+  const qc = (item.qc_count || 0) + (community ? community.images : 0);
+  const meta = [
+    item.popularity ? `🔥 ${t.sold(nf(item.popularity))}` : null,
+    qc ? `📸 ${nf(qc)} QC` : null,
+    cat ? `${cat.emoji} ${en ? cat.en : cat.label}` : null,
+    `🏪 ${escape((item.shop_name || platform).slice(0, 40))}`,
+  ].filter(Boolean);
 
   return {
     flags: COMPONENTS_V2,
     allowed_mentions: { parse: [] },
     components: [container([
       pics.length ? gallery(pics) : null,
-      text(`## ${escape(itemTitle(item))}`),
+      text(`### ${escape(cardTitle(item))}`),
       text(`${price}\n-# ${meta.join('  ·  ')}`),
       sep(),
       ...agentButtons(ctx, item, channelId, community),

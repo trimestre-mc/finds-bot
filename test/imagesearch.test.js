@@ -71,7 +71,7 @@ test('recherche par image : chaque photo d\'un membre reçoit les items qui ress
   const s = JSON.stringify(body);
   assert.match(s, /Items qui ressemblent/);
   assert.match(s, /pub:qc:weidian:7561755071/);
-  assert.match(s, /Voir les QC \(293\)/);
+  assert.match(s, /QC · 293/);
   assert.match(s, /finds-bot\.test\/go\/taobao%3A868034409365\/BBDBuy/);
   assert.doesNotMatch(s, /finderqc\.com\/product/, 'aucun lien vers le site de QC');
   assert.ok(!s.includes('"x"'), 'résultat invalide ignoré');

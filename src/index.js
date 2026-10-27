@@ -18,7 +18,7 @@ import { categorizePending, detectCategory, isDeadLink } from './categories.js';
 import { fetchQcPage, runQcChecks, refreshQc, qcWindow, syncQcCatalog, SYNC_LANES } from './qc.js';
 import { popularItemStatements } from './items.js';
 import { budget, rowsWritten, readsOver, recordReads } from './budget.js';
-import { getSignup, setSignup, SIGNUP_COLORS } from './config.js';
+import { getSignup, setSignup, getCoupon, setCoupon, parseCouponLinks, SIGNUP_COLORS } from './config.js';
 import { withDb } from './turso.js';
 import SCHEMA from '../schema.sql';
 import { searchByImage } from './imagesearch.js';
@@ -29,7 +29,7 @@ import { fetchWeidianItem } from './weidian.js';
 import { extractWeidian, ingest, resolveQueue, scanSource, runDiscovery } from './discover.js';
 import {
   QUEUE_PER_MINUTE, homeView, searchModal, loadSearch, createSearch, resultsView, confirmAllView,
-  catalogsView, addShopModal, shopView, confirmDeleteShopView, agentsView, agentModal, presetModal, itemModal, signupModal,
+  catalogsView, addShopModal, shopView, confirmDeleteShopView, agentsView, agentModal, presetModal, itemModal, signupModal, couponModal,
   accessView, hasAdminPermission, deniedView, sourcesView,
 } from './ui.js';
 import { itemDb, itemById, itemDbs, perDb, allRows, countAll, batchByDb, groupByDb, itemsWhereIds, onDb, deleteShopItems } from './shard.js';
@@ -278,6 +278,10 @@ async function onComponent(it, env, ctx) {
       if (!canEditAgents(env, it)) return update(await agentsView(env, AGENTS_LOCKED, false));
       return openModal(signupModal(await getSignup(env)));
     }
+    case 'ag:cp': {
+      if (!canEditAgents(env, it)) return update(await agentsView(env, AGENTS_LOCKED, false));
+      return openModal(couponModal(await getCoupon(env)));
+    }
     case 'ag:sudel': {
       if (!canEditAgents(env, it)) return update(await agentsView(env, AGENTS_LOCKED, false));
       await setSignup(env, null);
@@ -492,6 +496,14 @@ async function onModal(it, env, ctx) {
     ).bind(name, template, position).run();
     const example = buildAgentLink(template, { url: 'https://weidian.com/item.html?itemID=7863670229', item_id: '7863670229', platform: 'weidian' });
     return update(await agentsView(env, `✅ **${escape(name)}** enregistré. [Tester un lien généré](${example})`, true));
+  }
+
+  if (kind === 'coupon') {
+    if (!canEditAgents(env, it)) return update(await agentsView(env, AGENTS_LOCKED, false));
+    const links = parseCouponLinks(v.links);
+    if (!links.length) return update(await agentsView(env, '❌ Mets au moins un lien, une ligne par lien : `Texte | https://…`', true));
+    await setCoupon(env, { title: (v.title || '').slice(0, 80) || null, message: (v.message || '').slice(0, 1000) || null, links });
+    return update(await agentsView(env, `✅ /coupon enregistré avec ${links.length} lien(s). Les membres le voient en tapant \`/coupon\`.`, true));
   }
 
   if (kind === 'signup') {
