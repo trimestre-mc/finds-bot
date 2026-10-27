@@ -802,6 +802,13 @@ async function handleApi(request, env, url) {
     return json({ ok: true, map: await refreshEmojis(env) });
   }
 
+  // Diagnostic : le bot peut-il s'appeler lui-même (recherches par image dans une exécution à part) ?
+  if (path === '/api/self-test' && request.method === 'GET') {
+    if (!env.SELF) return json({ ok: false, error: 'pas de liaison SELF' });
+    const res = await env.SELF.fetch('https://finds-bot/');
+    return json({ ok: res.ok, status: res.status, body: (await res.text()).slice(0, 60) });
+  }
+
   // Aperçu du rapport du jour (sans l'envoyer).
   if (path === '/api/report' && request.method === 'GET') return json({ ok: true, components: await dailyReport(env) });
 
