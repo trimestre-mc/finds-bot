@@ -9,6 +9,9 @@ const CAPS = { items: 5000, pages: 3000, categorize: 12000, qcsync: 2000 };
 const ROWS = { items: 8, pages: 4, categorize: 3, qcsync: 8 };
 // Part de la journée pour chaque type de travail (le reste non utilisé passe au lendemain).
 const SHARE = { items: 0.4, qcsync: 0.3, pages: 0.2, categorize: 0.1 };
+// 2e base du catalogue (Taobao et 1688, voir shard.js) : pas de boutiques ni de pages Weidian, presque tout pour
+// la synchro du catalogue FinderQC.
+const SHARE_DB2 = { items: 0.05, qcsync: 0.85, pages: 0, categorize: 0.1 };
 // Les budgets agrandis ne valent que si Turso est réellement branché (sinon retour aux limites de D1).
 const cap = (env, kind) => (env.TURSO_URL && Number(env[`BUDGET_${kind.toUpperCase()}`])) || CAPS[kind];
 // Plafond mensuel (lignes estimées) : on garde une marge pour les posts, clics et QC, qui ne sont pas budgétés.
@@ -82,7 +85,8 @@ export async function budget(env, kind) {
   if (readsOverValue(env, (results.find((r) => r.key === 'reads:month') || {}).value)) left = 0;
   if (monthCap(env)) {
     const start = m.month === month && m.day === day && m.start != null ? m.start : monthUsed;
-    const today = Math.floor(dailyRows(monthCap(env), start, now) * SHARE[kind] / ROWS[kind]);
+    const share = (env.DB2 && env.DB === env.DB2 ? SHARE_DB2 : SHARE)[kind];
+    const today = Math.floor(dailyRows(monthCap(env), start, now) * share / ROWS[kind]);
     left = Math.min(left, Math.max(0, today - used), Math.max(0, Math.floor((monthCap(env) - monthUsed) / ROWS[kind])));
   }
   return {

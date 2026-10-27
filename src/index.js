@@ -130,6 +130,8 @@ async function handleScheduled(event, env, ctx) {
       return;
     }
     if (!open.length) return;
+    // Catalogue Taobao + 1688 (2e base) : aussi chaque minute, en plus du passage toutes les 3 minutes.
+    if (env.DB2 && event.cron === '* * * * *') ctx.waitUntil(syncQcCatalog(env, SYNC_LANES.others).catch((e) => console.log('synchro QC', String(e))));
     if (!over) await ensureIndexes(env).catch((e) => console.log('index', String(e).slice(0, 120)));
     await Promise.all([
       // Traduction et catégories : dans chaque base sous son plafond (quota d'IA commun, voir translate.js).

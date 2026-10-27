@@ -425,8 +425,6 @@ function sliceFilter(state, platforms) {
 }
 
 export async function syncQcCatalog(env, lane = SYNC_LANES.all) {
-  let external = 0;
-  const used = () => external + (env.DB.calls || 0);
   const day = new Date().toISOString().slice(0, 10);
   const row = await env.DB.prepare('SELECT value FROM settings WHERE key = ?').bind(lane.key).first();
   let state = null;
@@ -435,6 +433,23 @@ export async function syncQcCatalog(env, lane = SYNC_LANES.all) {
     state = { v: 2, cycle: day, plat: 0, lo: 0, w: 1000, page: 1, done: false, seen: 0 };
   }
   if (state.done || (state.pauseUntil && Date.now() < state.pauseUntil)) return 0;
+  // Un seul passage à la fois par parcours (il tourne chaque minute et toutes les 3 minutes).
+  const lockKey = `${lane.key}:lock`;
+  const lock = await env.DB.prepare(
+    `INSERT INTO settings (key, value) VALUES (?1, ?2)
+     ON CONFLICT(key) DO UPDATE SET value = excluded.value WHERE CAST(settings.value AS INTEGER) < ?3 RETURNING value`,
+  ).bind(lockKey, String(Date.now() + 50000), Date.now()).first();
+  if (!lock) return 0;
+  try {
+    return await syncLane(env, lane, state);
+  } finally {
+    await env.DB.prepare("UPDATE settings SET value = '0' WHERE key = ?").bind(lockKey).run().catch(() => {});
+  }
+}
+
+async function syncLane(env, lane, state) {
+  let external = 0;
+  const used = () => external + (env.DB.calls || 0);
   // Un budget par base du catalogue : un produit dont la base a épuisé le sien est sauté (il reviendra au tour suivant).
   // Seulement les bases où vont les plateformes de ce parcours.
   const laneDbs = new Set(lane.platforms.map((p) => itemDb(env, `${PLATFORMS[p]}:0`)));
