@@ -7,7 +7,7 @@ import { formatPrice, itemTitle, PLATFORM_NAMES, postContext, agentButtons } fro
 import { searchIds, itemsByIds } from './search.js';
 import { CATEGORY_BY_KEY, CATEGORIES } from './categories.js';
 import { getConfig, CURRENCIES, ACCENTS, LANGS } from './config.js';
-import { loadSearch } from './ui.js';
+import { loadSearch, bigCounts } from './ui.js';
 import { communityQc, qcSummary } from './qc.js';
 
 const notice = (msg) => (msg ? text(`> ${msg}`) : null);
@@ -311,11 +311,9 @@ export async function settingsView(env, it, msg) {
 
 export async function healthView(env) {
   const q = (sql, ...b) => env.DB.prepare(sql).bind(...b).first();
-  const [shops, items, noPhoto, untranslated, links, queue, last, jade, rates, srcErr, logs] = await Promise.all([
+  const [shops, counts, links, queue, last, jade, rates, srcErr, logs] = await Promise.all([
     env.DB.prepare('SELECT status, COUNT(*) AS n FROM shops GROUP BY status').all(),
-    q('SELECT COUNT(*) AS n FROM items'),
-    q("SELECT COUNT(*) AS n FROM items WHERE platform = 'weidian' AND images IS NULL"),
-    q('SELECT COUNT(*) AS n FROM items WHERE title_en IS NULL AND translate_failed < 3'),
+    bigCounts(env),
     q('SELECT COUNT(*) AS n FROM link_queue'),
     q('SELECT COUNT(*) AS n FROM post_queue'),
     q("SELECT value FROM settings WHERE key = 'last_dispatch'"),
@@ -324,6 +322,9 @@ export async function healthView(env) {
     q('SELECT COUNT(*) AS n FROM sources WHERE error IS NOT NULL'),
     env.DB.prepare('SELECT * FROM logs ORDER BY id DESC LIMIT 5').all(),
   ]);
+  const items = { n: counts.items };
+  const noPhoto = { n: counts.noPhoto };
+  const untranslated = { n: counts.untranslated };
   const st = Object.fromEntries(shops.results.map((r) => [r.status, r.n]));
   const ok = (cond) => (cond ? '🟢' : '🟠');
   return [container([

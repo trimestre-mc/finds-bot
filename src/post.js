@@ -277,8 +277,10 @@ export async function processQueue(env, budgetMs) {
       // Historique en un seul lot ; salons inaccessibles : on vide le reste de leur file.
       for (const ch of deadChannels) {
         history.push(env.DB.prepare('DELETE FROM post_queue WHERE channel_id = ?').bind(ch));
+        // Salon supprimé ou interdit : ses drops sont mis en pause (sinon ils remplissent la file pour rien).
+        history.push(env.DB.prepare('UPDATE schedules SET enabled = 0 WHERE channel_id = ?').bind(ch));
         history.push(env.DB.prepare('INSERT INTO logs (at, kind, message) VALUES (?, ?, ?)')
-          .bind(Date.now(), 'envoi', `Le bot ne peut pas écrire dans <#${ch}> : file vidée pour ce salon`));
+          .bind(Date.now(), 'envoi', `Le bot ne peut pas écrire dans <#${ch}> : file vidée et drops de ce salon en pause`));
       }
       if (history.length) await env.DB.batch(history).catch((err) => console.log('historique', String(err).slice(0, 120)));
     }

@@ -22,17 +22,38 @@ const backHome = () => emojiBtn('🏠', 'Menu', 'home');
 
 // ---------------------------------------------------------------- Accueil
 
+// Comptages sur toute la table des items (~500 000 lignes lues chacun) : recalculés au plus une fois par heure.
+export async function bigCounts(env) {
+  const row = await env.DB.prepare("SELECT value FROM settings WHERE key = 'big_counts'").first();
+  try {
+    const c = row && JSON.parse(row.value);
+    // Petite base : comptages peu coûteux, toujours à jour.
+    if (c && c.items > 50000 && Date.now() - c.at < 3600000) return c;
+  } catch {}
+  const n = (sql, ...b) => env.DB.prepare(sql).bind(...b).first().then((r) => r.n);
+  const [items, visible, noPhoto, untranslated, drops] = await Promise.all([
+    n('SELECT COUNT(*) AS n FROM items'),
+    n('SELECT COUNT(*) AS n FROM items WHERE hidden = 0'),
+    n("SELECT COUNT(*) AS n FROM items WHERE platform = 'weidian' AND images IS NULL"),
+    n('SELECT COUNT(*) AS n FROM items WHERE title_en IS NULL AND translate_failed < 3'),
+    n('SELECT COUNT(*) AS n FROM items WHERE hidden = 0 AND prev_price > price_cny AND price_changed_at > ?', Date.now() - 14 * 86400000),
+  ]);
+  const c = { at: Date.now(), items, visible, noPhoto, untranslated, drops };
+  await env.DB.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('big_counts', ?)").bind(JSON.stringify(c)).run();
+  return c;
+}
+
 export async function homeView(env, it, msg) {
-  const [items, shops, agents, pending, queue, drops, schedules] = await Promise.all([
-    env.DB.prepare('SELECT COUNT(*) AS n FROM items WHERE hidden = 0').first(),
+  const [counts, shops, agents, queue, schedules] = await Promise.all([
+    bigCounts(env),
     env.DB.prepare('SELECT COUNT(*) AS n FROM shops').first(),
     env.DB.prepare('SELECT COUNT(*) AS n FROM agents').first(),
-    env.DB.prepare("SELECT COUNT(*) AS n FROM items WHERE title_en IS NULL AND translate_failed < 3").first(),
     env.DB.prepare('SELECT COUNT(*) AS n FROM post_queue').first(),
-    env.DB.prepare('SELECT COUNT(*) AS n FROM items WHERE hidden = 0 AND prev_price > price_cny AND price_changed_at > ?')
-      .bind(Date.now() - 14 * 86400000).first(),
     env.DB.prepare('SELECT COUNT(*) AS n FROM schedules WHERE enabled = 1').first(),
   ]);
+  const items = { n: counts.visible };
+  const pending = { n: counts.untranslated };
+  const drops = { n: counts.drops };
   const money = await getRate(env);
 
   const tips = [];

@@ -87,7 +87,8 @@ export async function ingest(env, found, source, by) {
 
 // Retrouve la boutique des items en file (1 page Weidian par item). Renvoie le nombre de boutiques ajoutées.
 export async function resolveQueue(env, limit) {
-  const { results } = await env.DB.prepare('SELECT item_id, source FROM link_queue ORDER BY added_at LIMIT ?').bind(limit).all();
+  // Ordre d'arrivée (rowid), sans tri : trier toute la file (300 000 liens) lisait toute la table à chaque passage.
+  const { results } = await env.DB.prepare('SELECT item_id, source FROM link_queue LIMIT ?').bind(limit).all();
   let added = 0;
   for (const row of results) {
     try {

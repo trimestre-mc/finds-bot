@@ -205,7 +205,7 @@ function cacheKey(params) {
   return 'v2' + JSON.stringify(Object.keys(rest).sort().map((k) => [k, rest[k]]));
 }
 
-async function cachedIds(env, params, money) {
+export async function cachedIds(env, params, money) {
   const key = cacheKey(params);
   const row = await env.DB.prepare('SELECT ids, at FROM search_cache WHERE key = ?').bind(key).first().catch(() => null);
   if (row && Date.now() - row.at < CACHE_MS) return JSON.parse(row.ids);

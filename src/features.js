@@ -6,7 +6,7 @@ import { COMPONENTS_V2, container, text, escape, section, thumb } from './compon
 import { panel, update, openModal, later, userId } from './respond.js';
 import { buildAgentLink, canonicalUrl, extractItemRefs } from './links.js';
 import { communityQc, refreshQc, communityPhotos, qcWindow } from './qc.js';
-import { allResultIds, withoutCache } from './search.js';
+import { cachedIds, withoutCache } from './search.js';
 import { postContext, processQueue, logError, FORUM } from './post.js';
 import { getConfig, setConfig, getSignup, CURRENCIES, LANGS, ACCENTS } from './config.js';
 import { messageText, collectQc } from './discover.js';
@@ -441,7 +441,8 @@ async function setCategoryRhythm(env, it, key) {
 export async function runSchedule(env, s) {
   const ctx = await postContext(env);
   const params = JSON.parse(s.params);
-  const ids = await allResultIds(env, { ...withoutCache(params), includePosted: true }, ctx.money);
+  // Cache partagé de 6 h : sans lui, chaque drop relisait toute la catégorie (jusqu'à ~100 000 lignes).
+  const ids = await cachedIds(env, { ...withoutCache(params), includePosted: true }, ctx.money);
   const picked = [];
   for (let i = 0; i < ids.length && picked.length < s.per_run; i += 50) {
     const chunk = ids.slice(i, i + 50);

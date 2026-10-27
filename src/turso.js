@@ -19,7 +19,14 @@ function fromValue(c) {
   }
 }
 
-function toResult(r) {
+// Requêtes qui lisent beaucoup (quota gratuit : 500 M lignes lues par mois) : signalées dans les logs.
+const HEAVY_READ = 20000;
+function watchReads(sql, r) {
+  if (r && r.rows_read > HEAVY_READ) console.log('lecture lourde', r.rows_read, sql.replace(/\s+/g, ' ').slice(0, 160));
+}
+
+function toResult(r, sql = '') {
+  watchReads(sql, r);
   const cols = (r.cols || []).map((c) => c.name);
   const results = (r.rows || []).map((row) => Object.fromEntries(row.map((v, i) => [cols[i], fromValue(v)])));
   return {
@@ -62,7 +69,7 @@ export function tursoDb(env) {
 
     async all() {
       const [response] = await pipeline([{ type: 'execute', stmt: { sql: this.sql, args: this.args.map(toArg) } }]);
-      return toResult(response.result);
+      return toResult(response.result, this.sql);
     }
 
     async first(column) {
@@ -88,7 +95,7 @@ export function tursoDb(env) {
     const { step_results: results, step_errors: errors } = response.result;
     const failed = errors.slice(0, n + 1).find((e) => e);
     if (failed) throw new Error(`Turso : ${failed.message}`);
-    return results.slice(1, n + 1).map(toResult);
+    return results.slice(1, n + 1).map((r, i) => toResult(r, statements[i].sql));
   }
 
   return Object.assign(db, { prepare: (sql) => new Statement(sql), batch });

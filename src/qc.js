@@ -102,9 +102,11 @@ function previewJson(qc) {
 // les 3 jours, et découverte de leurs items similaires. Renvoie le nombre de requêtes externes faites.
 export async function runQcChecks(env, limit) {
   const { results } = await env.DB.prepare(
-    `SELECT * FROM items WHERE hidden = 0 AND (popularity > 0 OR posted_count > 0 OR manual = 1)
-       AND (qc_checked_at IS NULL OR qc_checked_at < ?)
-     ORDER BY qc_checked_at IS NOT NULL, popularity DESC, posted_count DESC LIMIT ?`,
+    // Ordre de l'index (jamais vérifiés, puis les plus anciennes vérifications) : sans tri, on ne lit que les lignes
+    // prises. Le tri par popularité lisait ~400 000 lignes à chaque passage (quota de lectures Turso).
+    `SELECT * FROM items INDEXED BY items_qcdue WHERE (popularity > 0 OR posted_count > 0 OR manual = 1)
+       AND hidden = 0 AND (qc_checked_at IS NULL OR qc_checked_at < ?)
+     ORDER BY qc_checked_at LIMIT ?`,
   ).bind(Date.now() - RECHECK_MS, limit).all();
   const stmts = [];
   const found = [];
