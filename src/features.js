@@ -39,7 +39,7 @@ export async function triggerIndexer(env) {
 
 // Liste des salons surveillés modifiée : la connexion permanente à Discord la relit tout de suite (gateway.js).
 async function refreshGateway(env) {
-  if (!env.GATEWAY) return;
+  if (!env.GATEWAY || env.GATEWAY_OFF === '1') return;
   await env.GATEWAY.get(env.GATEWAY.idFromName('main')).fetch('https://gateway/refresh').catch((err) => console.log('gateway', String(err).slice(0, 100)));
 }
 
@@ -474,7 +474,7 @@ export async function handleFeatureComponent(it, env, ctx, a, b, c, d, values) {
         stmts.push(env.DB.prepare('INSERT OR IGNORE INTO image_channels (channel_id, guild_id, added_at) VALUES (?, ?, ?)').bind(ch, it.guild_id, Date.now()));
       }
       await env.DB.batch(stmts);
-      await refreshGateway(env);
+      ctx.waitUntil(refreshGateway(env)); // sans faire attendre la réponse
       return update(await settingsView(env, it, values.length
         ? `🔎 Recherche par image active dans ${values.map((v) => `<#${v}>`).join(', ')}. Réponse sous chaque photo en 2 min maximum.`
         : '🔎 Recherche par image désactivée.'));
@@ -486,7 +486,7 @@ export async function handleFeatureComponent(it, env, ctx, a, b, c, d, values) {
         stmts.push(env.DB.prepare('INSERT OR IGNORE INTO aiqc_channels (channel_id, guild_id, added_at) VALUES (?, ?, ?)').bind(ch, it.guild_id, Date.now()));
       }
       await env.DB.batch(stmts);
-      await refreshGateway(env);
+      ctx.waitUntil(refreshGateway(env)); // sans faire attendre la réponse
       return update(await settingsView(env, it, values.length
         ? `🤖 Analyse IA des QC active dans ${values.map((v) => `<#${v}>`).join(', ')} : les membres y postent leurs photos QC, le bot répond tout de suite.`
         : '🤖 Salons d\'analyse IA désactivés.'));
@@ -498,7 +498,7 @@ export async function handleFeatureComponent(it, env, ctx, a, b, c, d, values) {
         stmts.push(env.DB.prepare('INSERT OR IGNORE INTO convert_channels (channel_id, guild_id, added_at) VALUES (?, ?, ?)').bind(ch, it.guild_id, Date.now()));
       }
       await env.DB.batch(stmts);
-      await refreshGateway(env);
+      ctx.waitUntil(refreshGateway(env)); // sans faire attendre la réponse
       return update(await settingsView(env, it, values.length
         ? `🔄 Conversion automatique active dans ${values.map((v) => `<#${v}>`).join(', ')}. Le bot a besoin de « Voir le salon », « Envoyer des messages » et de l'intent Message Content.`
         : '🔄 Conversion automatique désactivée.'));
