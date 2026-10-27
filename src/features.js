@@ -402,6 +402,9 @@ export async function handleFeatureComponent(it, env, ctx, a, b, c, d, values) {
       await setConfig(env, 'forumQc', cfg.forumQc ? 0 : 1);
       return update(await settingsView(env, it, cfg.forumQc ? '📸 Plus de QC automatiques sous les posts de forum.' : '📸 Les posts de forum recevront automatiquement des photos QC.'));
     }
+    case 'set:weekly':
+      await setConfig(env, 'weeklyTop', values[0] || null);
+      return update(await settingsView(env, it, values[0] ? `🏆 Top de la semaine posté chaque lundi dans <#${values[0]}>.` : '🏆 Top de la semaine désactivé.'));
     case 'set:dedupe':
       await setConfig(env, 'dedupeDays', Number(values[0]));
       return update(await settingsView(env, it, Number(values[0]) ? '♻️ Anti-doublon mis à jour.' : '♻️ Anti-doublon désactivé.'));

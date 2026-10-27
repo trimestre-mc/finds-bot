@@ -30,7 +30,7 @@ export const LANGS = {
   },
 };
 
-const DEFAULTS = { currency: 'EUR', lang: 'fr', accent: 'orange', defaultChannel: null, defaultChannelType: 0, dedupeDays: 7, forumQc: 1 };
+const DEFAULTS = { currency: 'EUR', lang: 'fr', accent: 'orange', defaultChannel: null, defaultChannelType: 0, dedupeDays: 7, forumQc: 1, weeklyTop: null };
 const KEYS = Object.keys(DEFAULTS);
 
 export async function getConfig(env) {

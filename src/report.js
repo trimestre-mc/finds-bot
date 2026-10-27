@@ -67,3 +67,20 @@ export async function sendDailyReport(env) {
   await discordApi(env, 'POST', `/channels/${dm.id}/messages`, { flags: COMPONENTS_V2, allowed_mentions: { parse: [] }, components: await dailyReport(env, true) });
   return true;
 }
+
+// Top de la semaine : le lundi vers 19 h (heure de Paris), dans le salon choisi dans les réglages, une fois par semaine.
+export async function sendWeeklyTop(env) {
+  const { getConfig } = await import('./config.js');
+  const { weeklyTopView } = await import('./views.js');
+  const cfg = await getConfig(env);
+  if (!cfg.weeklyTop) return false;
+  const day = new Date().toISOString().slice(0, 10);
+  const fresh = await env.DB.prepare(
+    "INSERT INTO settings (key, value) VALUES ('weekly:sent', ?1) ON CONFLICT(key) DO UPDATE SET value = ?1 WHERE settings.value != ?1 RETURNING value",
+  ).bind(day).first();
+  if (!fresh) return false;
+  const components = await weeklyTopView(env);
+  if (!components) return false;
+  await discordApi(env, 'POST', `/channels/${cfg.weeklyTop}/messages`, { flags: COMPONENTS_V2, allowed_mentions: { parse: [] }, components });
+  return true;
+}

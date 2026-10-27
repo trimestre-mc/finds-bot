@@ -51,6 +51,10 @@ le catalogue FinderQC. **Salon de recherche par image** : la marque est lue sur 
 - 🏷️ **Agents** : BBDBuy / Kakobuy avec juste ton code, bouton **S'inscrire** (lien, texte, emoji, couleur) et message
   de `/coupon` (seul `AGENTS_OWNER_ID` peut les modifier)
 - 📌 **Poster le guide** / 🎁 **Poster /coupon** dans un salon, à épingler
+- 🏆 **Top de la semaine** (⚙️ Réglages) : chaque lundi, les 5 items les plus cliqués, postés dans le salon choisi
+- 📬 **Rapport du jour** en message privé au propriétaire (`AGENTS_OWNER_ID`) vers 21 h : clics, posts, alertes,
+  items ajoutés par base, quotas, erreurs ; aperçu : `GET /api/report`
+- 🩺 **Santé** : lectures et écritures du mois de chaque base, neurons d'IA du jour
 - 👥 **Accès** · 🩺 **Santé** (indexeur, files, erreurs récentes)
 
 ## Sources de données et autorisations

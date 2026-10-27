@@ -65,3 +65,24 @@ test('écran Santé : quotas des deux bases et de l\'IA', async () => {
   assert.match(v, /Base 2 \(Taobao \+ 1688\)/);
   assert.match(v, /IA du jour/);
 });
+
+test('top de la semaine : les items les plus cliqués, posté une fois dans le salon choisi', async () => {
+  const { sendWeeklyTop } = await import('../src/report.js');
+  const { settingsView } = await import('../src/views.js');
+  const env = { DB: memoryDb(), DISCORD_API: 'https://discord.test' };
+  env.DB.raw.prepare("INSERT INTO items (id, platform, item_id, url, title_en, price_cny) VALUES ('weidian:1000001', 'weidian', '1000001', 'u', 'Nike Tech Fleece Hoodie', 200), ('weidian:1000002', 'weidian', '1000002', 'u', 'Supreme Box Logo Tee', 150)").run();
+  for (const [id, n] of [['weidian:1000001', 2], ['weidian:1000002', 5]]) {
+    for (let i = 0; i < n; i++) env.DB.raw.prepare("INSERT INTO clicks (item_id, agent, at) VALUES (?, 'BBDBuy', ?)").run(id, Date.now());
+  }
+  const posted = [];
+  globalThis.fetch = async (url, opts = {}) => { posted.push({ url: String(url), body: opts.body }); return Response.json({ id: 'm' }); };
+  assert.equal(await sendWeeklyTop(env), false); // pas de salon choisi
+  env.DB.raw.prepare("INSERT INTO settings (key, value) VALUES ('cfg_weeklyTop', '777')").run();
+  assert.equal(await sendWeeklyTop(env), true);
+  assert.equal(await sendWeeklyTop(env), false); // déjà posté aujourd'hui
+  assert.match(posted[0].url, /channels\/777\/messages/);
+  assert.match(posted[0].body, /🥇 Supreme Box Logo Tee[\s\S]*🥈 Nike Tech Fleece Hoodie/);
+  const settings = await settingsView(env, { guild_id: 'g' });
+  let n = 0; const walk = (c) => { n++; (c.components || []).forEach(walk); if (c.accessory) walk(c.accessory); }; settings.forEach(walk);
+  assert.ok(n <= 40, `réglages : ${n} composants`);
+});

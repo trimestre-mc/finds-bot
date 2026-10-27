@@ -37,7 +37,7 @@ import {
 } from './ui.js';
 import { itemDb, itemById, itemDbs, perDb, allRows, countAll, batchByDb, groupByDb, itemsWhereIds, onDb, itemEnv, deleteShopItems } from './shard.js';
 import { checkWatches } from './alerts.js';
-import { sendDailyReport, dailyReport } from './report.js';
+import { sendDailyReport, dailyReport, sendWeeklyTop } from './report.js';
 
 // Une boutique est relue tous les 3 jours (quota gratuit D1 : 100 000 lignes écrites par jour).
 const REINDEX_HOURS = 72;
@@ -104,6 +104,8 @@ async function handleScheduled(event, env, ctx) {
       if (new Date().getUTCMinutes() % 30 === 0) await checkWatches(env).catch((e) => console.log('alertes prix', String(e)));
       // Rapport du jour au propriétaire, en message privé, vers 21 h (heure de Paris en hiver).
       if (new Date().getUTCHours() === 20) await sendDailyReport(env).catch((e) => console.log('rapport', String(e)));
+      // Top de la semaine : le lundi vers 19 h (heure de Paris en hiver), s'il est activé dans les réglages.
+      if (new Date().getUTCDay() === 1 && new Date().getUTCHours() === 18) await sendWeeklyTop(env).catch((e) => console.log('top semaine', String(e)));
       // Toutes les 15 min, dans chaque base (la sélection des items à vérifier parcourt une partie de la table).
       if (new Date().getUTCMinutes() % 15 === 0) {
         for (const e of open) await runQcChecks(e, 15).catch((err) => console.log('qc', String(err)));

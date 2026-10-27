@@ -309,6 +309,11 @@ export async function settingsView(env, it, msg) {
       type: 8, custom_id: 'set:image', placeholder: 'Salons de recherche par image', channel_types: [0, 5],
       min_values: 0, max_values: 10, default_values: imgCh.map((c) => ({ id: c.channel_id, type: 'channel' })),
     }),
+    text('**🏆 Top de la semaine**\n-# Chaque lundi vers 19 h, les 5 items les plus cliqués de la semaine, avec les boutons d\'achat. Choisis un salon pour l\'activer.'),
+    row({
+      type: 8, custom_id: 'set:weekly', placeholder: 'Salon du top de la semaine (vide = désactivé)', channel_types: [0, 5],
+      min_values: 0, max_values: 1, default_values: cfg.weeklyTop ? [{ id: cfg.weeklyTop, type: 'channel' }] : [],
+    }),
     row(emojiBtn('📸', cfg.forumQc ? 'QC sous les posts de forum : activé' : 'QC sous les posts de forum : désactivé', 'set:forumqc', cfg.forumQc ? Style.SUCCESS : Style.SECONDARY)),
     text(`**📸 Salons QC**\n-# Les membres y postent leurs photos QC avec le lien de l'item : chaque item gagne un bouton « QC communauté ».\n${qcCh.length ? qcCh.map((c) => `<#${c.channel_id}> · ${fmtInt(c.collected)} QC récupérés`).join('\n') : '-# Aucun salon.'}`),
     row({
@@ -470,6 +475,29 @@ export async function guideView(env) {
     sep(),
     text(`-# ${e('fb_coupon')} \`/coupon\` : les réductions du moment  ·  ${e('fb_search')} \`/find\`  ·  ${e('fb_link')} \`/convert\`  ·  ${e('fb_qc')} \`/qc\``),
   ], accent)];
+}
+
+// Top de la semaine : les items les plus cliqués (achat, QC, comparer…) des 7 derniers jours. null si aucun clic.
+export async function weeklyTopView(env) {
+  const ctx = await postContext(env);
+  const e = (n) => etxt(ctx.emojis, n);
+  const { results } = await env.DB.prepare(
+    "SELECT item_id, COUNT(*) AS n FROM clicks WHERE at > ? AND agent != 'signup' GROUP BY item_id ORDER BY n DESC LIMIT 5",
+  ).bind(Date.now() - 7 * 86400000).all();
+  if (!results.length) return null;
+  const items = new Map((await itemsWhereIds(env, results.map((r) => r.item_id))).map((i) => [i.id, i]));
+  const medals = ['🥇', '🥈', '🥉', '4.', '5.'];
+  const blocks = results.filter((r) => items.has(r.item_id)).flatMap((r, i) => {
+    const item = items.get(r.item_id);
+    const meta = [formatPrice(item.price_cny, ctx.money), item.popularity ? `${e('fb_fire')} ${fmtInt(item.popularity)}` : null,
+      item.qc_count ? `${e('fb_qc')} ${fmtInt(item.qc_count)} QC` : null].filter(Boolean);
+    const head = `**${medals[i]} ${escape(cardTitle(item, 70))}**\n${meta.join('  ·  ')}\n-# ${fmtInt(r.n)} clic${r.n > 1 ? 's' : ''} cette semaine`;
+    return [sep(), /^https:\/\//.test(item.image || '') ? section(head, thumb(item.image)) : text(head), agentButtons(ctx, item, null)[0]];
+  });
+  return [container([
+    text(`## ${e('fb_crown')} Top de la semaine\n-# Les items les plus regardés du serveur ces 7 derniers jours.`),
+    ...blocks,
+  ], (ACCENTS[ctx.cfg.accent] || ACCENTS.orange).color)];
 }
 
 // Message de /coupon (public) : le texte choisi par le propriétaire et ses liens, sinon le bouton d'inscription.
