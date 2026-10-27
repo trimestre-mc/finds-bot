@@ -14,9 +14,10 @@ import { searchByImage } from './imagesearch.js';
 import { trackedLink, formatPrice } from './post.js';
 import { buildAgentLink, canonicalUrl } from './links.js';
 
-export const AIQC_PER_DAY = 40; // plafond de sécurité ; la vraie limite est le quota d'IA du jour (neurons)
+export const AIQC_PER_DAY = 40; // plafond de sécurité sans Groq ; la vraie limite est le quota d'IA du jour (neurons)
+const AIQC_PER_DAY_GROQ = 150; // avec Groq (~1 000 requêtes/jour gratuites, ~6 par analyse)
 const CACHE_MS = 30 * 86400000;
-const PHOTOS = 3;
+const PHOTOS = 5; // analysées une par une (3 sans Groq, voir analyzeQc)
 
 const VERDICT = {
   ok: { icon: '✅', label: 'Rien d\'anormal repéré', color: 0x22c55e },
@@ -32,7 +33,8 @@ async function hashKey(parts) {
 
 // Une analyse de plus aujourd'hui ? (compteur du jour, et quota d'IA pas épuisé)
 async function allowed(env) {
-  if ((await aiNeurons(env)).used >= AI_NEURONS_PER_DAY) return false;
+  // Sans Groq, tout passe par le quota Cloudflare (neurons) ; avec, Groq a ses propres limites (Cloudflare en secours).
+  if (!env.GROQ_API_KEY && (await aiNeurons(env)).used >= AI_NEURONS_PER_DAY) return false;
   const day = new Date().toISOString().slice(0, 10);
   const row = await env.DB.prepare(
     `INSERT INTO settings (key, value) VALUES ('ai_qc', json_object('day', ?1, 'used', 1))
@@ -40,7 +42,7 @@ async function allowed(env) {
        CASE WHEN json_extract(settings.value, '$.day') = ?1 THEN json_extract(settings.value, '$.used') + 1 ELSE 1 END)
      RETURNING json_extract(value, '$.used') AS used`,
   ).bind(day).first();
-  return row && row.used <= AIQC_PER_DAY;
+  return row && row.used <= (env.GROQ_API_KEY ? AIQC_PER_DAY_GROQ : AIQC_PER_DAY);
 }
 
 // Analyse (ou résultat déjà gardé) d'un lot de photos. { result, cached } ; result null si limite du jour ou échec.
@@ -63,7 +65,7 @@ export async function qcAnalysis(env, photos, { ref = null, what = null } = {}) 
     return { result: null, reason: 'limite' };
   }
   if (!result) return { result: null, reason: 'echec' };
-  await aiNeurons(env).then((b) => b.add(Math.round(result.neurons || 160))).catch(() => {});
+  if (result.neurons) await aiNeurons(env).then((b) => b.add(Math.round(result.neurons))).catch(() => {});
   await env.DB.prepare('INSERT OR REPLACE INTO search_cache (key, ids, at) VALUES (?, ?, ?)').bind(key, JSON.stringify(result), Date.now()).run().catch(() => {});
   return { result, cached: false };
 }
@@ -79,16 +81,18 @@ export function analysisView(emojis, res, { title = null, photos = [], who = nul
   }
   const r = res.result;
   const v = VERDICT[r.verdict] || VERDICT.a_verifier;
+  const score = r.note != null ? `  ·  Note QC : **${r.note}/10** ${'★'.repeat(Math.round(r.note / 2))}${'☆'.repeat(5 - Math.round(r.note / 2))}` : '';
   const head = `## ${e('fb_bot')} Analyse IA des QC\n` +
     (title || r.article ? `**${escape(String(title || r.article).slice(0, 90))}**\n` : '') +
-    `### ${v.icon} ${v.label}`;
+    `### ${v.icon} ${v.label}${score}`;
   return [container([
     text(head),
     photos.length ? gallery(photos.slice(0, PHOTOS)) : null,
     sep(),
     text(r.points.map((p) => `${ICON[p.etat] || '•'} ${escape(p.texte)}`).join('\n') || '-# Pas de détail.'),
+    r.manque && r.manque.length ? text(`📸 **À demander à ton agent :** ${r.manque.map((x) => escape(x)).join(' · ')}`) : null,
     r.conseil ? text(`💡 ${escape(r.conseil)}`) : null,
-    text(`-# Avis automatique de l'IA sur ${Math.min(photos.length || PHOTOS, PHOTOS)} photo(s), pas une garantie : zoome sur les photos et compare avec les votes GL / RL des membres.` +
+    text(`-# Avis automatique de l'IA sur ${r.photos || Math.min(photos.length || PHOTOS, PHOTOS)} photo(s), pas une garantie : zoome sur les photos et compare avec les votes GL / RL des membres.` +
       (who ? `  ·  Demandé par <@${who}>` : '') + (res.cached ? '  ·  analyse déjà faite' : '')),
     ...(match || []),
   ], v.color)];

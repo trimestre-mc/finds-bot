@@ -72,3 +72,30 @@ test('quota d\'IA épuisé chez Cloudflare : message « limite du jour », plus 
   assert.equal((await qcAnalysis(env, ['https://img.finderqc.com/10.jpg'])).reason, 'limite');
   assert.equal(calls, before); // plus d'appel à l'IA aujourd'hui
 });
+
+test('Groq d\'abord (score sur 10, photos à demander), Cloudflare en secours si Groq est saturé', async () => {
+  const groqPhoto = '{"photos":["étiquette US 11 / UK 10 / EUR 45"],"article":"Air Jordan 4","verdict":"ok","points":[{"etat":"ok","texte":"Étiquette conforme US 11 = UK 10 = EUR 45 (photo 1)"}]}';
+  const groqMerge = '{"article":"Air Jordan 4","verdict":"ok","note":9,"points":[{"etat":"ok","texte":"Étiquette conforme US 11 = UK 10 = EUR 45 (photo 1)"}],"manque":["profil de la chaussure","semelle"],"conseil":"Demande une photo de profil."}';
+  let cf = 0;
+  let groqUp = true;
+  const env = { DB: memoryDb(), GROQ_API_KEY: 'k', AI: { run: async () => { cf++; return { response: groqMerge, usage: { neurons: 5 } }; } } };
+  globalThis.fetch = async (url, opts = {}) => {
+    const u = String(url);
+    if (u.includes('api.groq.com')) {
+      if (!groqUp) return new Response('rate limit', { status: 429 });
+      const body = JSON.parse(opts.body);
+      return Response.json({ choices: [{ message: { content: body.model.includes('scout') ? groqPhoto : groqMerge } }] });
+    }
+    return new Response(new Uint8Array(3000), { headers: { 'content-type': 'image/jpeg' } });
+  };
+  const res = await qcAnalysis(env, ['https://img.finderqc.com/a.jpg', 'https://img.finderqc.com/b.jpg']);
+  assert.equal(cf, 0, 'Cloudflare pas utilisé');
+  assert.equal(res.result.note, 9);
+  const view = JSON.stringify(analysisView({}, res, {}));
+  assert.match(view, /Note QC : \*\*9\/10\*\*/);
+  assert.match(view, /À demander à ton agent :\*\* profil de la chaussure · semelle/);
+  groqUp = false;
+  const fallback = await qcAnalysis(env, ['https://img.finderqc.com/c.jpg']);
+  assert.ok(fallback.result, 'analyse faite par Cloudflare');
+  assert.ok(cf > 0);
+});

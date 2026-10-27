@@ -48,25 +48,70 @@ function parseFirstObject(out) {
   return null;
 }
 
+// ---------------------------------------------------------------- Fournisseurs d'IA
+
+// Groq (gratuit, ~1 000 requêtes/jour, clé GROQ_API_KEY) d'abord : même modèle de vision (Llama 4 Scout) sans toucher au
+// quota Cloudflare, qui reste pour la traduction des titres. Workers AI de Cloudflare en secours (Groq saturé ou absent).
+const GROQ_URL = 'https://api.groq.com/openai/v1/chat/completions';
+// Modèles Groq (les noms changent avec le temps : liste avec GET /api/groq-models ; réglables par GROQ_VISION_MODEL
+// et GROQ_TEXT_MODEL).
+const GROQ_VISION = 'qwen/qwen3.8-27b';
+const GROQ_TEXT = 'openai/gpt-oss-120b';
+
+// messages au format OpenAI ; kind : 'vision' ou 'text'. Renvoie { text, neurons, provider }.
+export async function chat(env, { messages, kind = 'vision', cfModel, maxTokens = 600, cfExtra = {} }) {
+  if (env.GROQ_API_KEY) {
+    try {
+      const send = () => fetch(GROQ_URL, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${env.GROQ_API_KEY}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: kind === 'vision' ? (env.GROQ_VISION_MODEL || GROQ_VISION) : (env.GROQ_TEXT_MODEL || GROQ_TEXT),
+          messages, max_tokens: maxTokens + 1500, temperature: 0.1,
+          // Modèles qui « réfléchissent » (Qwen 3, GPT-OSS) : réflexion courte et cachée, réponse seule.
+          reasoning_effort: 'low', reasoning_format: 'hidden',
+        }),
+      });
+      let res = await send();
+      // Limite par minute de l'offre gratuite : on attend ce que Groq demande (10 s au plus), puis un 2e essai.
+      for (let i = 0; i < 2 && res.status === 429; i++) {
+        const wait = Math.min(10, Number(res.headers.get('retry-after')) || 3);
+        await new Promise((r) => setTimeout(r, wait * 1000));
+        res = await send();
+      }
+      if (res.ok) {
+        const d = await res.json();
+        return { text: String((d.choices && d.choices[0] && d.choices[0].message && d.choices[0].message.content) || ''), neurons: 0, provider: 'groq' };
+      }
+      console.log('groq', res.status, (await res.text()).slice(0, 160));
+    } catch (err) {
+      console.log('groq', String(err).slice(0, 160));
+    }
+  }
+  if (!env.AI) throw new Error('aucune IA disponible');
+  const res = await env.AI.run(cfModel, { messages, max_tokens: maxTokens, temperature: 0.1, ...cfExtra });
+  const out = typeof res === 'string' ? res
+    : res && (res.response ?? (res.choices && res.choices[0] && res.choices[0].message && res.choices[0].message.content));
+  return { text: typeof out === 'string' ? out : JSON.stringify(out), neurons: (res && res.usage && res.usage.neurons) || 0, provider: 'cloudflare' };
+}
+
 const clean = (v) => (typeof v === 'string' && v.trim() && !/^(null|none|unknown|n\/a)$/i.test(v.trim()) ? v.trim().slice(0, 40) : null);
 
 // { brand, model, item, color } (champs null si inconnus), ou null si le modèle n'a pas répondu.
 export async function describeImage(env, imageUrl, model = VISION_MODEL) {
-  if (!env.AI) return null;
+  if (!env.AI && !env.GROQ_API_KEY) return null;
   const image = await asDataUrl(imageUrl);
-  const res = await env.AI.run(model, {
+  const res = await chat(env, {
     messages: [{ role: 'user', content: [{ type: 'text', text: PROMPT }, { type: 'image_url', image_url: { url: image } }] }],
-    max_tokens: 120,
-    temperature: 0,
+    cfModel: model, maxTokens: 120,
   });
-  const out = typeof res === 'string' ? res
-    : res && (res.response ?? (res.choices && res.choices[0] && res.choices[0].message && res.choices[0].message.content));
+  const out = res.text;
   const raw = parseFirstObject(out);
   if (!raw) {
-    console.log('vision : réponse illisible', String(typeof out === 'string' ? out : JSON.stringify(res)).slice(0, 200));
+    console.log('vision : réponse illisible', String(out).slice(0, 200));
     return null;
   }
-  return { brand: clean(raw.brand), model: clean(raw.model), item: clean(raw.item), color: clean(raw.color) };
+  return { brand: clean(raw.brand), model: clean(raw.model), item: clean(raw.item), color: clean(raw.color), neurons: res.neurons };
 }
 
 // ---------------------------------------------------------------- Analyse des QC par l'IA
@@ -97,29 +142,33 @@ const MERGE_MODEL = '@cf/google/gemma-4-26b-a4b-it';
 const etat = (x) => (['ok', 'attention', 'probleme'].includes(x) ? x : 'attention');
 
 async function runVision(env, model, prompt, urls) {
-  // Llama 3.2 Vision : une seule image par requête, dans le champ « image » (la photo QC, sans la photo du vendeur).
-  const single = /llama-3\.2-\d+b-vision/.test(model);
-  const images = await Promise.all((single ? urls.slice(-1) : urls).map((u) => asDataUrl(u)));
-  const res = await env.AI.run(model, single
-    ? { messages: [{ role: 'user', content: prompt }], image: images[0], max_tokens: 600, temperature: 0.1 }
-    : {
-      messages: [{ role: 'user', content: [{ type: 'text', text: prompt }, ...images.map((url) => ({ type: 'image_url', image_url: { url } }))] }],
-      max_tokens: 600,
-      temperature: 0.1,
-    });
-  const out = typeof res === 'string' ? res
-    : res && (res.response ?? (res.choices && res.choices[0] && res.choices[0].message && res.choices[0].message.content));
-  return { raw: parseFirstObject(out), neurons: (res && res.usage && res.usage.neurons) || 0, out };
+  // Llama 3.2 Vision (Cloudflare, demandé explicitement) : une seule image par requête, dans le champ « image ».
+  if (/llama-3\.2-\d+b-vision/.test(model)) {
+    const res = await env.AI.run(model, { messages: [{ role: 'user', content: prompt }], image: await asDataUrl(urls[urls.length - 1]), max_tokens: 600, temperature: 0.1 });
+    return { raw: parseFirstObject(res && res.response), neurons: (res && res.usage && res.usage.neurons) || 0, out: res && res.response };
+  }
+  const images = await Promise.all(urls.map((u) => asDataUrl(u)));
+  const res = await chat(env, {
+    messages: [{ role: 'user', content: [{ type: 'text', text: prompt }, ...images.map((url) => ({ type: 'image_url', image_url: { url } }))] }],
+    cfModel: model, maxTokens: 600,
+  });
+  return { raw: parseFirstObject(res.text), neurons: res.neurons, out: res.text, provider: res.provider };
 }
 
 export async function analyzeQc(env, photos, { ref = null, what = null, model = VISION_MODEL } = {}) {
-  if (!env.AI) return null;
-  const shots = photos.filter(Boolean).slice(0, 3);
+  if (!env.AI && !env.GROQ_API_KEY) return null;
+  // Avec Groq (gros quota gratuit) : jusqu'à 5 photos ; sans, 3 (quota Cloudflare).
+  const shots = photos.filter(Boolean).slice(0, env.GROQ_API_KEY ? 5 : 3);
   if (!shots.length) return null;
-  const per = await Promise.all(shots.map((u, i) => runVision(env, model, QC_PROMPT({ ref: !!(ref && i === 0), what, n: i + 1 }), [...(ref && i === 0 ? [ref] : []), u])
-    .catch((err) => { console.log('analyse QC (photo)', String(err).slice(0, 160)); return { raw: null, neurons: 0, quota: /4006|daily free allocation/.test(String(err)) }; })));
+  const one = (u, i) => runVision(env, model, QC_PROMPT({ ref: !!(ref && i === 0), what, n: i + 1 }), [...(ref && i === 0 ? [ref] : []), u])
+    .catch((err) => { console.log('analyse QC (photo)', String(err).slice(0, 160)); return { raw: null, neurons: 0, quota: /4006|daily free allocation/.test(String(err)) }; });
+  // Avec Groq : une photo après l'autre (limite de jetons par minute de l'offre gratuite) ; sinon en parallèle.
+  let per = [];
+  if (env.GROQ_API_KEY) for (const [i, u] of shots.entries()) per.push(await one(u, i));
+  else per = await Promise.all(shots.map(one));
   const ok = per.filter((p) => p.raw && Array.isArray(p.raw.points));
   if (!ok.length && per.some((p) => p.quota)) throw new Error('4006 : quota d\'IA du jour épuisé');
+  const photosSeen = ok.length;
   let neurons = per.reduce((n, p) => n + p.neurons, 0);
   if (!ok.length) {
     console.log('analyse QC : réponses illisibles', String((per[0] && per[0].out) || '').slice(0, 200));
@@ -133,21 +182,22 @@ export async function analyzeQc(env, photos, { ref = null, what = null, model = 
   // Fusion par un modèle de texte ; si elle échoue, les points des photos mis bout à bout (verdict le plus sévère).
   let merged = null;
   try {
-    const res = await env.AI.run(MERGE_MODEL, {
+    const res = await chat(env, {
+      kind: 'text', cfModel: MERGE_MODEL, maxTokens: 700, cfExtra: { chat_template_kwargs: { enable_thinking: false } },
       messages: [
-        { role: 'system', content: 'Tu es un expert QC de reps. On te donne les observations faites photo par photo (en JSON). Fusionne-les en une analyse finale en français : '
-          + 'garde les faits précis (tailles lues, codes, mesures, défauts avec le numéro de photo), supprime les doublons et les contradictions (un fait lu sur une photo l\'emporte '
-          + 'sur « pas visible » sur une autre), pas de phrases vagues. Réponds UNIQUEMENT en JSON : {"article": "marque + type précis (ex : Nike short, Air Jordan 4) ou null", "verdict": "ok" ou "a_verifier" ou "probleme", '
-          + '"points": [{"etat": "ok" ou "attention" ou "probleme", "texte": "phrase courte"}], "conseil": "une phrase"}. 3 à 6 points. /no_think' },
+        { role: 'system', content: 'Tu es un expert QC de reps (vêtements, chaussures, sacs, bijoux achetés via un agent en Chine). On te donne les observations faites photo par photo (en JSON). '
+          + 'Fusionne-les en une analyse finale en français, comme un expert : garde les faits précis (tailles lues, codes, mesures, défauts avec le numéro de photo), '
+          + 'supprime les doublons et les contradictions (un fait lu sur une photo l\'emporte sur « pas visible » sur une autre), pas de phrases vagues. '
+          + 'Ne confonds pas la pointure (ex : US 11) avec le modèle (ex : Air Jordan 4) ; le modèle vient du design, pas de l\'étiquette de taille. '
+          + 'Note la qualité visible de 0 à 10 (10 = parfait, 7 = petits défauts sans gravité, 4 ou moins = défaut à faire corriger ou retour). '
+          + 'Liste les photos importantes qui manquent pour ce type d\'article (ex : étiquette intérieure, profil, semelle, dos, logo de près, couture de près), seulement si elles manquent vraiment. '
+          + 'Réponds UNIQUEMENT en JSON : {"article": "marque + type précis (ex : Nike short, Air Jordan 4) ou null", "verdict": "ok" ou "a_verifier" ou "probleme", '
+          + '"note": nombre de 0 à 10, "points": [{"etat": "ok" ou "attention" ou "probleme", "texte": "phrase courte"}], "manque": ["photo à demander"], "conseil": "une phrase"}. 3 à 6 points. /no_think' },
         { role: 'user', content: JSON.stringify(observations) },
       ],
-      max_tokens: 500,
-      temperature: 0.1,
-      chat_template_kwargs: { enable_thinking: false },
     });
-    const out = typeof res.response === 'string' ? res.response : res.choices ? String(res.choices[0].message.content || '') : JSON.stringify(res.response);
-    merged = parseFirstObject(out);
-    neurons += (res.usage && res.usage.neurons) || 0;
+    merged = parseFirstObject(res.text);
+    neurons += res.neurons;
   } catch (err) {
     console.log('analyse QC (fusion)', String(err).slice(0, 160));
   }
@@ -161,7 +211,10 @@ export async function analyzeQc(env, photos, { ref = null, what = null, model = 
     points: merged.points.slice(0, 6).map((p) => ({ etat: etat(p.etat), texte: String(p.texte || '').slice(0, 160) })).filter((p) => p.texte),
     conseil: merged.conseil ? String(merged.conseil).slice(0, 200) : null,
     article: clean(merged.article) || article,
+    note: Number.isFinite(Number(merged.note)) && merged.note !== null && merged.note !== '' ? Math.max(0, Math.min(10, Math.round(Number(merged.note)))) : null,
+    manque: Array.isArray(merged.manque) ? merged.manque.slice(0, 4).map((x) => String(x).slice(0, 80)).filter(Boolean) : [],
     vu: observations.map((o) => o.vu).filter(Boolean),
+    photos: photosSeen,
     neurons,
   };
 }

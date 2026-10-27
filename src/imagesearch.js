@@ -60,7 +60,7 @@ const VISION_PER_DAY = 200;
 const VISION_NEURONS = 40; // estimation par photo (Llama 4 Scout, image réduite à 512 px)
 
 async function visionAllowed(env) {
-  if ((await aiNeurons(env)).used >= AI_NEURONS_PER_DAY) return false;
+  if (!env.GROQ_API_KEY && (await aiNeurons(env)).used >= AI_NEURONS_PER_DAY) return false;
   const day = new Date().toISOString().slice(0, 10);
   const row = await env.DB.prepare(
     `INSERT INTO settings (key, value) VALUES ('ai_vision', json_object('day', ?1, 'used', 1))
@@ -84,7 +84,8 @@ export async function smartImageSearch(env, attachment) {
     visionAllowed(env).then(async (ok) => {
       if (!ok) return null;
       const seen = await describeImage(env, smallImageUrl(attachment));
-      await aiNeurons(env).then((b) => b.add(VISION_NEURONS)).catch(() => {});
+      // Neurons Cloudflare vraiment utilisés (0 si Groq a répondu).
+      if (!seen || seen.neurons) await aiNeurons(env).then((b) => b.add(seen ? seen.neurons : VISION_NEURONS)).catch(() => {});
       return seen;
     })
       .catch((err) => { console.log('vision', String(err).slice(0, 120)); return null; }),

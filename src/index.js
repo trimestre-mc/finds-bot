@@ -723,6 +723,14 @@ async function handleApi(request, env, url) {
     });
   }
 
+  // Diagnostic : modèles disponibles chez Groq (les noms changent avec le temps).
+  if (path === '/api/groq-models' && request.method === 'GET') {
+    if (!env.GROQ_API_KEY) return json({ ok: false, error: 'pas de clé GROQ_API_KEY' });
+    const res = await fetch('https://api.groq.com/openai/v1/models', { headers: { Authorization: `Bearer ${env.GROQ_API_KEY}` } });
+    const d = await res.json().catch(() => ({}));
+    return json({ ok: res.ok, status: res.status, models: (d.data || []).map((m) => m.id).sort() });
+  }
+
   // Acceptation de la licence d'un modèle Workers AI qui l'exige (ex. Llama 3.2 Vision : envoyer « agree » une fois).
   if (path === '/api/ai-agree' && request.method === 'POST') {
     const model = url.searchParams.get('model') || '';
