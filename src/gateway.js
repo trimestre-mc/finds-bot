@@ -30,7 +30,9 @@ export class Gateway extends DurableObject {
   }
 
   // Appelé chaque minute par le cron (et à la main) : vérifie la connexion, la relance si besoin.
-  async fetch() {
+  // /refresh : liste des salons modifiée dans les réglages, relue tout de suite.
+  async fetch(request) {
+    if (new URL(request.url).pathname === '/refresh') await this.loadChannels();
     await this.ensure();
     return Response.json(this.status());
   }
@@ -157,19 +159,30 @@ export class Gateway extends DurableObject {
     if (!res.ok) console.log('gateway : traitement', res.status);
   }
 
-  // Salons surveillés (conversion, recherche par image), relus au plus une fois par minute.
+  // Salons surveillés (conversion, recherche par image, analyse IA), relus au plus une fois par minute ; un salon
+  // inconnu fait relire la liste (au plus toutes les 15 s), pour un salon ajouté à l'instant.
   async channelKind(channelId) {
-    if (Date.now() - this.channelsAt > CHANNELS_TTL_MS) {
-      const env = withDb(this.env);
-      const [conv, img, ai] = await Promise.all([
-        env.DB.prepare('SELECT channel_id FROM convert_channels').all(),
-        env.DB.prepare('SELECT channel_id FROM image_channels').all(),
-        env.DB.prepare('SELECT channel_id FROM aiqc_channels').all().catch(() => ({ results: [] })),
-      ]);
-      this.channels = new Map([...conv.results.map((c) => [c.channel_id, 'convert']), ...img.results.map((c) => [c.channel_id, 'image']),
-        ...ai.results.map((c) => [c.channel_id, 'aiqc'])]);
-      this.channelsAt = Date.now();
-    }
+    const stale = Date.now() - this.channelsAt > CHANNELS_TTL_MS || (!this.channels.has(channelId) && Date.now() - this.channelsAt > 15000);
+    if (stale) await this.loadChannels();
     return this.channels.get(channelId) || null;
+  }
+
+  // Relit la liste des salons ; s'il y en a de nouveaux, rattrape les messages déjà postés depuis leur ajout.
+  async loadChannels() {
+    const before = new Set(this.channels.keys());
+    const env = withDb(this.env);
+    const [conv, img, ai] = await Promise.all([
+      env.DB.prepare('SELECT channel_id FROM convert_channels').all(),
+      env.DB.prepare('SELECT channel_id FROM image_channels').all(),
+      env.DB.prepare('SELECT channel_id FROM aiqc_channels').all().catch(() => ({ results: [] })),
+    ]);
+    this.channels = new Map([...conv.results.map((c) => [c.channel_id, 'convert']), ...img.results.map((c) => [c.channel_id, 'image']),
+      ...ai.results.map((c) => [c.channel_id, 'aiqc'])]);
+    this.channelsAt = Date.now();
+    if (this.channelsAt && [...this.channels.keys()].some((id) => !before.has(id)) && before.size) {
+      await this.env.SELF.fetch('https://finds-bot/api/watch/catchup', {
+        method: 'POST', headers: { Authorization: `Bearer ${this.env.INDEXER_SECRET}` },
+      }).catch((err) => console.log('gateway : rattrapage', String(err).slice(0, 120)));
+    }
   }
 }

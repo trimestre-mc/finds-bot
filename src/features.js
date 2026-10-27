@@ -37,6 +37,12 @@ export async function triggerIndexer(env) {
   if (!res.ok) await logError(env, 'indexeur', `lancement GitHub refusé (${res.status})`);
 }
 
+// Liste des salons surveillés modifiée : la connexion permanente à Discord la relit tout de suite (gateway.js).
+async function refreshGateway(env) {
+  if (!env.GATEWAY) return;
+  await env.GATEWAY.get(env.GATEWAY.idFromName('main')).fetch('https://gateway/refresh').catch((err) => console.log('gateway', String(err).slice(0, 100)));
+}
+
 // ---------------------------------------------------------------- Suivi des clics (/go)
 
 // GET /go/<item>/<agent>?c=<salon> : compte le clic puis redirige vers l'agent (ou l'annonce d'origine).
@@ -468,6 +474,7 @@ export async function handleFeatureComponent(it, env, ctx, a, b, c, d, values) {
         stmts.push(env.DB.prepare('INSERT OR IGNORE INTO image_channels (channel_id, guild_id, added_at) VALUES (?, ?, ?)').bind(ch, it.guild_id, Date.now()));
       }
       await env.DB.batch(stmts);
+      await refreshGateway(env);
       return update(await settingsView(env, it, values.length
         ? `🔎 Recherche par image active dans ${values.map((v) => `<#${v}>`).join(', ')}. Réponse sous chaque photo en 2 min maximum.`
         : '🔎 Recherche par image désactivée.'));
@@ -479,6 +486,7 @@ export async function handleFeatureComponent(it, env, ctx, a, b, c, d, values) {
         stmts.push(env.DB.prepare('INSERT OR IGNORE INTO aiqc_channels (channel_id, guild_id, added_at) VALUES (?, ?, ?)').bind(ch, it.guild_id, Date.now()));
       }
       await env.DB.batch(stmts);
+      await refreshGateway(env);
       return update(await settingsView(env, it, values.length
         ? `🤖 Analyse IA des QC active dans ${values.map((v) => `<#${v}>`).join(', ')} : les membres y postent leurs photos QC, le bot répond tout de suite.`
         : '🤖 Salons d\'analyse IA désactivés.'));
@@ -490,6 +498,7 @@ export async function handleFeatureComponent(it, env, ctx, a, b, c, d, values) {
         stmts.push(env.DB.prepare('INSERT OR IGNORE INTO convert_channels (channel_id, guild_id, added_at) VALUES (?, ?, ?)').bind(ch, it.guild_id, Date.now()));
       }
       await env.DB.batch(stmts);
+      await refreshGateway(env);
       return update(await settingsView(env, it, values.length
         ? `🔄 Conversion automatique active dans ${values.map((v) => `<#${v}>`).join(', ')}. Le bot a besoin de « Voir le salon », « Envoyer des messages » et de l'intent Message Content.`
         : '🔄 Conversion automatique désactivée.'));

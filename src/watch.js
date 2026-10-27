@@ -30,9 +30,10 @@ const DISCORD_EPOCH = 1420070400000n;
 const snowflakeAt = (ms) => String((BigInt(Math.floor(ms)) - DISCORD_EPOCH) << 22n);
 const newer = (a, b) => BigInt(a) > BigInt(b);
 
-export async function watchChannels(env, ms = 55000, exec = null) {
-  // Connexion permanente à Discord active (gateway.js) : les messages arrivent déjà en direct, pas de relecture.
-  const alive = await env.DB.prepare("SELECT value FROM settings WHERE key = 'gateway:alive'").first().catch(() => null);
+export async function watchChannels(env, ms = 55000, exec = null, force = false) {
+  // Connexion permanente à Discord active (gateway.js) : les messages arrivent déjà en direct, pas de relecture
+  // (sauf rattrapage demandé, ex. un salon ajouté à l'instant).
+  const alive = force ? null : await env.DB.prepare("SELECT value FROM settings WHERE key = 'gateway:alive'").first().catch(() => null);
   if (alive && Date.now() - Number(alive.value) < 75000) return 0;
   const deadline = Date.now() + ms;
   let external = 0;

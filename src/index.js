@@ -804,6 +804,11 @@ async function handleApi(request, env, url) {
     return json({ ok: true, statements: stmts.length, added });
   }
 
+  // Rattrapage : relecture unique des salons surveillés (salon ajouté à l'instant, ou demandé à la main).
+  if (path === '/api/watch/catchup' && request.method === 'POST') {
+    return json({ ok: true, done: await watchChannels(env, 6000, null, true) });
+  }
+
   // Message reçu en direct par la connexion permanente à Discord (gateway.js).
   if (path === '/api/watch/message' && request.method === 'POST') {
     const { channel_id: channelId, message } = await request.json();
