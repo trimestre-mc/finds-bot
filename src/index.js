@@ -133,6 +133,7 @@ async function handleScheduled(event, env, ctx) {
 // Index partiels (tâches de fond qui ne lisent que les items concernés). Créés par le bot dès que le quota
 // d'écritures D1 le permet, puis plus rien à faire. Essai au plus toutes les 10 min.
 const INDEXES = [
+  'CREATE INDEX IF NOT EXISTS shops_due ON shops(status, score DESC)',
   'CREATE INDEX IF NOT EXISTS items_qcdue ON items(qc_checked_at) WHERE popularity > 0 OR posted_count > 0 OR manual = 1',
   'CREATE TABLE IF NOT EXISTS search_cache (key TEXT PRIMARY KEY, ids TEXT NOT NULL, at INTEGER NOT NULL)',
   'CREATE TABLE IF NOT EXISTS qc_requests (item_id TEXT PRIMARY KEY, user_id TEXT, at INTEGER NOT NULL)',
@@ -144,7 +145,7 @@ let indexesTriedAt = 0;
 async function ensureIndexes(env) {
   if (indexesReady || Date.now() - indexesTriedAt < 600000) return;
   indexesTriedAt = Date.now();
-  const row = await env.DB.prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE name IN ('items_qcdue', 'search_cache', 'qc_requests', 'image_channels')").first();
+  const row = await env.DB.prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE name IN ('shops_due', 'items_qcdue', 'search_cache', 'qc_requests', 'image_channels')").first();
   if (row.n === INDEXES.length) { indexesReady = true; return; }
   for (const sql of INDEXES) await env.DB.prepare(sql).run();
   indexesReady = true;
@@ -535,17 +536,39 @@ function indexerDelay(env) {
 }
 
 // Boutiques à indexer : nouvelles, à rafraîchir (24 h) ou bloquées en cours d'indexation.
+// Curseur partagé entre les jobs de l'indexeur : chaque appel prend la tranche suivante de lignes (par rowid) et
+// ne lit qu'elle. Un tour complet de la table ne coûte qu'une lecture par ligne, quel que soit le nombre de jobs
+// (avant : chaque job reparcourait la table depuis le début à chaque appel). Revient au début en fin de table.
+async function claimRange(env, key, table, size) {
+  const row = await env.DB.prepare(
+    `INSERT INTO settings (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = CAST(settings.value AS INTEGER) + ?2
+     RETURNING CAST(value AS INTEGER) AS hi`,
+  ).bind(key, size).first();
+  const hi = row.hi;
+  const max = (await env.DB.prepare(`SELECT MAX(rowid) AS m FROM ${table}`).first()).m || 0;
+  if (hi - size >= max) {
+    await env.DB.prepare("UPDATE settings SET value = '0' WHERE key = ?").bind(key).run();
+    return null;
+  }
+  return [hi - size, hi];
+}
+
 async function dueShops(env, limit, shard = { n: 1, i: 0 }) {
+  // Boutiques jamais indexées d'abord (les plus vendeuses en tête, index shops_due), sinon celles à réindexer.
   const now = Date.now();
   const { results } = await env.DB.prepare(
+    `SELECT id, name FROM shops INDEXED BY shops_due WHERE status = 'pending' AND CAST(id AS INTEGER) % ? = ?
+     ORDER BY score DESC LIMIT ?`,
+  ).bind(shard.n, shard.i, limit).all();
+  if (results.length) return results;
+  const { results: again } = await env.DB.prepare(
     `SELECT id, name FROM shops
-     WHERE (status = 'pending'
-        OR (status IN ('ok', 'error') AND (last_indexed IS NULL OR last_indexed < ?))
+     WHERE ((status IN ('ok', 'error') AND (last_indexed IS NULL OR last_indexed < ?))
         OR (status = 'indexing' AND (last_indexed IS NULL OR last_indexed < ?)))
        AND CAST(id AS INTEGER) % ? = ?
-     ORDER BY CASE status WHEN 'pending' THEN 0 ELSE 1 END, score DESC, last_indexed LIMIT ?`,
+     ORDER BY last_indexed LIMIT ?`,
   ).bind(now - REINDEX_HOURS * 3600 * 1000, now - 3 * 3600 * 1000, shard.n, shard.i, limit).all();
-  return results;
+  return again;
 }
 
 // Part du travail d'un job d'indexation (plusieurs jobs GitHub en parallèle).
@@ -673,13 +696,12 @@ async function handleApi(request, env, url) {
     // un COUNT par job et par lancement lisait ~470 000 lignes à chaque fois).
     const sh = shardOf(url);
     const [items, pages] = await Promise.all([budget(env, 'items'), budget(env, 'pages')]);
-    const any = async (sql) => ((await env.DB.prepare(sql).bind(sh.n, sh.i).first()) ? 1 : 0);
     return json({
       // Budget du jour épuisé : rien à faire jusqu'à demain pour ce type de travail.
       shops: items.left ? await dueShops(env, 10, sh) : [],
-      missingImages: pages.left
-        ? await any("SELECT 1 FROM items INDEXED BY items_popularity WHERE images IS NULL AND platform = 'weidian' AND CAST(item_id AS INTEGER) % ? = ? LIMIT 1") : 0,
-      linkQueue: pages.left ? await any('SELECT 1 FROM link_queue WHERE CAST(item_id AS INTEGER) % ? = ? LIMIT 1') : 0,
+      // Photos : le curseur fait le tour de la table en continu, il y a toujours une tranche à vérifier.
+      missingImages: pages.left ? 1 : 0,
+      linkQueue: pages.left && (await env.DB.prepare('SELECT 1 FROM link_queue LIMIT 1').first()) ? 1 : 0,
       jadeship: sh.i === 0 && await jadeshipDue(env),
     });
   }
@@ -740,10 +762,11 @@ async function handleApi(request, env, url) {
 
   // Items Weidian dont il faut trouver la boutique : l'indexeur lit leur page (boutique + photos).
   if (path === '/api/indexer/link-queue' && request.method === 'GET') {
-    const sh = shardOf(url);
-    // Ordre d'arrivée (rowid), sans tri : SQLite s'arrête dès qu'il en a assez au lieu de lire toute la file.
-    const { results } = await env.DB.prepare('SELECT item_id FROM link_queue WHERE CAST(item_id AS INTEGER) % ? = ? LIMIT ?')
-      .bind(sh.n, sh.i, Math.min(Number(url.searchParams.get('limit')) || 500, 2000)).all();
+    // Tranche suivante de la file (curseur partagé entre les jobs) : chaque lien n'est lu qu'une fois par tour.
+    const range = await claimRange(env, 'cursor:links', 'link_queue', 2000);
+    if (!range) return json({ items: [] });
+    const { results } = await env.DB.prepare('SELECT item_id FROM link_queue WHERE rowid > ? AND rowid <= ?')
+      .bind(range[0], range[1]).all();
     return json({ items: results.map((r) => r.item_id) });
   }
 
@@ -802,14 +825,13 @@ async function handleApi(request, env, url) {
   }
 
   if (path === '/api/indexer/missing-images' && request.method === 'GET') {
-    const sh = shardOf(url);
-    // Parcours de l'index de popularité jusqu'à avoir assez d'items : on lit ~limite × nombre de jobs lignes,
-    // pas toute la table (le tri de tous les items sans photos lisait ~470 000 lignes par appel).
     if (!(await budget(env, 'pages')).left) return json({ items: [] });
+    // Tranche suivante de la table (curseur partagé) : ~3 000 lignes lues par appel, jamais toute la table.
+    const range = await claimRange(env, 'cursor:images', 'items', 3000);
+    if (!range) return json({ items: [] });
     const { results } = await env.DB.prepare(
-      `SELECT item_id FROM items INDEXED BY items_popularity WHERE images IS NULL AND platform = 'weidian' AND CAST(item_id AS INTEGER) % ? = ?
-       ORDER BY popularity DESC, first_seen DESC LIMIT ?`,
-    ).bind(sh.n, sh.i, Math.min(Number(url.searchParams.get('limit')) || 500, 2000)).all();
+      "SELECT item_id FROM items WHERE rowid > ? AND rowid <= ? AND images IS NULL AND platform = 'weidian'",
+    ).bind(range[0], range[1]).all();
     return json({ items: results.map((r) => r.item_id) });
   }
 

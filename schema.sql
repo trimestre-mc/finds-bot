@@ -16,6 +16,8 @@ CREATE TABLE IF NOT EXISTS shops (
   score INTEGER NOT NULL DEFAULT 0  -- priorité d'indexation : ventes de l'item qui a fait découvrir la boutique
 );
 
+CREATE INDEX IF NOT EXISTS shops_due ON shops(status, score DESC);
+
 -- Items indexés (ou ajoutés à la main pour Taobao / 1688)
 CREATE TABLE IF NOT EXISTS items (
   id TEXT PRIMARY KEY,              -- "<platform>:<itemId>"
