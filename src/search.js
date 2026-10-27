@@ -2,6 +2,7 @@
 
 import { relevance, relaxQuery } from './synonyms.js';
 import { addLiveResults } from './livesearch.js';
+import { readsOver } from './budget.js';
 import { translate } from './translate.js';
 import { detectCategory } from './categories.js';
 
@@ -124,6 +125,7 @@ function order(params) {
 }
 
 const FEW_RESULTS = 10;
+const SCAN_ROWS = 200000;
 
 export async function allResultIds(env, params, money) {
   if (params.groups && params.groups.length) {
@@ -146,10 +148,13 @@ async function rankedIds(env, params, money) {
   // Recherche par mots : les plus pertinents d'abord (mots trouvés dans le titre anglais, bon type d'article),
   // puis le tri choisi. On parcourt l'index de popularité et on s'arrête à 5000 trouvés (quota de lectures Turso),
   // puis cache partagé de 6 h.
+  // Lecture bornée : au plus les SCAN_ROWS items les plus vendus (20 000 si le quota de lectures du mois est atteint).
+  const scan = (await readsOver(env)) ? 20000 : SCAN_ROWS;
   const { results } = await env.DB.prepare(
-    `SELECT id, title_en, title_zh, shop_name, category, popularity, first_seen, price_cny FROM items INDEXED BY items_popularity ${w.sql}
-     ORDER BY popularity DESC, first_seen DESC LIMIT 5000`,
-  ).bind(...w.binds).all();
+    `SELECT id, title_en, title_zh, shop_name, category, popularity, first_seen, price_cny FROM (
+       SELECT * FROM items INDEXED BY items_popularity ORDER BY popularity DESC, first_seen DESC LIMIT ?
+     ) ${w.sql} LIMIT 5000`,
+  ).bind(scan, ...w.binds).all();
   const scored = results.map((r) => ({ ...r, score: relevance(params.groups, r) })).filter((r) => r.score > 0);
   const sorted = sortRows(scored, params);
   if (!params.sort || params.sort === 'popular') sorted.sort((a, b) => b.score - a.score || b.popularity - a.popularity || b.first_seen - a.first_seen);
