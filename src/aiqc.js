@@ -45,6 +45,15 @@ async function allowed(env) {
   return row && row.used <= (env.GROQ_API_KEY ? AIQC_PER_DAY_GROQ : AIQC_PER_DAY);
 }
 
+// Une analyse qui n'a pas pu se faire (IA saturée) ne compte pas dans la limite du jour.
+async function uncount(env) {
+  const day = new Date().toISOString().slice(0, 10);
+  await env.DB.prepare(
+    `UPDATE settings SET value = json_object('day', ?1, 'used', MAX(0, json_extract(value, '$.used') - 1))
+     WHERE key = 'ai_qc' AND json_extract(value, '$.day') = ?1`,
+  ).bind(day).run().catch(() => {});
+}
+
 // Analyse (ou résultat déjà gardé) d'un lot de photos. { result, cached } ; result null si limite du jour ou échec.
 export async function qcAnalysis(env, photos, { ref = null, what = null } = {}) {
   const shots = photos.filter((u) => /^https:\/\//.test(u || '')).slice(0, PHOTOS);
@@ -54,11 +63,18 @@ export async function qcAnalysis(env, photos, { ref = null, what = null } = {}) 
   if (hit && Date.now() - hit.at < CACHE_MS) return { result: JSON.parse(hit.ids), cached: true };
   if (!(await allowed(env))) return { result: null, reason: 'limite' };
   let quota = false;
+  let busy = false;
   const result = await analyzeQc(env, shots, { ref, what }).catch((err) => {
     console.log('analyse QC', String(err).slice(0, 160));
     quota = /4006/.test(String(err));
+    busy = /occupe/.test(String(err));
     return null;
   });
+  if (busy) {
+    // Groq saturé pour la minute et Cloudflare sans quota : on n'a pas compté cette analyse, réessai possible tout de suite.
+    await uncount(env);
+    return { result: null, reason: 'occupe' };
+  }
   if (quota) {
     // Quota d'IA du jour épuisé chez Cloudflare : on le note, plus d'essai jusqu'à demain.
     await aiNeurons(env).then((b) => b.add(AI_NEURONS_PER_DAY)).catch(() => {});
@@ -74,7 +90,9 @@ export async function qcAnalysis(env, photos, { ref = null, what = null } = {}) 
 export function analysisView(emojis, res, { title = null, photos = [], who = null, match = null } = {}) {
   const e = (n) => etxt(emojis, n);
   if (!res.result) {
-    const why = res.reason === 'limite'
+    const why = res.reason === 'occupe'
+      ? 'L\'IA est très demandée en ce moment. Reposte tes photos (ou re-clique) dans une minute.'
+      : res.reason === 'limite'
       ? 'L\'analyse IA a atteint sa limite du jour (quota d\'IA gratuit). Réessaie demain, ou demande l\'avis des membres (votes GL / RL).'
       : res.reason === 'photos' ? 'Je n\'ai pas trouvé de photos à analyser.' : 'L\'IA n\'a pas pu analyser ces photos. Réessaie dans un moment.';
     return [container([text(`### ${e('fb_bot')} Analyse IA des QC\n${why}`)], 0x64748b)];

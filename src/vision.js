@@ -58,6 +58,19 @@ const GROQ_URL = 'https://api.groq.com/openai/v1/chat/completions';
 const GROQ_VISION = 'qwen/qwen3.8-27b';
 const GROQ_TEXT = 'openai/gpt-oss-120b';
 
+// Groq au repos (quota du jour atteint) jusqu'à l'heure gardée dans les réglages.
+async function groqResting(env) {
+  if (!env.DB) return false;
+  const row = await env.DB.prepare("SELECT value FROM settings WHERE key = 'groq:rest'").first().catch(() => null);
+  return !!row && Number(row.value) > Date.now();
+}
+
+async function groqRest(env, err) {
+  const m = String(err).match(/try again in (?:(\d+)h)?(?:(\d+)m)?([\d.]+)s/);
+  const ms = m ? ((Number(m[1] || 0) * 60 + Number(m[2] || 0)) * 60 + Number(m[3] || 0)) * 1000 : 3600000;
+  await env.DB.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('groq:rest', ?)").bind(String(Date.now() + ms)).run().catch(() => {});
+}
+
 // Paramètres d'un modèle Groq. Qwen (photos) : sans « réflexion » (elle consomme la limite de 1 000 jetons de réponse
 // par minute de l'offre gratuite) ; GPT-OSS (fusion) : réflexion courte, non renvoyée.
 function groqBody(model, messages, maxTokens) {
@@ -68,8 +81,17 @@ function groqBody(model, messages, maxTokens) {
 }
 
 // messages au format OpenAI ; kind : 'vision' ou 'text'. Renvoie { text, neurons, provider }.
-export async function chat(env, { messages, kind = 'vision', cfModel, maxTokens = 600, cfExtra = {} }) {
-  if (env.GROQ_API_KEY) {
+// prefer : 'groq' (analyses QC, gros quota) ou 'cloudflare' (lecture de marque, très peu coûteuse : Groq reste libre).
+export async function chat(env, { messages, kind = 'vision', cfModel, maxTokens = 600, cfExtra = {}, prefer = 'groq' }) {
+  if (prefer === 'cloudflare' && env.AI) {
+    try {
+      return await cloudflareChat(env, cfModel, messages, maxTokens, cfExtra);
+    } catch (err) {
+      if (!env.GROQ_API_KEY) throw err;
+      console.log('cloudflare (relais vers Groq)', String(err).slice(0, 120));
+    }
+  }
+  if (env.GROQ_API_KEY && !(await groqResting(env))) {
     try {
       const send = () => fetch(GROQ_URL, {
         method: 'POST',
@@ -77,9 +99,11 @@ export async function chat(env, { messages, kind = 'vision', cfModel, maxTokens 
         body: JSON.stringify(groqBody(kind === 'vision' ? (env.GROQ_VISION_MODEL || GROQ_VISION) : (env.GROQ_TEXT_MODEL || GROQ_TEXT), messages, maxTokens)),
       });
       let res = await send();
-      // Limite par minute de l'offre gratuite (jetons de réponse) : on attend ce que Groq demande (20 s au plus).
-      for (let i = 0; i < 3 && res.status === 429; i++) {
-        const wait = Math.min(20, Number(res.headers.get('retry-after')) || 5);
+      // Limite par minute de l'offre gratuite (jetons de réponse) : on attend ce que Groq demande (25 s au plus ;
+      // au-delà, Cloudflare tout de suite).
+      for (let i = 0; i < 2 && res.status === 429; i++) {
+        const wait = Number(res.headers.get('retry-after')) || 5;
+        if (wait > 25) break;
         await new Promise((r) => setTimeout(r, wait * 1000));
         res = await send();
       }
@@ -87,12 +111,19 @@ export async function chat(env, { messages, kind = 'vision', cfModel, maxTokens 
         const d = await res.json();
         return { text: String((d.choices && d.choices[0] && d.choices[0].message && d.choices[0].message.content) || ''), neurons: 0, provider: 'groq' };
       }
-      console.log('groq', res.status, (await res.text()).slice(0, 500));
+      const err = await res.text();
+      console.log('groq', res.status, err.slice(0, 300));
+      // Quota du jour de Groq atteint (« per day ») : on ne lui demande plus rien jusqu'à l'heure qu'il indique.
+      if (res.status === 429 && /per day/i.test(err)) await groqRest(env, err);
     } catch (err) {
       console.log('groq', String(err).slice(0, 160));
     }
   }
-  if (!env.AI) throw new Error('aucune IA disponible');
+  if (!env.AI || prefer === 'cloudflare') throw new Error('aucune IA disponible (Groq saturé)');
+  return cloudflareChat(env, cfModel, messages, maxTokens, cfExtra);
+}
+
+async function cloudflareChat(env, cfModel, messages, maxTokens, cfExtra) {
   const res = await env.AI.run(cfModel, { messages, max_tokens: maxTokens, temperature: 0.1, ...cfExtra });
   const out = typeof res === 'string' ? res
     : res && (res.response ?? (res.choices && res.choices[0] && res.choices[0].message && res.choices[0].message.content));
@@ -107,7 +138,7 @@ export async function describeImage(env, imageUrl, model = VISION_MODEL) {
   const image = await asDataUrl(imageUrl);
   const res = await chat(env, {
     messages: [{ role: 'user', content: [{ type: 'text', text: PROMPT }, { type: 'image_url', image_url: { url: image } }] }],
-    cfModel: model, maxTokens: 120,
+    cfModel: model, maxTokens: 120, prefer: 'cloudflare',
   });
   const out = res.text;
   const raw = parseFirstObject(out);
@@ -136,7 +167,7 @@ Si une règle graduée est visible, estime une mesure utile (ex : « Longueur �
 ${ctx.ref ? 'Si la photo du vendeur montre plusieurs coloris (collage), ne compare pas la couleur avec elle.' : ''}
 Indique le numéro de la photo QC (photo ${ctx.n || 1}). Ne te contredis pas. Évite les phrases vagues (« belle finition ») : dis ce que tu vois. Sois bref : des faits, pas de longues phrases.
 Ne juge PAS si c'est authentique. Ne invente rien : si un détail n'est pas visible, dis-le. Sois concret (« photo 2 : fil qui dépasse sur la manche gauche »).
-Réponds UNIQUEMENT avec un objet JSON : {"photos": ["ce que tu vois précisément sur la photo QC"], "article": "marque et type d'article si reconnaissables, sinon null", "verdict": "ok" ou "a_verifier" ou "probleme", "points": [{"etat": "ok" ou "attention" ou "probleme", "texte": "phrase courte en français"}], "conseil": "une phrase en français"}. 2 à 5 points.`;
+Réponds UNIQUEMENT avec un objet JSON compact : {"vu": "une phrase : ce que montre la photo", "article": "marque et type d'article si reconnaissables, sinon null", "verdict": "ok" ou "a_verifier" ou "probleme", "points": [{"etat": "ok" ou "attention" ou "probleme", "texte": "phrase courte en français"}]}. 2 à 4 points.`;
 
 // Photos (URLs) → analyse : { verdict, points: [{ etat, texte }], conseil, article, vu, neurons } ou null.
 // Chaque photo est analysée seule, en pleine résolution (étiquettes lisibles, détails visibles) ; la photo du vendeur
@@ -154,7 +185,7 @@ async function runVision(env, model, prompt, urls) {
   const images = await Promise.all(urls.map((u) => asDataUrl(u)));
   const res = await chat(env, {
     messages: [{ role: 'user', content: [{ type: 'text', text: prompt }, ...images.map((url) => ({ type: 'image_url', image_url: { url } }))] }],
-    cfModel: model, maxTokens: 450,
+    cfModel: model, maxTokens: 550,
   });
   return { raw: parseFirstObject(res.text), neurons: res.neurons, out: res.text, provider: res.provider };
 }
@@ -162,16 +193,38 @@ async function runVision(env, model, prompt, urls) {
 export async function analyzeQc(env, photos, { ref = null, what = null, model = VISION_MODEL } = {}) {
   if (!env.AI && !env.GROQ_API_KEY) return null;
   // Avec Groq (gros quota gratuit) : jusqu'à 5 photos ; sans, 3 (quota Cloudflare).
-  const shots = photos.filter(Boolean).slice(0, env.GROQ_API_KEY ? 5 : 3);
+  const shots = photos.filter(Boolean).slice(0, 3); // 3 photos : rapide, et dans les limites gratuites
   if (!shots.length) return null;
+  // D'abord l'article, vu sur toutes les photos ensemble (un gros plan seul peut tromper : un logo brodé de près
+  // ressemble à un bonnet) ; chaque photo est ensuite analysée en sachant ce que c'est.
+  if (!what && shots.length > 1) {
+    const id = await chat(env, {
+      cfModel: model, maxTokens: 80, prefer: 'cloudflare',
+      messages: [{ role: 'user', content: [
+        { type: 'text', text: `Ces photos QC montrent UN SEUL article (gros plans et vue d'ensemble). Quel est cet article ? ${BRAND_CUES} `
+          + 'Réponds UNIQUEMENT en JSON : {"article": "marque + type + couleur, 6 mots max"}.' },
+        ...(await Promise.all(shots.slice(0, 2).map((u) => asDataUrl(u)))).map((url) => ({ type: 'image_url', image_url: { url } })),
+      ] }],
+    }).catch(() => null);
+    const found = id && parseFirstObject(id.text);
+    if (found && clean(found.article)) what = `${clean(found.article)} (toutes les photos montrent cet article, parfois en gros plan)`;
+  }
   const one = (u, i) => runVision(env, model, QC_PROMPT({ ref: !!(ref && i === 0), what, n: i + 1 }), [...(ref && i === 0 ? [ref] : []), u])
-    .catch((err) => { console.log('analyse QC (photo)', String(err).slice(0, 160)); return { raw: null, neurons: 0, quota: /4006|daily free allocation/.test(String(err)) }; });
+    .catch((err) => {
+      console.log('analyse QC (photo)', String(err).slice(0, 160));
+      // Cloudflare sans quota (4006) : si Groq est aussi au repos pour la journée, c'est la limite du jour ; sinon Groq est
+      // juste saturé pour la minute.
+      const cfOut = /4006|daily free allocation/.test(String(err));
+      return { raw: null, neurons: 0, quota: cfOut && !env.GROQ_API_KEY, busy: cfOut || /saturé|429/.test(String(err)), cfOut };
+    });
   // Avec Groq : une photo après l'autre (limite de jetons par minute de l'offre gratuite) ; sinon en parallèle.
   let per = [];
   if (env.GROQ_API_KEY) for (const [i, u] of shots.entries()) per.push(await one(u, i));
   else per = await Promise.all(shots.map(one));
   const ok = per.filter((p) => p.raw && Array.isArray(p.raw.points));
   if (!ok.length && per.some((p) => p.quota)) throw new Error('4006 : quota d\'IA du jour épuisé');
+  if (!ok.length && per.some((p) => p.cfOut) && await groqResting(env)) throw new Error('4006 : quotas d\'IA du jour épuisés (Cloudflare et Groq)');
+  if (!ok.length && per.some((p) => p.busy)) throw new Error('occupe : IA très demandée');
   const photosSeen = ok.length;
   let neurons = per.reduce((n, p) => n + p.neurons, 0);
   if (!ok.length) {
@@ -179,7 +232,7 @@ export async function analyzeQc(env, photos, { ref = null, what = null, model = 
     return null;
   }
   const observations = ok.map((p, i) => ({
-    photo: i + 1, vu: Array.isArray(p.raw.photos) ? p.raw.photos.join(' ') : '', article: p.raw.article || null, verdict: p.raw.verdict,
+    photo: i + 1, vu: String(p.raw.vu || (Array.isArray(p.raw.photos) ? p.raw.photos.join(' ') : '')).slice(0, 300), article: p.raw.article || null, verdict: p.raw.verdict,
     points: p.raw.points.map((x) => `${etat(x.etat)} : ${x.texte}`),
   }));
   const article = clean(ok.map((p) => p.raw.article).find(Boolean));
@@ -192,7 +245,7 @@ export async function analyzeQc(env, photos, { ref = null, what = null, model = 
         { role: 'system', content: 'Tu es un expert QC de reps (vêtements, chaussures, sacs, bijoux achetés via un agent en Chine). On te donne les observations faites photo par photo (en JSON). '
           + 'Fusionne-les en une analyse finale en français, comme un expert : garde les faits précis (tailles lues, codes, mesures, défauts avec le numéro de photo), '
           + 'supprime les doublons et les contradictions (un fait lu sur une photo l\'emporte sur « pas visible » sur une autre), pas de phrases vagues. '
-          + 'Toutes les photos montrent le même article (gros plans + vue d\'ensemble) : ne le compte jamais comme deux articles, même si la couleur paraît varier avec la lumière. '
+          + 'Toutes les photos montrent le même article (gros plans + vue d\'ensemble) : n\'écris JAMAIS « deux articles différents » ; si une photo semble montrer autre chose, c\'est un gros plan du même article. La couleur peut varier avec la lumière. '
           + 'Ne confonds pas la pointure (ex : US 11) avec le modèle (ex : Air Jordan 4) ; le modèle vient du design, pas de l\'étiquette de taille. '
           + 'Note la qualité visible de 0 à 10 (10 = parfait, 7 = petits défauts sans gravité, 4 ou moins = défaut à faire corriger ou retour). '
           + 'Liste les photos importantes qui manquent pour ce type d\'article (ex : étiquette intérieure, profil, semelle, dos, logo de près, couture de près), seulement si elles manquent vraiment. '

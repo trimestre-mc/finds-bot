@@ -27,10 +27,10 @@ test('analyse IA des QC : résultat lisible, gardé en cache, limite du jour', a
   const first = await qcAnalysis(env, photos);
   assert.equal(first.result.verdict, 'a_verifier');
   assert.equal(first.result.article, 'Nike Tech Fleece Shorts');
-  assert.equal(calls, 3); // une analyse par photo (2) + la fusion
+  assert.equal(calls, 4); // identification de l'article + une analyse par photo (2) + la fusion
   const again = await qcAnalysis(env, photos);
   assert.equal(again.cached, true);
-  assert.equal(calls, 3); // en cache : aucun appel de plus
+  assert.equal(calls, 4); // en cache : aucun appel de plus
   const view = JSON.stringify(analysisView({}, first, { title: 'Nike Tech Fleece Shorts', photos }));
   assert.match(view, /Quelques points à vérifier/);
   assert.match(view, /⚠️ Photo 2 : fil qui dépasse/);
@@ -89,7 +89,7 @@ test('Groq d\'abord (score sur 10, photos à demander), Cloudflare en secours si
     return new Response(new Uint8Array(3000), { headers: { 'content-type': 'image/jpeg' } });
   };
   const res = await qcAnalysis(env, ['https://img.finderqc.com/a.jpg', 'https://img.finderqc.com/b.jpg']);
-  assert.equal(cf, 0, 'Cloudflare pas utilisé');
+  assert.equal(cf, 1, 'Cloudflare seulement pour identifier l\'article (peu coûteux), les photos par Groq');
   assert.equal(res.result.note, 9);
   const view = JSON.stringify(analysisView({}, res, {}));
   assert.match(view, /Note QC : \*\*9\/10\*\*/);
