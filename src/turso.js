@@ -44,12 +44,20 @@ export function tursoDb(url, token, shared = { calls: 0 }) {
   const db = { rowsRead: 0, get calls() { return shared.calls; } };
 
   async function pipeline(requests) {
-    shared.calls++;
-    const res = await fetch(endpoint, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ requests: [...requests, { type: 'close' }] }),
-    });
+    const send = () => {
+      shared.calls++;
+      return fetch(endpoint, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ requests: [...requests, { type: 'close' }] }),
+      });
+    };
+    let res = await send();
+    // Erreur passagère de Turso (5xx, ex. 520) : un 2e essai après une courte pause.
+    if (res.status >= 500) {
+      await new Promise((r) => setTimeout(r, 400));
+      res = await send();
+    }
     if (!res.ok) throw new Error(`Turso ${res.status}: ${(await res.text()).slice(0, 200)}`);
     const data = await res.json();
     return data.results.slice(0, requests.length).map((r) => {

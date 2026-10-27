@@ -58,3 +58,16 @@ test('lot atomique : une étape en erreur fait échouer tout le lot', async () =
   const db = tursoDb('libsql://x.turso.io', 't');
   await assert.rejects(() => db.batch([db.prepare('INSERT INTO a VALUES (1)')]), /UNIQUE constraint failed/);
 });
+
+test('erreur passagère de Turso (5xx) : un 2e essai', async () => {
+  const { tursoDb } = await import('../src/turso.js');
+  let n = 0;
+  globalThis.fetch = async () => {
+    n++;
+    if (n === 1) return new Response('error code: 520', { status: 520 });
+    return Response.json({ results: [{ type: 'ok', response: { type: 'execute', result: { cols: [{ name: 'x' }], rows: [[{ type: 'integer', value: '1' }]] } } }, { type: 'ok' }] });
+  };
+  const db = tursoDb('libsql://x.turso.io', 't');
+  assert.equal((await db.prepare('SELECT 1 AS x').first()).x, 1);
+  assert.equal(n, 2);
+});
