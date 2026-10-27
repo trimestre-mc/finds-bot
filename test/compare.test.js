@@ -95,3 +95,20 @@ test('partager des QC : message public avec les photos, qui a partagé et les bo
   const edit = sent.find((s) => s.method === 'PATCH');
   assert.match(JSON.stringify(edit.body), /Partagé dans le salon/);
 });
+
+test('comparer un item pas encore dans la base : sa fiche FinderQC sert de point de départ', async () => {
+  const env = { DB: memoryDb() };
+  globalThis.fetch = async (url) => {
+    const u = String(url);
+    if (u.includes('webSpuInfo')) return Response.json({ code: 0, data: { spuInfo: { enTitle: 'Stussy Basic Hoodie', cnPrice: 210, picUrl: 'https://img.finderqc.com/a.jpg', oneYear: 30, qcPhotosCount: 2 } } });
+    if (u === 'https://img.finderqc.com/a.jpg') return new Response(new Uint8Array(5000), { headers: { 'content-type': 'image/jpeg' } });
+    if (u.endsWith('/searchImage/search')) return Response.json({ code: 0, data: { search_id: 's' } });
+    if (u.includes('/searchImage/results/')) {
+      return Response.json({ code: 0, data: { results: [{ mallType: 'Taobao', itemId: '8000000001', enTitle: 'Stussy Hoodie Black', cnPrice: 150, picUrl: 'https://img.finderqc.com/b.jpg', oneYear: 400, qcPhotosCount: 12 }] } });
+    }
+    throw new Error(`fetch inattendu ${u}`);
+  };
+  const view = JSON.stringify(await compareView(env, 'taobao:7000000009'));
+  assert.match(view, /chez \*\*2\*\* vendeurs/);
+  assert.match(view, /Stussy Hoodie Black[^"]*\\n[^"]*le moins cher/);
+});

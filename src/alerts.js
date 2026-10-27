@@ -8,6 +8,7 @@ import { postContext, buildItemMessage } from './post.js';
 import { itemById, itemDb, itemsWhereIds } from './shard.js';
 import { formatMoney, formatCny } from './config.js';
 import { etxt, emo } from './emojis.js';
+import { finderItem } from './livesearch.js';
 
 const MAX_PER_USER = 50;
 const ITEMS_PER_RUN = 8;
@@ -22,7 +23,7 @@ export async function toggleWatch(env, userId, guildId, key) {
   if (had) return `${e('fb_bell')} Tu ne suis plus cet item.`;
   const n = await env.DB.prepare('SELECT COUNT(*) AS n FROM watches WHERE user_id = ?').bind(userId).first();
   if (n.n >= MAX_PER_USER) return `${e('fb_warn')} Tu suis déjà ${MAX_PER_USER} items : arrête d'en suivre un (re-clique sur 🔔) pour en ajouter.`;
-  const item = await itemById(env, key);
+  const item = (await itemById(env, key)) || (await finderItem(key).catch(() => null));
   await env.DB.prepare('INSERT OR REPLACE INTO watches (user_id, item_id, price, guild_id, at) VALUES (?, ?, ?, ?, ?)')
     .bind(userId, key, item ? item.price_cny : null, guildId || null, Date.now()).run();
   const price = item && item.price_cny != null ? ` (prix actuel : **${formatMoney(item.price_cny, ctx.money)}** · ${formatCny(item.price_cny)})` : '';
@@ -48,7 +49,10 @@ export async function checkWatches(env) {
   }
   if (!keys.length) return 0;
   await env.DB.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('watch:cursor', ?)").bind(keys[keys.length - 1].item_id).run();
-  const items = await itemsWhereIds(env, keys.map((k) => k.item_id));
+  // Items pas (encore) dans la base : leur fiche FinderQC, pour pouvoir quand même vérifier le prix et prévenir.
+  const inBase = await itemsWhereIds(env, keys.map((k) => k.item_id));
+  const missing = keys.map((k) => k.item_id).filter((k) => !inBase.some((i) => i.id === k));
+  const items = [...inBase, ...(await Promise.all(missing.map((k) => finderItem(k).catch(() => null)))).filter(Boolean)];
   let ctx = null;
   let sent = 0;
   for (const item of items) {

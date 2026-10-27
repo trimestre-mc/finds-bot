@@ -26,7 +26,7 @@ import { searchByImage } from './imagesearch.js';
 import { describeImage } from './vision.js';
 import { uploadEmojis, refreshEmojis } from './emojis.js';
 import { expandQuery, suggestQueries } from './synonyms.js';
-import { watchChannels, imageJob, saveFound } from './watch.js';
+import { watchChannels, imageJob, saveFound, handleLiveMessage } from './watch.js';
 import { translatePending, rewriteTitles, titleWait, quickTitles, applyGlossary } from './translate.js';
 import { fetchWeidianItem } from './weidian.js';
 import { extractWeidian, ingest, resolveQueue, scanSource, runDiscovery } from './discover.js';
@@ -43,6 +43,9 @@ import { sendDailyReport, dailyReport, sendWeeklyTop } from './report.js';
 const REINDEX_HOURS = 72;
 const TRANSLATE_PER_MINUTE = 40;
 const MODAL_SUBMIT = 5;
+
+// Connexion permanente à Discord (Durable Object, voir gateway.js).
+export { Gateway } from './gateway.js';
 
 export default {
   async fetch(request, env, ctx) {
@@ -134,6 +137,10 @@ async function handleScheduled(event, env, ctx) {
   }
   // Chaque minute : la file d'envoi d'abord (seule dans l'exécution), sinon l'entretien (traduction, catégories, indexeur).
   ctx.waitUntil((async () => {
+    // Connexion permanente à Discord : vérifiée (et relancée si besoin) chaque minute.
+    if (env.GATEWAY && env.GATEWAY_OFF !== '1') {
+      ctx.waitUntil(env.GATEWAY.get(env.GATEWAY.idFromName('main')).fetch('https://gateway/ensure').catch((e) => console.log('gateway', String(e).slice(0, 120))));
+    }
     await runSchedules(env).catch((e) => console.log('drops', String(e)));
     const queued = await env.DB.prepare('SELECT 1 AS n FROM post_queue LIMIT 1').first().catch(() => null);
     if (queued) {
@@ -785,6 +792,19 @@ async function handleApi(request, env, url) {
     return json({ ok: true, statements: stmts.length, added });
   }
 
+  // Message reçu en direct par la connexion permanente à Discord (gateway.js).
+  if (path === '/api/watch/message' && request.method === 'POST') {
+    const { channel_id: channelId, message } = await request.json();
+    return json({ ok: true, done: await handleLiveMessage(env, channelId, message) });
+  }
+
+  // État de la connexion permanente à Discord (et relance si besoin).
+  if (path === '/api/gateway' && request.method === 'GET') {
+    if (!env.GATEWAY) return json({ ok: false, error: 'pas de Durable Object GATEWAY' });
+    const res = await env.GATEWAY.get(env.GATEWAY.idFromName('main')).fetch('https://gateway/ensure');
+    return json({ ok: true, ...(await res.json()) });
+  }
+
   // Recherche d'une photo d'un salon de recherche par image, lancée par watch.js dans une exécution à part.
   if (path === '/api/watch/image' && request.method === 'POST') {
     const job = await request.json();
@@ -800,6 +820,18 @@ async function handleApi(request, env, url) {
   }
   if (path === '/api/emojis' && request.method === 'GET') {
     return json({ ok: true, map: await refreshEmojis(env) });
+  }
+
+  // Diagnostic : commandes enregistrées chez Discord (globales et par serveur) et leurs options.
+  if (path === '/api/commands' && request.method === 'GET') {
+    const global = await discordApi(env, 'GET', `/applications/${env.DISCORD_APP_ID}/commands`);
+    const guilds = await discordApi(env, 'GET', '/users/@me/guilds');
+    const perGuild = {};
+    for (const g of guilds.slice(0, 10)) {
+      perGuild[g.name] = (await discordApi(env, 'GET', `/applications/${env.DISCORD_APP_ID}/guilds/${g.id}/commands`).catch((e) => [String(e).slice(0, 80)]))
+        .map((c) => (typeof c === 'string' ? c : c.name));
+    }
+    return json({ global: global.map((c) => ({ name: c.name, auto: (c.options || []).filter((o) => o.autocomplete).map((o) => o.name) })), perGuild });
   }
 
   // Diagnostic : le bot peut-il s'appeler lui-même (recherches par image dans une exécution à part) ?

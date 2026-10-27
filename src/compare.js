@@ -10,6 +10,7 @@ import { detectCategory } from './categories.js';
 import { itemById } from './shard.js';
 import { emo, etxt, AGENT_EMOJI } from './emojis.js';
 import { ACCENTS } from './config.js';
+import { finderItem } from './livesearch.js';
 
 const CACHE_MS = 24 * 3600000;
 const SHOWN = 5;
@@ -29,7 +30,9 @@ async function sellers(env, item) {
 }
 
 export async function compareView(env, key) {
-  const [ctx, item] = await Promise.all([postContext(env), itemById(env, key)]);
+  const [ctx, known] = await Promise.all([postContext(env), itemById(env, key)]);
+  // Pas dans la base (ou sans photo) : sa fiche chez FinderQC.
+  const item = known && known.image ? known : (await finderItem(key).catch(() => null)) || known;
   const accent = (ACCENTS[ctx.cfg.accent] || ACCENTS.orange).color;
   const e = (n) => etxt(ctx.emojis, n);
   if (!item || !/^https:\/\//.test(item.image || '')) {

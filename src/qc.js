@@ -296,7 +296,10 @@ export async function qcWindow(env, item, view = 0, opts = {}) {
     // Pas de QC nulle part : on peut les demander à la communauté.
     const askBtn = opts.qcChannel
       ? { type: 2, style: 1, emoji: { name: '🙋' }, label: en ? 'Ask for QC' : 'Demander un QC', custom_id: `pub:qcreq:${item.id}`.slice(0, 100) } : null;
-    if (askBtn || similarBtn) ask = row(...[similarBtn, askBtn].filter(Boolean));
+    // Le même article chez d'autres vendeurs : souvent l'un d'eux a des QC.
+    const cmpBtn = /^https:\/\//.test(item.image || '')
+      ? { type: 2, style: 2, emoji: emo(opts.emojis, 'fb_compare'), label: en ? 'Other sellers' : 'Autres vendeurs', custom_id: `pub:cmp:${item.id}`.slice(0, 100) } : null;
+    if (askBtn || similarBtn || cmpBtn) ask = row(...[similarBtn, cmpBtn, askBtn].filter(Boolean));
   }
   const retry = qc.failed && !batches.length
     ? row({ type: 2, style: 1, emoji: { name: '🔄' }, label: en ? 'Retry' : 'Réessayer', custom_id: `pub:qcp:${item.id}:${view}` }) : null;

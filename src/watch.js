@@ -28,6 +28,9 @@ const snowflakeAt = (ms) => String((BigInt(Math.floor(ms)) - DISCORD_EPOCH) << 2
 const newer = (a, b) => BigInt(a) > BigInt(b);
 
 export async function watchChannels(env, ms = 55000, exec = null) {
+  // Connexion permanente à Discord active (gateway.js) : les messages arrivent déjà en direct, pas de relecture.
+  const alive = await env.DB.prepare("SELECT value FROM settings WHERE key = 'gateway:alive'").first().catch(() => null);
+  if (alive && Date.now() - Number(alive.value) < 75000) return 0;
   const deadline = Date.now() + ms;
   let external = 0;
   const used = () => external + (env.DB.calls || 0);
@@ -92,6 +95,30 @@ export async function watchChannels(env, ms = 55000, exec = null) {
   if (stmts.length) await batchByDb(stmts).catch((err) => console.log('salons', String(err).slice(0, 120)));
   if (found.length) await saveFound(env, found);
   return channels.reduce((n, c) => n + c.done, 0);
+}
+
+// Un message reçu en direct par la connexion permanente (gateway.js) : même traitement que la relecture, une seule
+// fois par message (la position de lecture du salon sert de verrou : un message plus ancien est ignoré).
+export async function handleLiveMessage(env, channelId, m) {
+  for (const [table, kind] of [['convert_channels', 'convert'], ['image_channels', 'image']]) {
+    const c = await env.DB.prepare(
+      `UPDATE ${table} SET last_message_id = ? WHERE channel_id = ?
+         AND (last_message_id IS NULL OR CAST(last_message_id AS INTEGER) < CAST(? AS INTEGER)) RETURNING *`,
+    ).bind(m.id, channelId, m.id).first();
+    if (!c) continue;
+    const ctx = await postContext(env);
+    const ch = { ...c, kind, table, done: 0 };
+    const found = [];
+    if (kind === 'convert') await convertMessage(env, ctx, ch, m);
+    else await imageMessage(env, ctx, ch, m, found, null);
+    if (found.length) await saveFound(env, found);
+    if (ch.done) {
+      await env.DB.prepare(`UPDATE ${table} SET ${kind === 'image' ? 'searched = searched' : 'converted = converted'} + ? WHERE channel_id = ?`)
+        .bind(ch.done, channelId).run().catch(() => {});
+    }
+    return ch.done;
+  }
+  return 0;
 }
 
 // Lien(s) d'item dans un message : réponse avec les boutons d'achat. Renvoie le nombre de requêtes faites.

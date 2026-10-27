@@ -134,12 +134,14 @@ export function imageResultsView(ctx, found, channelId, seen = null) {
           emoji: emo(ctx.emojis, AGENT_EMOJI[agent.preset] || 'fb_cart') }
         : { ...link('Voir l\'annonce', item.url), emoji: emo(ctx.emojis, PLATFORM_EMOJI[item.platform] || 'fb_link') },
       { type: 2, style: 1, label: x.qc ? `QC · ${fmt(x.qc)}` : 'Photos QC', emoji: emo(ctx.emojis, 'fb_qc'), custom_id: `pub:qc:${item.id}`.slice(0, 100) },
+      { type: 2, style: 2, label: 'Comparer', emoji: emo(ctx.emojis, 'fb_compare'), custom_id: `pub:cmp:${item.id}`.slice(0, 100) },
+      { type: 2, style: 2, emoji: emo(ctx.emojis, 'fb_bell'), custom_id: `pub:watch:${item.id}`.slice(0, 100) },
     ];
     blocks.push(sep());
     blocks.push(/^https:\/\//.test(x.image || '') ? section(head, thumb(x.image)) : text(head));
     blocks.push(row(...buttons));
   }
   const signup = found.length ? signupButton(ctx, null, channelId) : null;
-  if (signup) blocks.push(sep(), row(signup));
+  if (signup) blocks.push(row(signup)); // sans séparateur : 40 composants au plus par message
   return [container(blocks, (ACCENTS[ctx.cfg.accent] || ACCENTS.orange).color)];
 }

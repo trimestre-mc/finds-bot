@@ -19,6 +19,16 @@ binding = "AI"
 binding = "SELF"
 service = "finds-bot"
 
+# Connexion permanente à Discord (src/gateway.js) : messages des salons reçus en direct. Durable Object gratuit
+# (stockage SQLite), réveillé par une alarme toutes les 30 s.
+[[durable_objects.bindings]]
+name = "GATEWAY"
+class_name = "Gateway"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Gateway"]
+
 [vars]
 DISCORD_APP_ID = "1564065839194448043"
 DISCORD_PUBLIC_KEY = "d10bd37d232a95ebe948df712c3f68b7eeb8d5e70af9986852beb1112e89f871"

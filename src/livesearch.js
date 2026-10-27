@@ -5,6 +5,7 @@
 
 import { finderItemStatements, finderKey } from './qc.js';
 import { itemEnv, batchByDb } from './shard.js';
+import { canonicalUrl } from './links.js';
 
 const API = 'https://server.finderqc.com/api/spu/webSpuList';
 const UA = 'finds-bot/1.0 (+https://github.com/trimestre-mc/finds-bot)';
@@ -54,4 +55,20 @@ export async function addLiveResults(env, params, money) {
     console.log('recherche FinderQC', String(err).slice(0, 120));
     return 0;
   }
+}
+
+// Fiche d'un produit chez FinderQC (titre, prix, photo, ventes, QC), sous la forme d'un item du catalogue.
+// Sert quand l'item n'est pas (encore) dans la base : comparer, suivre son prix. null si inconnu.
+export async function finderItem(key) {
+  const [platform, itemId] = String(key || '').split(':');
+  const url = canonicalUrl(platform, itemId);
+  if (!url) return null;
+  const res = await fetch(`https://server.finderqc.com/api/spu/webSpuInfo?id=${encodeURIComponent(itemId)}&page=1&pageSize=1`, { headers: { 'User-Agent': UA } });
+  if (!res.ok) throw new Error(`FinderQC ${res.status}`);
+  const data = await res.json();
+  const s = data && data.code === 0 && data.data && data.data.spuInfo;
+  if (!s) return null;
+  const image = [s.originalThubnaiUrl, s.picUrl].find((u) => /^https:\/\//.test(u || '')) || null;
+  return { id: key, platform, item_id: itemId, url, title_en: s.enTitle || s.originalTitle || null, price_cny: Number(s.cnPrice) || null,
+    image, popularity: Number(s.oneYear) || 0, qc_count: Number(s.qcPhotosCount) || 0 };
 }

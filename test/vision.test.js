@@ -61,3 +61,16 @@ test('photo : FinderQC indisponible, la marque lue suffit (recherche par texte)'
   const noBrand = { DB: memoryDb(), AI: { run: async () => ({ response: '{"brand":null,"item":"hoodie"}' }) } };
   await assert.rejects(smartImageSearch(noBrand, { url: 'https://cdn.discordapp.com/attachments/1/2/p.jpg', filename: 'p.jpg' }));
 });
+
+test('réponse d\'une photo : 4 items avec acheter, QC, comparer, suivre, et l\'inscription, sous 40 composants', async () => {
+  const { imageResultsView } = await import('../src/imagesearch.js');
+  const ctx = { cfg: { accent: 'orange', lang: 'fr' }, money: { rate: 0.13, code: 'EUR' }, base: 'https://bot.test', emojis: {},
+    agents: [{ name: 'BBDBuy', template: 'https://bbd.example/{id}', preset: 'bbdbuy' }],
+    signup: { url: 'https://agent.example/register', label: 'S\'inscrire', color: 'vert' } };
+  const found = [1, 2, 3, 4].map((i) => ({ platform: 'weidian', id: `700000000${i}`, title: `Hoodie ${i}`, price: 199, image: 'https://img.example/x.jpg', sold: 5, qc: 3 }));
+  const view = imageResultsView(ctx, found, '777', { brand: 'Nike', item: 'hoodie' });
+  let n = 0; const walk = (c) => { n++; (c.components || []).forEach(walk); if (c.accessory) walk(c.accessory); }; view.forEach(walk);
+  assert.ok(n <= 40, `${n} composants`);
+  assert.match(JSON.stringify(view), /pub:cmp:weidian:7000000001/);
+  assert.match(JSON.stringify(view), /pub:watch:weidian:7000000004/);
+});

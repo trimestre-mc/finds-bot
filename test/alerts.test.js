@@ -86,3 +86,18 @@ test('top de la semaine : les items les plus cliqués, posté une fois dans le s
   let n = 0; const walk = (c) => { n++; (c.components || []).forEach(walk); if (c.accessory) walk(c.accessory); }; settings.forEach(walk);
   assert.ok(n <= 40, `réglages : ${n} composants`);
 });
+
+test('message reçu en direct : traité une seule fois (la position de lecture du salon sert de verrou)', async () => {
+  const { handleLiveMessage } = await import('../src/watch.js');
+  const env = { DB: memoryDb(), DISCORD_API: 'https://discord.test' };
+  env.DB.raw.prepare("INSERT INTO convert_channels (channel_id, guild_id, added_at) VALUES ('555', 'g', 0)").run();
+  env.DB.raw.prepare("INSERT INTO agents (name, template, position) VALUES ('BBDBuy', 'https://bbd.example/{id}', 1)").run();
+  const posted = [];
+  globalThis.fetch = async (url, opts = {}) => { posted.push(String(url)); return Response.json({ id: 'r1' }); };
+  const m = { id: '1300000000000000001', channel_id: '555', author: { id: 'u' }, content: 'regarde https://weidian.com/item.html?itemID=7863670229', attachments: [], embeds: [] };
+  assert.equal(await handleLiveMessage(env, '555', m), 1);
+  assert.equal(await handleLiveMessage(env, '555', m), 0); // déjà traité
+  assert.equal(posted.filter((u) => u.endsWith('/channels/555/messages')).length, 1);
+  assert.equal(env.DB.raw.prepare('SELECT converted FROM convert_channels').get().converted, 1);
+  assert.equal(await handleLiveMessage(env, '999', m), 0); // salon non surveillé
+});

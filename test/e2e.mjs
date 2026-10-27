@@ -89,7 +89,7 @@ const sql = (q) => JSON.parse(sh(`npx wrangler d1 execute finds-bot --local --js
 // Requête contenant des guillemets doubles (JSON) : passée par un fichier.
 const sqlFile = (q) => { const f = ROOT + '.wrangler/e2e.sql'; writeFileSync(f, q); sh(`npx wrangler d1 execute finds-bot --local --file ${f}`); };
 
-const dev = spawn('npx', ['wrangler', 'dev', '--port', '8787', '--test-scheduled', '--var', 'LIVE_SEARCH:0'], { cwd: ROOT, stdio: ['ignore', 'pipe', 'pipe'] });
+const dev = spawn('npx', ['wrangler', 'dev', '--port', '8787', '--test-scheduled', '--var', 'LIVE_SEARCH:0', '--var', 'GATEWAY_OFF:1'], { cwd: ROOT, stdio: ['ignore', 'pipe', 'pipe'] });
 let devLog = '';
 dev.stdout.on('data', (d) => (devLog += d));
 dev.stderr.on('data', (d) => (devLog += d));
