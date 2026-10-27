@@ -37,10 +37,10 @@ export async function prepareQuery(env, q) {
 }
 
 export const SORTS = {
-  // Ordres identiques aux index items_popularity / items_recent : la recherche parcourt l'index et s'arrête
-  // dès qu'elle a ses résultats, au lieu de lire toute la table (quota de lectures D1).
+  // Ordres qui suivent un index (popularité) ou la table elle-même (rowid = ordre d'arrivée) : la recherche
+  // s'arrête dès qu'elle a ses résultats, au lieu de lire toute la table (quota de lectures).
   popular: { label: 'Les plus vendus', emoji: '🔥', sql: 'popularity DESC, first_seen DESC' },
-  recent: { label: 'Les plus récents', emoji: '✨', sql: 'first_seen DESC' },
+  recent: { label: 'Les plus récents', emoji: '✨', sql: 'rowid DESC' },
   price_asc: { label: 'Prix croissant', emoji: '⬆️', sql: 'price_cny IS NULL, price_cny ASC, id' },
   price_desc: { label: 'Prix décroissant', emoji: '⬇️', sql: 'price_cny DESC, id' },
 };

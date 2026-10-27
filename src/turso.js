@@ -25,8 +25,11 @@ function watchReads(sql, r) {
   if (r && r.rows_read > HEAVY_READ) console.log('lecture lourde', r.rows_read, sql.replace(/\s+/g, ' ').slice(0, 160));
 }
 
+// Total des lignes lues pendant l'exécution (compteur du mois tenu par budget.js).
+let readCounter = null;
 function toResult(r, sql = '') {
   watchReads(sql, r);
+  if (readCounter && r && r.rows_read) readCounter.rowsRead += r.rows_read;
   const cols = (r.cols || []).map((c) => c.name);
   const results = (r.rows || []).map((row) => Object.fromEntries(row.map((v, i) => [cols[i], fromValue(v)])));
   return {
@@ -40,7 +43,8 @@ export function tursoDb(env) {
   const endpoint = `${String(env.TURSO_URL).replace(/^libsql:\/\//, 'https://').replace(/\/$/, '')}/v2/pipeline`;
 
   // Chaque appel à Turso est une requête externe (50 max par exécution sur Workers gratuit) : on les compte.
-  const db = { calls: 0 };
+  const db = { calls: 0, rowsRead: 0 };
+  readCounter = db;
 
   async function pipeline(requests) {
     db.calls++;

@@ -7,7 +7,7 @@ import { discordApi, discordUpload } from './discord.js';
 import { popularItemStatements } from './items.js';
 import { canonicalUrl } from './links.js';
 import { detectCategory, isDeadLink } from './categories.js';
-import { budget } from './budget.js';
+import { budget, rowsWritten } from './budget.js';
 
 const UA = 'finds-bot/1.0 (+https://github.com/trimestre-mc/finds-bot)';
 const API = 'https://server.finderqc.com/api/spu/webSpuInfo';
@@ -395,12 +395,14 @@ export async function syncQcCatalog(env) {
   const now = Date.now();
   let stmts = [];
   let written = 0;
+  let realRows = 0; // lignes vraiment écrites (null si la base ne les donne pas)
   let pages = 0;
   const flush = async () => {
     if (!stmts.length) return;
     const out = stmts;
     stmts = [];
-    await env.DB.batch(out);
+    const r = rowsWritten(await env.DB.batch(out));
+    realRows = realRows == null || r == null ? null : realRows + r;
   };
   while (used() < 32 && written < b.left && pages < SYNC_PAGES_PER_RUN) {
     if (state.plat >= SYNC_PLATFORMS.length) { state.done = true; break; }
@@ -466,7 +468,7 @@ export async function syncQcCatalog(env) {
     } else state.page++;
   }
   await flush();
-  await b.use(written);
+  await b.use(written, realRows);
   await env.DB.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('qcsync', ?)").bind(JSON.stringify(state)).run();
   return written;
 }

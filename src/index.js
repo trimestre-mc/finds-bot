@@ -17,7 +17,7 @@ import {
 import { categorizePending, detectCategory, isDeadLink } from './categories.js';
 import { fetchQcPage, runQcChecks, refreshQc, qcWindow, syncQcCatalog } from './qc.js';
 import { popularItemStatements } from './items.js';
-import { budget } from './budget.js';
+import { budget, rowsWritten, readsOver, recordReads } from './budget.js';
 import { getSignup, setSignup, SIGNUP_COLORS } from './config.js';
 import { withDb } from './turso.js';
 import { searchByImage } from './imagesearch.js';
@@ -40,71 +40,100 @@ const MODAL_SUBMIT = 5;
 export default {
   async fetch(request, env, ctx) {
     env = withDb(env);
-    const url = new URL(request.url);
+    ctx = countReads(env, ctx);
     try {
-      if (request.method === 'POST' && url.pathname === '/interactions') return await handleInteraction(request, env, ctx);
-      if (url.pathname.startsWith('/api/')) return await handleApi(request, env, url);
-      if (request.method === 'GET' && url.pathname.startsWith('/go/')) return await handleGo(url, env, ctx);
-      if (url.pathname === '/') return new Response('finds-bot en ligne');
-      return new Response('Not found', { status: 404 });
-    } catch (err) {
-      console.log('erreur', err && err.stack ? err.stack : String(err));
-      return json({ error: 'internal' }, 500);
+      return await handleFetch(request, env, ctx);
+    } finally {
+      ctx.done();
     }
   },
 
   async scheduled(event, env, ctx) {
     env = withDb(env);
-    if (event.cron === '*/5 * * * *') {
-      ctx.waitUntil((async () => {
-        await runDiscovery(env).catch((e) => console.log('découverte', String(e)));
-        // Toutes les 15 min (la sélection des items à vérifier parcourt une bonne partie de la table).
-        if (new Date().getUTCMinutes() % 15 === 0) await runQcChecks(env, 15).catch((e) => console.log('qc', String(e)));
-      })());
-      return;
+    ctx = countReads(env, ctx);
+    try {
+      return await handleScheduled(event, env, ctx);
+    } finally {
+      ctx.done();
     }
-    if (event.cron === '*/2 * * * *' || event.cron === '1-59/2 * * * *') {
-      // Salons de conversion et de recherche par image, relus toutes les 3 s : une exécution chaque minute
-      // (minutes paires et impaires ; « */1 » serait fusionné avec « * * * * * » et ne se déclencherait pas).
-      ctx.waitUntil(watchChannels(env).catch((e) => console.log('salons', String(e))));
-      return;
-    }
-    if (event.cron === '*/3 * * * *') {
-      // Synchro du catalogue FinderQC (items + nombre de QC), puis les salons QC de la communauté.
-      ctx.waitUntil((async () => {
-        if (env.TURSO_URL) await syncQcCatalog(env).catch((e) => console.log('synchro QC', String(e)));
-        await runQcChannels(env).catch((e) => console.log('salons QC', String(e)));
-      })());
-      return;
-    }
-    // Chaque minute : la file d'envoi d'abord (seule dans l'exécution), sinon l'entretien (traduction, catégories, indexeur).
-    ctx.waitUntil((async () => {
-      await runSchedules(env).catch((e) => console.log('drops', String(e)));
-      const queued = await env.DB.prepare('SELECT 1 AS n FROM post_queue LIMIT 1').first().catch(() => null);
-      if (queued) {
-        await processQueue(env, 45000).catch((e) => console.log('file', String(e)));
-        return;
-      }
-      await ensureIndexes(env).catch((e) => console.log('index', String(e).slice(0, 120)));
-      await Promise.all([
-        translatePending(env, TRANSLATE_PER_MINUTE).catch((e) => console.log('traduction', String(e))),
-        refreshRate(env).catch((e) => console.log('taux', String(e))),
-        autoIndex(env).catch((e) => console.log('indexeur', String(e))),
-        categorizePending(env, 400, titleWait(env)).catch((e) => console.log('catégories', String(e))),
-      ]);
-      await env.DB.prepare('DELETE FROM searches WHERE created_at < ?').bind(Date.now() - 24 * 3600 * 1000).run().catch(() => {});
-      await env.DB.prepare('DELETE FROM search_cache WHERE at < ?').bind(Date.now() - 6 * 3600 * 1000).run().catch(() => {});
-    })());
   },
 };
+
+// Après une exécution (et ses tâches en arrière-plan) : lignes lues ajoutées au compteur du mois.
+function countReads(env, ctx) {
+  const pending = [];
+  return {
+    waitUntil: (p) => { pending.push(p); ctx.waitUntil(p); },
+    passThroughOnException: () => ctx.passThroughOnException(),
+    done: () => ctx.waitUntil(Promise.allSettled(pending).then(() => recordReads(env))),
+  };
+}
+
+async function handleFetch(request, env, ctx) {
+  const url = new URL(request.url);
+  try {
+    if (request.method === 'POST' && url.pathname === '/interactions') return await handleInteraction(request, env, ctx);
+    if (url.pathname.startsWith('/api/')) return await handleApi(request, env, url);
+    if (request.method === 'GET' && url.pathname.startsWith('/go/')) return await handleGo(url, env, ctx);
+    if (url.pathname === '/') return new Response('finds-bot en ligne');
+    return new Response('Not found', { status: 404 });
+  } catch (err) {
+    console.log('erreur', err && err.stack ? err.stack : String(err));
+    return json({ error: 'internal' }, 500);
+  }
+}
+
+async function handleScheduled(event, env, ctx) {
+  // Plafond de lectures du mois atteint : seulement les envois et les salons Discord, plus de travail de fond.
+  const over = await readsOver(env);
+  if (over && event.cron !== '* * * * *' && event.cron !== '*/2 * * * *' && event.cron !== '1-59/2 * * * *') return;
+  if (event.cron === '*/5 * * * *') {
+    ctx.waitUntil((async () => {
+      await runDiscovery(env).catch((e) => console.log('découverte', String(e)));
+      // Toutes les 15 min (la sélection des items à vérifier parcourt une bonne partie de la table).
+      if (new Date().getUTCMinutes() % 15 === 0) await runQcChecks(env, 15).catch((e) => console.log('qc', String(e)));
+    })());
+    return;
+  }
+  if (event.cron === '*/2 * * * *' || event.cron === '1-59/2 * * * *') {
+    // Salons de conversion et de recherche par image, relus toutes les 3 s : une exécution chaque minute
+    // (minutes paires et impaires ; « */1 » serait fusionné avec « * * * * * » et ne se déclencherait pas).
+    ctx.waitUntil(watchChannels(env).catch((e) => console.log('salons', String(e))));
+    return;
+  }
+  if (event.cron === '*/3 * * * *') {
+    // Synchro du catalogue FinderQC (items + nombre de QC), puis les salons QC de la communauté.
+    ctx.waitUntil((async () => {
+      if (env.TURSO_URL) await syncQcCatalog(env).catch((e) => console.log('synchro QC', String(e)));
+      await runQcChannels(env).catch((e) => console.log('salons QC', String(e)));
+    })());
+    return;
+  }
+  // Chaque minute : la file d'envoi d'abord (seule dans l'exécution), sinon l'entretien (traduction, catégories, indexeur).
+  ctx.waitUntil((async () => {
+    await runSchedules(env).catch((e) => console.log('drops', String(e)));
+    const queued = await env.DB.prepare('SELECT 1 AS n FROM post_queue LIMIT 1').first().catch(() => null);
+    if (queued) {
+      await processQueue(env, 45000).catch((e) => console.log('file', String(e)));
+      return;
+    }
+    if (over) return;
+    await ensureIndexes(env).catch((e) => console.log('index', String(e).slice(0, 120)));
+    await Promise.all([
+      translatePending(env, TRANSLATE_PER_MINUTE).catch((e) => console.log('traduction', String(e))),
+      refreshRate(env).catch((e) => console.log('taux', String(e))),
+      autoIndex(env).catch((e) => console.log('indexeur', String(e))),
+      categorizePending(env, 400, titleWait(env)).catch((e) => console.log('catégories', String(e))),
+    ]);
+    await env.DB.prepare('DELETE FROM searches WHERE created_at < ?').bind(Date.now() - 24 * 3600 * 1000).run().catch(() => {});
+    await env.DB.prepare('DELETE FROM search_cache WHERE at < ?').bind(Date.now() - 6 * 3600 * 1000).run().catch(() => {});
+  })());
+}
 
 // Index partiels (tâches de fond qui ne lisent que les items concernés). Créés par le bot dès que le quota
 // d'écritures D1 le permet, puis plus rien à faire. Essai au plus toutes les 10 min.
 const INDEXES = [
-  'CREATE INDEX IF NOT EXISTS items_nocat ON items(id) WHERE category IS NULL',
-  'CREATE INDEX IF NOT EXISTS items_noimg ON items(item_id) WHERE images IS NULL',
   'CREATE INDEX IF NOT EXISTS items_qcdue ON items(qc_checked_at) WHERE popularity > 0 OR posted_count > 0 OR manual = 1',
-  'CREATE INDEX IF NOT EXISTS items_recent ON items(first_seen DESC)',
   'CREATE TABLE IF NOT EXISTS search_cache (key TEXT PRIMARY KEY, ids TEXT NOT NULL, at INTEGER NOT NULL)',
   'CREATE TABLE IF NOT EXISTS qc_requests (item_id TEXT PRIMARY KEY, user_id TEXT, at INTEGER NOT NULL)',
   'CREATE TABLE IF NOT EXISTS image_channels (channel_id TEXT PRIMARY KEY, guild_id TEXT, last_message_id TEXT, searched INTEGER NOT NULL DEFAULT 0, added_at INTEGER)',
@@ -115,7 +144,7 @@ let indexesTriedAt = 0;
 async function ensureIndexes(env) {
   if (indexesReady || Date.now() - indexesTriedAt < 600000) return;
   indexesTriedAt = Date.now();
-  const row = await env.DB.prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE name IN ('items_nocat', 'items_noimg', 'items_qcdue', 'items_recent', 'search_cache', 'qc_requests', 'image_channels')").first();
+  const row = await env.DB.prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE name IN ('items_qcdue', 'search_cache', 'qc_requests', 'image_channels')").first();
   if (row.n === INDEXES.length) { indexesReady = true; return; }
   for (const sql of INDEXES) await env.DB.prepare(sql).run();
   indexesReady = true;
@@ -649,7 +678,7 @@ async function handleApi(request, env, url) {
       // Budget du jour épuisé : rien à faire jusqu'à demain pour ce type de travail.
       shops: items.left ? await dueShops(env, 10, sh) : [],
       missingImages: pages.left
-        ? await any("SELECT 1 FROM items INDEXED BY items_noimg WHERE images IS NULL AND platform = 'weidian' AND CAST(item_id AS INTEGER) % ? = ? LIMIT 1") : 0,
+        ? await any("SELECT 1 FROM items INDEXED BY items_popularity WHERE images IS NULL AND platform = 'weidian' AND CAST(item_id AS INTEGER) % ? = ? LIMIT 1") : 0,
       linkQueue: pages.left ? await any('SELECT 1 FROM link_queue WHERE CAST(item_id AS INTEGER) % ? = ? LIMIT 1') : 0,
       jadeship: sh.i === 0 && await jadeshipDue(env),
     });
@@ -670,7 +699,6 @@ async function handleApi(request, env, url) {
     if (!shop || shop.run_id !== body.runId) return json({ error: 'run inconnu' }, 409);
     const b = await budget(env, 'items');
     if (b.left < Math.min(200, (body.items || []).length)) return json({ error: 'budget' }, 429);
-    await b.use(Math.min(200, (body.items || []).length));
     const stmts = (body.items || []).slice(0, 200).map((i) => env.DB.prepare(
       `INSERT INTO items (id, platform, item_id, shop_id, shop_name, title_zh, price_cny, image, url, stock, first_seen, last_seen_run, category, hidden)
        VALUES (?, 'weidian', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -685,7 +713,8 @@ async function handleApi(request, env, url) {
     ).bind(`weidian:${i.itemId}`, String(i.itemId), body.shopId, body.shopName || null, i.name || null,
       i.price != null ? Number(i.price) : null, i.img || null, `https://weidian.com/item.html?itemID=${i.itemId}`,
       i.stock != null ? Number(i.stock) : null, now, body.runId, detectCategory(i.name), isDeadLink(i.name, i.price) ? 2 : 0));
-    if (stmts.length) await env.DB.batch(stmts);
+    // Budget compté sur les lignes vraiment écrites : un item déjà connu et inchangé ne coûte rien.
+    if (stmts.length) await b.use(stmts.length, rowsWritten(await env.DB.batch(stmts)));
     if (body.shopName) await env.DB.prepare('UPDATE shops SET name = ? WHERE id = ?').bind(body.shopName, body.shopId).run();
     return json({ ok: true, saved: stmts.length });
   }
