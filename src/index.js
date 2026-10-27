@@ -33,7 +33,7 @@ import {
   catalogsView, addShopModal, shopView, confirmDeleteShopView, agentsView, agentModal, presetModal, itemModal, signupModal, couponModal,
   accessView, hasAdminPermission, deniedView, sourcesView,
 } from './ui.js';
-import { itemDb, itemById, itemDbs, perDb, allRows, countAll, batchByDb, groupByDb, itemsWhereIds, onDb, deleteShopItems } from './shard.js';
+import { itemDb, itemById, itemDbs, perDb, allRows, countAll, batchByDb, groupByDb, itemsWhereIds, onDb, itemEnv, deleteShopItems } from './shard.js';
 
 // Une boutique est relue tous les 3 jours (quota gratuit D1 : 100 000 lignes écrites par jour).
 const REINDEX_HOURS = 72;
@@ -783,10 +783,9 @@ async function handleApi(request, env, url) {
     // Juste « y a-t-il du travail ? » : LIMIT 1, jamais de COUNT sur toute la table (quota de lectures Turso :
     // un COUNT par job et par lancement lisait ~470 000 lignes à chaque fois).
     const sh = shardOf(url);
-    // Une base du catalogue avec encore du budget suffit (chaque base a le sien, voir shard.js).
-    const [items, pages] = await Promise.all(['items', 'pages'].map(async (kind) => ({
-      left: Math.max(...await Promise.all(perDb(env).map(async (e) => (await budget(e, kind)).left))),
-    })));
+    // Boutiques, photos et liens sont du Weidian : seul le budget de la base Weidian compte (voir shard.js).
+    const weidian = itemEnv(env, 'weidian:0');
+    const [items, pages] = await Promise.all([budget(weidian, 'items'), budget(weidian, 'pages')]);
     return json({
       // Budget du jour épuisé : rien à faire jusqu'à demain pour ce type de travail.
       shops: items.left ? await dueShops(env, 10, sh) : [],
