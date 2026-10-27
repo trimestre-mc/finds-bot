@@ -22,7 +22,7 @@ test('requête simple : arguments typés et lignes converties', async () => {
       affected_row_count: 0,
     } },
   }));
-  const db = tursoDb({ TURSO_URL: 'libsql://finds-bot-x.turso.io', TURSO_TOKEN: 'tok' });
+  const db = tursoDb('libsql://finds-bot-x.turso.io', 'tok');
   const row = await db.prepare('SELECT * FROM items WHERE id = ? AND n > ? AND p < ? AND x IS ?').bind('weidian:1', 3, 2.5, null).first();
   assert.deepEqual(row, { id: 'weidian:1', n: 42, price: 1.5, empty: null });
   assert.equal(seen[0].url, 'https://finds-bot-x.turso.io/v2/pipeline');
@@ -40,7 +40,7 @@ test('lot atomique : BEGIN … COMMIT, résultats et nombre de lignes modifiées
       step_errors: [null, null, null, null, null],
     } },
   }));
-  const db = tursoDb({ TURSO_URL: 'libsql://x.turso.io', TURSO_TOKEN: 't' });
+  const db = tursoDb('libsql://x.turso.io', 't');
   const res = await db.batch([db.prepare('INSERT INTO a VALUES (?)').bind(1), db.prepare('INSERT OR IGNORE INTO a VALUES (?)').bind(1)]);
   assert.deepEqual(res.map((r) => r.meta.changes), [1, 0]);
   const steps = seen[0].body.requests[0].batch.steps.map((s) => s.stmt.sql);
@@ -55,6 +55,6 @@ test('lot atomique : une étape en erreur fait échouer tout le lot', async () =
       step_errors: [null, { message: 'UNIQUE constraint failed' }, null, null, null],
     } },
   }));
-  const db = tursoDb({ TURSO_URL: 'libsql://x.turso.io', TURSO_TOKEN: 't' });
+  const db = tursoDb('libsql://x.turso.io', 't');
   await assert.rejects(() => db.batch([db.prepare('INSERT INTO a VALUES (1)')]), /UNIQUE constraint failed/);
 });

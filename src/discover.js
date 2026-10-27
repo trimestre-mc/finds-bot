@@ -4,6 +4,7 @@
 import { discordApi } from './discord.js';
 import { fetchWeidianItem } from './weidian.js';
 import { extractItemRefs } from './links.js';
+import { itemDb, itemDbs, batchByDb } from './shard.js';
 
 // Décode plusieurs fois (les liens d'agents contiennent souvent le lien Weidian encodé).
 function decodeAll(text) {
@@ -75,36 +76,47 @@ export async function ingest(env, found, source, by) {
   const ids = [...found.items];
   let queued = 0;
   for (let i = 0; i < ids.length; i += 50) {
-    const stmts = ids.slice(i, i + 50).map((id) => env.DB.prepare(
-      `INSERT OR IGNORE INTO link_queue (item_id, source, added_at)
-       SELECT ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM items WHERE id = 'weidian:' || ?)`,
-    ).bind(id, source, Date.now(), id));
-    const res = await env.DB.batch(stmts);
-    queued += res.reduce((n, r) => n + (r.meta.changes || 0), 0);
+    // File de liens de la base de chaque item (voir shard.js).
+    const stmts = ids.slice(i, i + 50).map((id) => {
+      const db = itemDb(env, id);
+      return [db, db.prepare(
+        `INSERT OR IGNORE INTO link_queue (item_id, source, added_at)
+         SELECT ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM items WHERE id = 'weidian:' || ?)`,
+      ).bind(id, source, Date.now(), id)];
+    });
+    for (const [, res] of await batchByDb(stmts)) queued += res.reduce((n, r) => n + (r.meta.changes || 0), 0);
   }
   return { shopsAdded, queued, others: found.others };
 }
 
 // Retrouve la boutique des items en file (1 page Weidian par item). Renvoie le nombre de boutiques ajoutées.
 export async function resolveQueue(env, limit) {
-  // Ordre d'arrivée (rowid), sans tri : trier toute la file (300 000 liens) lisait toute la table à chaque passage.
-  const { results } = await env.DB.prepare('SELECT item_id, source FROM link_queue LIMIT ?').bind(limit).all();
+  // Une part de la file de chaque base du catalogue (voir shard.js). Ordre d'arrivée (rowid), sans tri : trier
+  // toute la file (300 000 liens) lisait toute la table à chaque passage.
+  const dbs = itemDbs(env);
+  let added = 0;
+  for (const db of dbs) added += await resolveQueueOn(env, db, Math.ceil(limit / dbs.length));
+  return added;
+}
+
+async function resolveQueueOn(env, db, limit) {
+  const { results } = await db.prepare('SELECT item_id, source FROM link_queue LIMIT ?').bind(limit).all();
   let added = 0;
   for (const row of results) {
     try {
-      const known = await env.DB.prepare('SELECT shop_id FROM items WHERE id = ?').bind(`weidian:${row.item_id}`).first();
+      const known = await db.prepare('SELECT shop_id FROM items WHERE id = ?').bind(`weidian:${row.item_id}`).first();
       if (!known || !known.shop_id) {
         const info = await fetchWeidianItem(row.item_id);
         if (info.shopId && await addShopQuiet(env, info.shopId, info.shopName, row.source, null)) added++;
         if (known && info.shopId) {
-          await env.DB.prepare('UPDATE items SET shop_id = ?, shop_name = COALESCE(shop_name, ?) WHERE id = ?')
+          await db.prepare('UPDATE items SET shop_id = ?, shop_name = COALESCE(shop_name, ?) WHERE id = ?')
             .bind(info.shopId, info.shopName, `weidian:${row.item_id}`).run();
         }
       }
     } catch (err) {
       console.log('résolution', row.item_id, String(err).slice(0, 120));
     }
-    await env.DB.prepare('DELETE FROM link_queue WHERE item_id = ?').bind(row.item_id).run();
+    await db.prepare('DELETE FROM link_queue WHERE item_id = ?').bind(row.item_id).run();
   }
   return added;
 }

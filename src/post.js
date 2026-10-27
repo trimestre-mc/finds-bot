@@ -7,6 +7,7 @@ import { fetchWeidianItem } from './weidian.js';
 import { getConfig, getMoney, getSignup, formatMoney, formatCny, refreshRates, ACCENTS, LANGS, SIGNUP_COLORS } from './config.js';
 import { forumTagFor } from './categories.js';
 import { qcButtons, refreshQc, communityQc, postForumQc } from './qc.js';
+import { itemDb, itemsWhereIds, batchByDb } from './shard.js';
 
 export const PLATFORM_NAMES = { weidian: 'Weidian', taobao: 'Taobao', '1688': '1688' };
 export const FORUM = 15;
@@ -68,7 +69,7 @@ export async function itemImages(env, item, allowFetch = true) {
     } catch (err) {
       console.log('photos', item.id, String(err).slice(0, 120));
     }
-    await env.DB.prepare('UPDATE items SET images = ? WHERE id = ?').bind(JSON.stringify(images.slice(0, 8)), item.id).run();
+    await itemDb(env, item.id).prepare('UPDATE items SET images = ? WHERE id = ?').bind(JSON.stringify(images.slice(0, 8)), item.id).run();
     return [mergeImages(item.image, images), 1];
   }
   return [mergeImages(item.image, images), 0];
@@ -178,13 +179,15 @@ export async function postItem(env, item, channelId, ctx, allowFetch = true, cha
   }
   // Le message est déjà sur Discord : si la base refuse l'écriture (quota du jour), on ne fait pas échouer le post.
   const now = Date.now();
+  // Paires [base, requête] : l'item dans sa base (voir shard.js), le post dans la 1re.
+  const db = itemDb(env, item.id);
   const history = [
-    env.DB.prepare('UPDATE items SET posted_count = posted_count + 1, last_posted = ? WHERE id = ?').bind(now, item.id),
-    env.DB.prepare('INSERT INTO posts (item_id, channel_id, message_id, thread_id, posted_at) VALUES (?, ?, ?, ?, ?)')
-      .bind(item.id, channelId, messageId || null, threadId, now),
+    [db, db.prepare('UPDATE items SET posted_count = posted_count + 1, last_posted = ? WHERE id = ?').bind(now, item.id)],
+    [env.DB, env.DB.prepare('INSERT INTO posts (item_id, channel_id, message_id, thread_id, posted_at) VALUES (?, ?, ?, ?, ?)')
+      .bind(item.id, channelId, messageId || null, threadId, now)],
   ];
   if (opts.history) opts.history.push(...history);
-  else await env.DB.batch(history).catch((err) => console.log('historique', String(err).slice(0, 120)));
+  else await batchByDb(history).catch((err) => console.log('historique', String(err).slice(0, 120)));
   return calls;
 }
 
@@ -236,7 +239,7 @@ export async function processQueue(env, budgetMs) {
       const ids = [...new Set(jobs.map((j) => j.item_id).filter(Boolean))];
       const marks = ids.map(() => '?').join(',');
       const [items, recent, community] = await Promise.all([
-        ids.length ? env.DB.prepare(`SELECT * FROM items WHERE id IN (${marks})`).bind(...ids).all() : { results: [] },
+        itemsWhereIds(env, ids).then((results) => ({ results })),
         ids.length && ctx.cfg.dedupeDays
           ? env.DB.prepare(`SELECT item_id, channel_id FROM posts WHERE posted_at > ? AND item_id IN (${marks})`)
             .bind(Date.now() - ctx.cfg.dedupeDays * 86400000, ...ids).all()
@@ -276,13 +279,13 @@ export async function processQueue(env, budgetMs) {
 
       // Historique en un seul lot ; salons inaccessibles : on vide le reste de leur file.
       for (const ch of deadChannels) {
-        history.push(env.DB.prepare('DELETE FROM post_queue WHERE channel_id = ?').bind(ch));
+        history.push([env.DB, env.DB.prepare('DELETE FROM post_queue WHERE channel_id = ?').bind(ch)]);
         // Salon supprimé ou interdit : ses drops sont mis en pause (sinon ils remplissent la file pour rien).
-        history.push(env.DB.prepare('UPDATE schedules SET enabled = 0 WHERE channel_id = ?').bind(ch));
-        history.push(env.DB.prepare('INSERT INTO logs (at, kind, message) VALUES (?, ?, ?)')
-          .bind(Date.now(), 'envoi', `Le bot ne peut pas écrire dans <#${ch}> : file vidée et drops de ce salon en pause`));
+        history.push([env.DB, env.DB.prepare('UPDATE schedules SET enabled = 0 WHERE channel_id = ?').bind(ch)]);
+        history.push([env.DB, env.DB.prepare('INSERT INTO logs (at, kind, message) VALUES (?, ?, ?)')
+          .bind(Date.now(), 'envoi', `Le bot ne peut pas écrire dans <#${ch}> : file vidée et drops de ce salon en pause`)]);
       }
-      if (history.length) await env.DB.batch(history).catch((err) => console.log('historique', String(err).slice(0, 120)));
+      if (history.length) await batchByDb(history).catch((err) => console.log('historique', String(err).slice(0, 120)));
     }
   } finally {
     await env.DB.prepare("UPDATE settings SET value = '0' WHERE key = 'queue_lock'").run();

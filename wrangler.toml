@@ -31,3 +31,9 @@ READS_MONTH_CAP = "480000000"  # Turso gratuit : 500 M lignes lues / mois ; au-d
 BUDGET_MONTH_ROWS = "9000000"  # Turso gratuit : 10 M lignes écrites / mois, marge pour posts, clics et traductions
 
 # Secrets (wrangler secret put ...) : DISCORD_BOT_TOKEN, INDEXER_SECRET, GITHUB_TOKEN (optionnel)
+
+# schema.sql est embarqué (création des tables de la 2e base du catalogue, voir shard.js).
+[[rules]]
+type = "Text"
+globs = ["**/*.sql"]
+fallthrough = true

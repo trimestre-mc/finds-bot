@@ -51,11 +51,16 @@ function readsOverValue(env, value) {
 
 // Ajoute au compteur du mois les lignes lues pendant cette exécution (une écriture par exécution).
 export async function recordReads(env) {
-  const n = env.DB && env.DB.rowsRead;
+  // Chaque base du catalogue tient son propre compteur (voir shard.js).
+  await Promise.all([env.DB, env.DB2].filter(Boolean).map((db) => recordReadsOn(env, db)));
+}
+
+async function recordReadsOn(env, db) {
+  const n = db.rowsRead;
   if (!readsCap(env) || !n) return;
-  env.DB.rowsRead = 0;
+  db.rowsRead = 0;
   const month = new Date().toISOString().slice(0, 7);
-  await env.DB.prepare(
+  await db.prepare(
     `INSERT INTO settings (key, value) VALUES ('reads:month', json_object('month', ?1, 'rows', ?2))
      ON CONFLICT(key) DO UPDATE SET value = json_object('month', ?1, 'rows',
        CASE WHEN json_extract(settings.value, '$.month') = ?1 THEN json_extract(settings.value, '$.rows') ELSE 0 END + ?2)`,

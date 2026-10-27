@@ -10,6 +10,7 @@ import { searchIds, itemsByIds, idsToPost, PAGE_SIZE, MAX_BULK, SORTS } from './
 import { CATEGORIES, CATEGORY_BY_KEY } from './categories.js';
 import { formatMoney, getConfig, getSignup, SIGNUP_COLORS } from './config.js';
 import { communityQc, qcSummary } from './qc.js';
+import { countAll, allRows } from './shard.js';
 
 export const QUEUE_PER_MINUTE = POSTS_PER_MINUTE;
 const SHOPS_PER_PAGE = 6;
@@ -30,7 +31,7 @@ export async function bigCounts(env) {
     // Petite base : comptages peu coûteux, toujours à jour.
     if (c && c.items > 50000 && Date.now() - c.at < 3600000) return c;
   } catch {}
-  const n = (sql, ...b) => env.DB.prepare(sql).bind(...b).first().then((r) => r.n);
+  const n = (sql, ...b) => countAll(env, sql, ...b);
   const [items, visible, noPhoto, untranslated, drops] = await Promise.all([
     n('SELECT COUNT(*) AS n FROM items'),
     n('SELECT COUNT(*) AS n FROM items WHERE hidden = 0'),
@@ -306,7 +307,7 @@ export function addShopModal() {
 
 export async function sourcesView(env, it, msg) {
   const { results } = await env.DB.prepare('SELECT * FROM sources WHERE guild_id = ? ORDER BY added_at').bind(it.guild_id).all();
-  const pending = await env.DB.prepare('SELECT COUNT(*) AS n FROM link_queue').first();
+  const pending = { n: await countAll(env, 'SELECT COUNT(*) AS n FROM link_queue') };
   const cards = results.slice(0, 8).map((s) => section(
     `<#${s.channel_id}>\n-# ${fmtInt(s.messages)} messages lus  ·  ${fmtInt(s.links)} liens trouvés  ·  scanné ${ago(s.scanned_at)}` +
       (s.error ? `\n-# ⚠️ ${escape(s.error.slice(0, 120))}` : ''),
@@ -332,8 +333,8 @@ export async function sourcesView(env, it, msg) {
 export async function shopView(env, shopId, msg) {
   const s = await env.DB.prepare('SELECT * FROM shops WHERE id = ?').bind(shopId).first();
   if (!s) return catalogsView(env, 0, '❌ Boutique introuvable.');
-  const sample = await env.DB.prepare('SELECT image FROM items WHERE shop_id = ? AND image IS NOT NULL ORDER BY first_seen DESC LIMIT 1').bind(shopId).first();
-  const posted = await env.DB.prepare('SELECT COUNT(*) AS n FROM items WHERE shop_id = ? AND posted_count > 0').bind(shopId).first();
+  const sample = (await allRows(env, 'SELECT image FROM items WHERE shop_id = ? AND image IS NOT NULL ORDER BY first_seen DESC LIMIT 1', shopId))[0];
+  const posted = { n: await countAll(env, 'SELECT COUNT(*) AS n FROM items WHERE shop_id = ? AND posted_count > 0', shopId) };
   const info = `## ${STATUS_ICON[s.status] || '•'} ${escape(s.name || 'Boutique')}\n` +
     `**${fmtInt(s.item_count)}** items  ·  ${fmtInt(posted.n)} déjà postés\n` +
     `-# Indexée ${ago(s.last_indexed)}  ·  ID ${s.id}  ·  [ouvrir sur Weidian](${s.url})` +

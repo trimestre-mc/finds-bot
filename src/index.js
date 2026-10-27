@@ -15,11 +15,12 @@ import {
   runSchedules, runQcChannels,
 } from './features.js';
 import { categorizePending, detectCategory, isDeadLink } from './categories.js';
-import { fetchQcPage, runQcChecks, refreshQc, qcWindow, syncQcCatalog } from './qc.js';
+import { fetchQcPage, runQcChecks, refreshQc, qcWindow, syncQcCatalog, SYNC_LANES } from './qc.js';
 import { popularItemStatements } from './items.js';
 import { budget, rowsWritten, readsOver, recordReads } from './budget.js';
 import { getSignup, setSignup, SIGNUP_COLORS } from './config.js';
 import { withDb } from './turso.js';
+import SCHEMA from '../schema.sql';
 import { searchByImage } from './imagesearch.js';
 import { expandQuery } from './synonyms.js';
 import { watchChannels } from './watch.js';
@@ -31,6 +32,7 @@ import {
   catalogsView, addShopModal, shopView, confirmDeleteShopView, agentsView, agentModal, presetModal, itemModal, signupModal,
   accessView, hasAdminPermission, deniedView, sourcesView,
 } from './ui.js';
+import { itemDb, itemById, itemDbs, perDb, allRows, countAll, batchByDb, groupByDb, itemsWhereIds, onDb, deleteShopItems } from './shard.js';
 
 // Une boutique est relue tous les 3 jours (quota gratuit D1 : 100 000 lignes écrites par jour).
 const REINDEX_HOURS = 72;
@@ -84,14 +86,19 @@ async function handleFetch(request, env, ctx) {
 }
 
 async function handleScheduled(event, env, ctx) {
-  // Plafond de lectures du mois atteint : seulement les envois et les salons Discord, plus de travail de fond.
-  const over = await readsOver(env);
-  if (over && event.cron !== '* * * * *' && event.cron !== '*/2 * * * *' && event.cron !== '1-59/2 * * * *') return;
+  // Plafond de lectures du mois, par base (chaque base a son quota) : une base au plafond ne fait plus de travail
+  // de fond ; si toutes y sont, il ne reste que les envois et les salons Discord.
+  const dbs = await Promise.all(perDb(env).map(async (e) => ({ e, over: await readsOver(e) })));
+  const open = dbs.filter((x) => !x.over).map((x) => x.e);
+  const over = dbs[0].over; // 1re base : réglages, boutiques, sources
+  if (!open.length && event.cron !== '* * * * *' && event.cron !== '*/2 * * * *' && event.cron !== '1-59/2 * * * *') return;
   if (event.cron === '*/5 * * * *') {
     ctx.waitUntil((async () => {
-      await runDiscovery(env).catch((e) => console.log('découverte', String(e)));
-      // Toutes les 15 min (la sélection des items à vérifier parcourt une bonne partie de la table).
-      if (new Date().getUTCMinutes() % 15 === 0) await runQcChecks(env, 15).catch((e) => console.log('qc', String(e)));
+      if (!over) await runDiscovery(env).catch((e) => console.log('découverte', String(e)));
+      // Toutes les 15 min, dans chaque base (la sélection des items à vérifier parcourt une partie de la table).
+      if (new Date().getUTCMinutes() % 15 === 0) {
+        for (const e of open) await runQcChecks(e, 15).catch((err) => console.log('qc', String(err)));
+      }
     })());
     return;
   }
@@ -102,10 +109,15 @@ async function handleScheduled(event, env, ctx) {
     return;
   }
   if (event.cron === '*/3 * * * *') {
-    // Synchro du catalogue FinderQC (items + nombre de QC), puis les salons QC de la communauté.
+    // Synchro du catalogue FinderQC (items + nombre de QC ; chaque produit dans sa base, sur le budget de cette base),
+    // puis les salons QC de la communauté.
     ctx.waitUntil((async () => {
-      if (env.TURSO_URL) await syncQcCatalog(env).catch((e) => console.log('synchro QC', String(e)));
-      await runQcChannels(env).catch((e) => console.log('salons QC', String(e)));
+      if (env.TURSO_URL) {
+        // Avec la 2e base : Weidian et Taobao + 1688 en parallèle, chacun vers sa base et sur son quota.
+        const lanes = env.DB2 ? [SYNC_LANES.weidian, SYNC_LANES.others] : [SYNC_LANES.all];
+        await Promise.all(lanes.map((lane) => syncQcCatalog(env, lane).catch((e) => console.log('synchro QC', String(e)))));
+      }
+      if (!over) await runQcChannels(env).catch((e) => console.log('salons QC', String(e)));
     })());
     return;
   }
@@ -117,14 +129,16 @@ async function handleScheduled(event, env, ctx) {
       await processQueue(env, 45000).catch((e) => console.log('file', String(e)));
       return;
     }
-    if (over) return;
-    await ensureIndexes(env).catch((e) => console.log('index', String(e).slice(0, 120)));
+    if (!open.length) return;
+    if (!over) await ensureIndexes(env).catch((e) => console.log('index', String(e).slice(0, 120)));
     await Promise.all([
-      translatePending(env, TRANSLATE_PER_MINUTE).catch((e) => console.log('traduction', String(e))),
+      // Traduction et catégories : dans chaque base sous son plafond (quota d'IA commun, voir translate.js).
+      ...open.map((e) => translatePending(e, Math.ceil(TRANSLATE_PER_MINUTE / open.length)).catch((err) => console.log('traduction', String(err)))),
+      ...open.map((e) => categorizePending(e, 400, titleWait(env)).catch((err) => console.log('catégories', String(err)))),
       refreshRate(env).catch((e) => console.log('taux', String(e))),
       autoIndex(env).catch((e) => console.log('indexeur', String(e))),
-      categorizePending(env, 400, titleWait(env)).catch((e) => console.log('catégories', String(e))),
     ]);
+    if (over) return;
     await env.DB.prepare('DELETE FROM searches WHERE created_at < ?').bind(Date.now() - 24 * 3600 * 1000).run().catch(() => {});
     await env.DB.prepare('DELETE FROM search_cache WHERE at < ?').bind(Date.now() - 6 * 3600 * 1000).run().catch(() => {});
   })());
@@ -238,10 +252,8 @@ async function onComponent(it, env, ctx) {
     case 'cat:del': return update(await confirmDeleteShopView(env, c));
     case 'cat:delok': {
       const shop = await env.DB.prepare('SELECT name FROM shops WHERE id = ?').bind(c).first();
-      await env.DB.batch([
-        env.DB.prepare('DELETE FROM items WHERE shop_id = ? AND manual = 0').bind(c),
-        env.DB.prepare('DELETE FROM shops WHERE id = ?').bind(c),
-      ]);
+      await env.DB.prepare('DELETE FROM shops WHERE id = ?').bind(c).run();
+      await deleteShopItems(env, c);
       return update(await catalogsView(env, 0, `🗑️ **${escape(shop ? shop.name || c : c)}** a été retirée.`));
     }
 
@@ -374,7 +386,7 @@ async function postSelected(env, sid, page, ids) {
   let ok = 0;
   let error = null;
   for (const id of ids) {
-    const item = await env.DB.prepare('SELECT * FROM items WHERE id = ?').bind(id).first();
+    const item = await itemById(env, id);
     if (!item) continue;
     try {
       await postItem(env, item, s.channelId, pctx, true, s.channelType, true);
@@ -435,7 +447,7 @@ async function onModal(it, env, ctx) {
       const resolved = await resolveQueue(env, 30);
       const total = res.shopsAdded + resolved;
       if (total) await triggerIndexer(env);
-      const left = (await env.DB.prepare('SELECT COUNT(*) AS n FROM link_queue').first()).n;
+      const left = await countAll(env, 'SELECT COUNT(*) AS n FROM link_queue');
       const parts = [total
         ? `✅ **${total}** nouvelle${total > 1 ? 's' : ''} boutique${total > 1 ? 's' : ''} ajoutée${total > 1 ? 's' : ''}. L'indexation ${indexerDelay(env)}.`
         : 'ℹ️ Aucune nouvelle boutique : elles sont déjà toutes dans tes catalogues.'];
@@ -504,7 +516,7 @@ async function addItem(it, env, ctx, v) {
   const image = v.image && /^https:\/\//.test(v.image) ? v.image : null;
 
   const save = async (f) => {
-    await env.DB.prepare(
+    await itemDb(env, `${parsed.platform}:${parsed.itemId}`).prepare(
       `INSERT INTO items (id, platform, item_id, shop_id, shop_name, title_zh, title_en, price_cny, image, url, manual, first_seen)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
        ON CONFLICT(id) DO UPDATE SET title_zh = excluded.title_zh, title_en = excluded.title_en,
@@ -551,6 +563,15 @@ async function claimRange(env, key, table, size) {
     return null;
   }
   return [hi - size, hi];
+}
+
+// Base du catalogue pour un job de l'indexeur : un job sur deux prend la 2e base ; si sa base n'a plus de budget
+// pour ce travail, l'autre. null : plus de budget nulle part.
+async function shardEnv(env, shard, kind) {
+  const envs = perDb(env);
+  const first = shard.i % envs.length;
+  for (const e of [envs[first], ...envs.filter((_, j) => j !== first)]) if ((await budget(e, kind)).left) return e;
+  return null;
 }
 
 async function dueShops(env, limit, shard = { n: 1, i: 0 }) {
@@ -628,7 +649,7 @@ async function handleApi(request, env, url) {
   if (path === '/api/qc-window' && request.method === 'GET') {
     const key = url.searchParams.get('item') || '';
     const [platform, itemId] = key.split(':');
-    let item = await env.DB.prepare('SELECT * FROM items WHERE id = ?').bind(key).first();
+    let item = await itemById(env, key);
     if (!item && !canonicalUrl(platform, itemId)) return json({ ok: false, error: 'item inconnu' });
     item = await refreshQc(env, item || { id: key, item_id: itemId, platform, url: canonicalUrl(platform, itemId), popularity: 0 });
     const view = await qcWindow(env, item, 0, {});
@@ -691,17 +712,63 @@ async function handleApi(request, env, url) {
     return json({ ok: true, app: app.name, endpoint: app.interactions_endpoint_url, commands: cmds.map((c) => c.name) });
   }
 
+  // 2e base du catalogue : création des tables (items, file de liens, compteurs), puis déplacement des items
+  // Taobao et 1688 depuis la 1re base, une tranche de rowid à la fois (voir shard.js).
+  if (path === '/api/db2/init' && request.method === 'POST') {
+    if (!env.DB2) return json({ ok: false, error: 'TURSO2_URL / TURSO2_TOKEN manquants' });
+    const wanted = /^CREATE (TABLE|INDEX) IF NOT EXISTS \w+ ON (items|link_queue|settings)\b|^CREATE TABLE IF NOT EXISTS (items|link_queue|settings) /;
+    const stmts = SCHEMA.split(';').map((x) => x.replace(/--[^\n]*/g, '').trim()).filter((x) => wanted.test(x));
+    await env.DB2.batch(stmts.map((sql) => env.DB2.prepare(sql)));
+    return json({ ok: true, statements: stmts.length });
+  }
+
+  // Diagnostic : état de chaque base du catalogue (taille approchée par le dernier rowid, compteurs du mois).
+  if (path === '/api/db-stats' && request.method === 'GET') {
+    return json(await Promise.all(itemDbs(env).map(async (db, i) => {
+      const [top, settings] = await Promise.all([
+        db.prepare('SELECT MAX(rowid) AS m FROM items').first(),
+        db.prepare("SELECT key, value FROM settings WHERE key IN ('budget:month', 'reads:month', 'qcsync', 'qcsync:2', 'budget:items', 'budget:qcsync')").all(),
+      ]);
+      return { base: i + 1, lastRowid: top.m, settings: Object.fromEntries(settings.results.map((r) => [r.key, r.value])) };
+    })));
+  }
+
+  if (path === '/api/db2/migrate' && request.method === 'POST') {
+    if (!env.DB2) return json({ ok: false, error: 'pas de 2e base' });
+    const table = url.searchParams.get('table') === 'link_queue' ? 'link_queue' : 'items';
+    const from = Number(url.searchParams.get('from')) || 0;
+    const size = Math.min(Number(url.searchParams.get('size')) || 3000, 5000);
+    const odd = table === 'items' ? "platform IN ('taobao', '1688')" : '0';
+    const { results } = await env.DB.prepare(`SELECT rowid AS _r, * FROM ${table} WHERE rowid > ? AND rowid <= ? AND ${odd}`)
+      .bind(from, from + size).all();
+    if (results.length) {
+      // Colonnes communes seulement (la 1re base garde d'anciennes colonnes inutilisées, comme qc_url).
+      const dest = new Set((await env.DB2.prepare(`SELECT name FROM pragma_table_info('${table}')`).all()).results.map((r) => r.name));
+      const cols = Object.keys(results[0]).filter((c) => c !== '_r' && dest.has(c));
+      const sql = `INSERT OR REPLACE INTO ${table} (${cols.join(', ')}) VALUES (${cols.map(() => '?').join(', ')})`;
+      for (let i = 0; i < results.length; i += 250) {
+        await env.DB2.batch(results.slice(i, i + 250).map((r) => env.DB2.prepare(sql).bind(...cols.map((c) => r[c]))));
+      }
+      await env.DB.prepare(`DELETE FROM ${table} WHERE rowid > ? AND rowid <= ? AND ${odd}`).bind(from, from + size).run();
+    }
+    const max = (await env.DB.prepare(`SELECT MAX(rowid) AS m FROM ${table}`).first()).m || 0;
+    return json({ ok: true, moved: results.length, next: from + size, done: from + size >= max });
+  }
+
   if (path === '/api/indexer/jobs' && request.method === 'GET') {
     // Juste « y a-t-il du travail ? » : LIMIT 1, jamais de COUNT sur toute la table (quota de lectures Turso :
     // un COUNT par job et par lancement lisait ~470 000 lignes à chaque fois).
     const sh = shardOf(url);
-    const [items, pages] = await Promise.all([budget(env, 'items'), budget(env, 'pages')]);
+    // Une base du catalogue avec encore du budget suffit (chaque base a le sien, voir shard.js).
+    const [items, pages] = await Promise.all(['items', 'pages'].map(async (kind) => ({
+      left: Math.max(...await Promise.all(perDb(env).map(async (e) => (await budget(e, kind)).left))),
+    })));
     return json({
       // Budget du jour épuisé : rien à faire jusqu'à demain pour ce type de travail.
       shops: items.left ? await dueShops(env, 10, sh) : [],
       // Photos : le curseur fait le tour de la table en continu, il y a toujours une tranche à vérifier.
       missingImages: pages.left ? 1 : 0,
-      linkQueue: pages.left && (await env.DB.prepare('SELECT 1 FROM link_queue LIMIT 1').first()) ? 1 : 0,
+      linkQueue: pages.left && (await Promise.all(itemDbs(env).map((db) => db.prepare('SELECT 1 FROM link_queue LIMIT 1').first()))).some(Boolean) ? 1 : 0,
       jadeship: sh.i === 0 && await jadeshipDue(env),
     });
   }
@@ -719,9 +786,16 @@ async function handleApi(request, env, url) {
     const now = Date.now();
     const shop = await env.DB.prepare('SELECT run_id FROM shops WHERE id = ?').bind(body.shopId).first();
     if (!shop || shop.run_id !== body.runId) return json({ error: 'run inconnu' }, 409);
-    const b = await budget(env, 'items');
-    if (b.left < Math.min(200, (body.items || []).length)) return json({ error: 'budget' }, 429);
-    const stmts = (body.items || []).slice(0, 200).map((i) => env.DB.prepare(
+    // Chaque item dans sa base (voir shard.js), sur le budget de cette base. Une base sans budget est sautée : ses
+    // items reviendront à la prochaine lecture de la boutique.
+    const groups = [];
+    for (const [db, list] of groupByDb(env, (body.items || []).slice(0, 200).map((i) => String(i.itemId)))) {
+      const b = await budget(onDb(env, db), 'items');
+      if (b.left >= list.length) groups.push({ db, b, ids: new Set(list) });
+    }
+    if (!groups.length) return json({ error: 'budget' }, 429);
+    const stmts = (body.items || []).slice(0, 200).map((i) => [groups.find((g) => g.ids.has(String(i.itemId))), i])
+      .filter(([g]) => g).map(([g, i]) => [g.db, g.db.prepare(
       `INSERT INTO items (id, platform, item_id, shop_id, shop_name, title_zh, price_cny, image, url, stock, first_seen, last_seen_run, category, hidden)
        VALUES (?, 'weidian', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
@@ -734,17 +808,20 @@ async function handleApi(request, env, url) {
          stock = excluded.stock, shop_id = excluded.shop_id, shop_name = excluded.shop_name`,
     ).bind(`weidian:${i.itemId}`, String(i.itemId), body.shopId, body.shopName || null, i.name || null,
       i.price != null ? Number(i.price) : null, i.img || null, `https://weidian.com/item.html?itemID=${i.itemId}`,
-      i.stock != null ? Number(i.stock) : null, now, body.runId, detectCategory(i.name), isDeadLink(i.name, i.price) ? 2 : 0));
+      i.stock != null ? Number(i.stock) : null, now, body.runId, detectCategory(i.name), isDeadLink(i.name, i.price) ? 2 : 0)]);
     // Budget compté sur les lignes vraiment écrites : un item déjà connu et inchangé ne coûte rien.
-    if (stmts.length) await b.use(stmts.length, rowsWritten(await env.DB.batch(stmts)));
+    for (const [db, results] of await batchByDb(stmts)) {
+      const g = groups.find((x) => x.db === db);
+      await g.b.use(results.length, rowsWritten(results));
+    }
     if (body.shopName) await env.DB.prepare('UPDATE shops SET name = ? WHERE id = ?').bind(body.shopName, body.shopId).run();
     return json({ ok: true, saved: stmts.length });
   }
 
   // État actuel d'une boutique : l'indexeur n'envoie ensuite que les items nouveaux, modifiés ou disparus.
   if (path === '/api/indexer/shop-state' && request.method === 'GET') {
-    const { results } = await env.DB.prepare('SELECT item_id, price_cny, title_zh FROM items WHERE shop_id = ? AND manual = 0')
-      .bind(url.searchParams.get('shopId') || '').all();
+    const results = await allRows(env, 'SELECT item_id, price_cny, title_zh FROM items WHERE shop_id = ? AND manual = 0',
+      url.searchParams.get('shopId') || '');
     return json({ items: results.map((r) => [r.item_id, r.price_cny, r.title_zh]) });
   }
 
@@ -754,8 +831,10 @@ async function handleApi(request, env, url) {
     const ids = (body.ids || []).filter((x) => /^\d{6,14}$/.test(String(x))).slice(0, 500);
     for (let i = 0; i < ids.length; i += 90) {
       const chunk = ids.slice(i, i + 90);
-      await env.DB.prepare(`DELETE FROM items WHERE shop_id = ? AND manual = 0 AND item_id IN (${chunk.map(() => '?').join(',')})`)
-        .bind(body.shopId, ...chunk).run();
+      for (const [db, keys] of groupByDb(env, chunk)) {
+        await db.prepare(`DELETE FROM items WHERE shop_id = ? AND manual = 0 AND item_id IN (${keys.map(() => '?').join(',')})`)
+          .bind(body.shopId, ...keys).run();
+      }
     }
     return json({ ok: true, removed: ids.length });
   }
@@ -763,84 +842,122 @@ async function handleApi(request, env, url) {
   // Items Weidian dont il faut trouver la boutique : l'indexeur lit leur page (boutique + photos).
   if (path === '/api/indexer/link-queue' && request.method === 'GET') {
     // Tranche suivante de la file (curseur partagé entre les jobs) : chaque lien n'est lu qu'une fois par tour.
-    const range = await claimRange(env, 'cursor:links', 'link_queue', 2000);
+    // Chaque base a sa file : un job sur deux prend celle de la 2e base.
+    const e = await shardEnv(env, shardOf(url), 'pages');
+    if (!e) return json({ items: [] });
+    const range = await claimRange(e, 'cursor:links', 'link_queue', 2000);
     if (!range) return json({ items: [] });
-    const { results } = await env.DB.prepare('SELECT item_id FROM link_queue WHERE rowid > ? AND rowid <= ?')
+    const { results } = await e.DB.prepare('SELECT item_id FROM link_queue WHERE rowid > ? AND rowid <= ?')
       .bind(range[0], range[1]).all();
     return json({ items: results.map((r) => r.item_id) });
   }
 
   if ((path === '/api/indexer/images' || path === '/api/indexer/resolved') && (body.items || []).length) {
-    const b = await budget(env, 'pages');
-    if (!b.left) return json({ error: 'budget' }, 429);
-    await b.use(Math.min(300, body.items.length));
+    // Budget « pages » de la base de chaque item ; sans budget nulle part, l'indexeur s'arrête pour aujourd'hui.
+    let any = false;
+    for (const [db, keys] of groupByDb(env, body.items.slice(0, 300).map((i) => String(i.itemId)))) {
+      const b = await budget(onDb(env, db), 'pages');
+      if (!b.left) continue;
+      any = true;
+      await b.use(keys.length);
+    }
+    if (!any) return json({ error: 'budget' }, 429);
   }
 
   if (path === '/api/indexer/resolved') {
-    // Tout en un seul lot : avec Turso, chaque requête à la base compte dans les 50 requêtes externes autorisées.
+    // Boutiques dans la 1re base ; items et file de liens dans la base de chaque item (voir shard.js).
+    // Peu de requêtes : avec Turso, chaque requête à la base compte dans les 50 requêtes externes autorisées.
+    const list = (body.items || []).slice(0, 300);
+    const ids = list.map((r) => String(r.itemId));
+    const [known, queued] = await Promise.all([
+      itemsWhereIds(env, ids.map((id) => `weidian:${id}`), 'id, popularity, qc_count'),
+      Promise.all(groupByDb(env, ids).map(([db, keys]) => db
+        .prepare(`SELECT item_id, source FROM link_queue WHERE item_id IN (${keys.map(() => '?').join(',')})`).bind(...keys).all()))
+        .then((parts) => parts.flatMap((p) => p.results)),
+    ]);
+    const score = new Map(known.map((k) => [k.id, (k.popularity || 0) + (k.qc_count > 0 ? 50 : 0)]));
+    const source = new Map(queued.map((q) => [q.item_id, q.source]));
     const stmts = [];
     const shopInserts = [];
-    for (const r of (body.items || []).slice(0, 300)) {
+    for (const r of list) {
       const id = String(r.itemId);
+      const db = itemDb(env, id);
       if (r.shopId && /^\d{5,12}$/.test(String(r.shopId))) {
         const shopId = String(r.shopId);
         shopInserts.push(stmts.length);
-        stmts.push(env.DB.prepare(
+        stmts.push([env.DB, env.DB.prepare(
           `INSERT OR IGNORE INTO shops (id, platform, name, url, status, source, added_by, added_at)
-           SELECT ?, 'weidian', ?, ?, 'pending', COALESCE((SELECT source FROM link_queue WHERE item_id = ?), 'jadeship'), NULL, ?
-           WHERE NOT EXISTS (SELECT 1 FROM blacklist WHERE shop_id = ?)`,
-        ).bind(shopId, r.shopName || null, `https://weidian.com/?userid=${shopId}`, id, Date.now(), shopId));
+           SELECT ?, 'weidian', ?, ?, 'pending', ?, NULL, ? WHERE NOT EXISTS (SELECT 1 FROM blacklist WHERE shop_id = ?)`,
+        ).bind(shopId, r.shopName || null, `https://weidian.com/?userid=${shopId}`, source.get(id) || 'jadeship', Date.now(), shopId)]);
         // Priorité de la boutique : ventes de l'item qui l'a fait découvrir (les boutiques qui vendent le plus d'abord).
-        stmts.push(env.DB.prepare(
-          `UPDATE shops SET score = (SELECT COALESCE(popularity, 0) + 50 * (COALESCE(qc_count, 0) > 0) FROM items WHERE id = ?)
-           WHERE id = ? AND score < (SELECT COALESCE(popularity, 0) + 50 * (COALESCE(qc_count, 0) > 0) FROM items WHERE id = ?)`,
-        ).bind(`weidian:${id}`, shopId, `weidian:${id}`));
-        stmts.push(env.DB.prepare(
+        const sc = score.get(`weidian:${id}`) || 0;
+        if (sc) stmts.push([env.DB, env.DB.prepare('UPDATE shops SET score = ? WHERE id = ? AND score < ?').bind(sc, shopId, sc)]);
+        stmts.push([db, db.prepare(
           `UPDATE items SET shop_id = ?, shop_name = COALESCE(shop_name, ?), images = COALESCE(images, ?), title_en = COALESCE(title_en, ?),
              category = CASE WHEN category = 'other' AND title_en IS NULL THEN NULL ELSE category END WHERE id = ?`,
-        ).bind(shopId, r.shopName || null, JSON.stringify((r.images || []).slice(0, 8)), englishTitle(r.title), `weidian:${id}`));
+        ).bind(shopId, r.shopName || null, JSON.stringify((r.images || []).slice(0, 8)), englishTitle(r.title), `weidian:${id}`)]);
       }
-      stmts.push(env.DB.prepare('DELETE FROM link_queue WHERE item_id = ?').bind(id));
+      stmts.push([db, db.prepare('DELETE FROM link_queue WHERE item_id = ?').bind(id)]);
     }
-    const res = stmts.length ? await env.DB.batch(stmts) : [];
-    const added = shopInserts.reduce((n, i) => n + ((res[i] && res[i].meta.changes) > 0 ? 1 : 0), 0);
+    // Boutiques vraiment ajoutées : résultats de la 1re base, dans l'ordre de ses requêtes.
+    const inserts = new Set(shopInserts);
+    const res = await batchByDb(stmts);
+    const mainRes = (res.find(([db]) => db === env.DB) || [null, []])[1];
+    let added = 0;
+    let k = 0;
+    stmts.forEach(([db], i) => {
+      if (db !== env.DB) return;
+      if (inserts.has(i) && mainRes[k] && mainRes[k].meta.changes > 0) added++;
+      k++;
+    });
     return json({ ok: true, shopsAdded: added });
   }
 
   // Items et vendeurs collectés sur Jadeship par l'indexeur.
   if (path === '/api/indexer/jadeship') {
     const now = Date.now();
-    const { stmts, count } = popularItemStatements(env, body.items || [], 'jadeship');
+    // Items dans leur base (voir shard.js), boutiques dans la 1re.
+    const stmts = [];
+    let count = 0;
+    for (const [db, keys] of groupByDb(env, (body.items || []).map((i) => `${i.platform}:${i.id}`))) {
+      const out = popularItemStatements(onDb(env, db), (body.items || []).filter((i) => keys.includes(`${i.platform}:${i.id}`)), 'jadeship');
+      count += out.count;
+      stmts.push(...out.stmts.map((st) => [db, st]));
+    }
     for (const s of (body.shops || []).slice(0, 300)) {
       if (!/^\d{5,12}$/.test(String(s.id))) continue;
-      stmts.push(env.DB.prepare(
+      stmts.push([env.DB, env.DB.prepare(
         `INSERT OR IGNORE INTO shops (id, platform, name, url, status, source, tier, added_at)
          SELECT ?, 'weidian', ?, ?, 'pending', 'jadeship', ?, ? WHERE NOT EXISTS (SELECT 1 FROM blacklist WHERE shop_id = ?)`,
-      ).bind(String(s.id), s.name || null, `https://weidian.com/?userid=${s.id}`, s.tier || null, now, String(s.id)));
-      if (s.tier) stmts.push(env.DB.prepare('UPDATE shops SET tier = ? WHERE id = ?').bind(s.tier, String(s.id)));
+      ).bind(String(s.id), s.name || null, `https://weidian.com/?userid=${s.id}`, s.tier || null, now, String(s.id))]);
+      if (s.tier) stmts.push([env.DB, env.DB.prepare('UPDATE shops SET tier = ? WHERE id = ?').bind(s.tier, String(s.id))]);
     }
-    for (let i = 0; i < stmts.length; i += 100) await env.DB.batch(stmts.slice(i, i + 100));
+    await batchByDb(stmts);
     if (body.done) await env.DB.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('jadeship_at', ?)").bind(String(now)).run();
     return json({ ok: true, items: count });
   }
 
   if (path === '/api/indexer/missing-images' && request.method === 'GET') {
-    if (!(await budget(env, 'pages')).left) return json({ items: [] });
-    // Tranche suivante de la table (curseur partagé) : ~3 000 lignes lues par appel, jamais toute la table.
-    const range = await claimRange(env, 'cursor:images', 'items', 3000);
+    // Tranche suivante de la table (curseur partagé, un par base) : ~3 000 lignes lues par appel, jamais toute la table.
+    const e = await shardEnv(env, shardOf(url), 'pages');
+    if (!e) return json({ items: [] });
+    const range = await claimRange(e, 'cursor:images', 'items', 3000);
     if (!range) return json({ items: [] });
-    const { results } = await env.DB.prepare(
+    const { results } = await e.DB.prepare(
       "SELECT item_id FROM items WHERE rowid > ? AND rowid <= ? AND images IS NULL AND platform = 'weidian'",
     ).bind(range[0], range[1]).all();
     return json({ items: results.map((r) => r.item_id) });
   }
 
   if (path === '/api/indexer/images') {
-    const stmts = (body.items || []).slice(0, 300).map((i) => env.DB.prepare(
-      `UPDATE items SET images = ?, title_en = COALESCE(title_en, ?),
-         category = CASE WHEN category = 'other' AND title_en IS NULL THEN NULL ELSE category END WHERE id = ?`,
-    ).bind(JSON.stringify((i.images || []).filter((u) => /^https:\/\//.test(u)).slice(0, 8)), englishTitle(i.title), `weidian:${i.itemId}`));
-    if (stmts.length) await env.DB.batch(stmts);
+    const stmts = (body.items || []).slice(0, 300).map((i) => {
+      const db = itemDb(env, String(i.itemId));
+      return [db, db.prepare(
+        `UPDATE items SET images = ?, title_en = COALESCE(title_en, ?),
+           category = CASE WHEN category = 'other' AND title_en IS NULL THEN NULL ELSE category END WHERE id = ?`,
+      ).bind(JSON.stringify((i.images || []).filter((u) => /^https:\/\//.test(u)).slice(0, 8)), englishTitle(i.title), `weidian:${i.itemId}`)];
+    });
+    await batchByDb(stmts);
     return json({ ok: true, saved: stmts.length });
   }
 
@@ -853,7 +970,7 @@ async function handleApi(request, env, url) {
       return json({ ok: true });
     }
     if (body.ok) {
-      const c = await env.DB.prepare('SELECT COUNT(*) AS n FROM items WHERE shop_id = ?').bind(body.shopId).first();
+      const c = { n: await countAll(env, 'SELECT COUNT(*) AS n FROM items WHERE shop_id = ?', body.shopId) };
       await env.DB.prepare("UPDATE shops SET status = 'ok', item_count = ?, last_indexed = ?, last_error = NULL WHERE id = ?")
         .bind(c.n, Date.now(), body.shopId).run();
       return json({ ok: true, items: c.n });

@@ -14,6 +14,7 @@ import { searchByImage, imageResultsView, isImage } from './imagesearch.js';
 import { popularItemStatements } from './items.js';
 import { budget } from './budget.js';
 import { ACCENTS } from './config.js';
+import { itemsWhereIds, groupByDb, onDb, batchByDb } from './shard.js';
 
 const MAX_CALLS = 46;
 const WORK_RESERVE = 14; // requêtes gardées pour répondre (une recherche d'image en coûte ~5)
@@ -80,16 +81,18 @@ export async function watchChannels(env, ms = 55000) {
   }
 
   // Positions de lecture et compteurs, en un seul lot.
-  const stmts = channels.filter((c) => c.cursor !== c.last_message_id || c.done).map((c) => env.DB.prepare(
+  const stmts = channels.filter((c) => c.cursor !== c.last_message_id || c.done).map((c) => [env.DB, env.DB.prepare(
     `UPDATE ${c.table} SET last_message_id = ?, ${c.kind === 'image' ? 'searched = searched' : 'converted = converted'} + ? WHERE channel_id = ?`,
-  ).bind(c.cursor, c.done, c.channel_id));
-  if (found.length) {
-    const b = await budget(env, 'items');
-    const { stmts: add, count } = popularItemStatements(env, found.slice(0, b.left), 'finderqc');
-    stmts.push(...add);
+  ).bind(c.cursor, c.done, c.channel_id)]);
+  // Items trouvés : chacun dans sa base (voir shard.js), sur le budget de cette base.
+  for (const [db, keys] of groupByDb(env, found.map((x) => `${x.platform}:${x.id}`))) {
+    const e = onDb(env, db);
+    const b = await budget(e, 'items');
+    const { stmts: add, count } = popularItemStatements(e, found.filter((x) => keys.includes(`${x.platform}:${x.id}`)).slice(0, b.left), 'finderqc');
+    stmts.push(...add.map((st) => [db, st]));
     if (count) await b.use(count).catch(() => {});
   }
-  if (stmts.length) await env.DB.batch(stmts).catch((err) => console.log('salons', String(err).slice(0, 120)));
+  if (stmts.length) await batchByDb(stmts).catch((err) => console.log('salons', String(err).slice(0, 120)));
   return channels.reduce((n, c) => n + c.done, 0);
 }
 
@@ -101,7 +104,7 @@ async function convertMessage(env, ctx, c, m) {
   if (!refs.length) return calls;
   const cards = [];
   const ids = refs.map((r) => `${r.platform}:${r.itemId}`);
-  const { results } = await env.DB.prepare(`SELECT * FROM items WHERE id IN (${ids.map(() => '?').join(',')})`).bind(...ids).all();
+  const results = await itemsWhereIds(env, ids);
   const known = new Map(results.map((i) => [i.id, i]));
   for (const ref of refs) cards.push(...await convertView(env, ref, known.get(`${ref.platform}:${ref.itemId}`) || null, ctx));
   await discordApi(env, 'POST', `/channels/${c.channel_id}/messages`, {

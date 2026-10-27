@@ -3,6 +3,7 @@
 import { relevance, relaxQuery } from './synonyms.js';
 import { addLiveResults } from './livesearch.js';
 import { readsOver } from './budget.js';
+import { perDb, allRows, itemsWhereIds } from './shard.js';
 import { translate } from './translate.js';
 import { detectCategory } from './categories.js';
 
@@ -149,12 +150,16 @@ async function rankedIds(env, params, money) {
   // puis le tri choisi. On parcourt l'index de popularité et on s'arrête à 5000 trouvés (quota de lectures Turso),
   // puis cache partagé de 6 h.
   // Lecture bornée : au plus les SCAN_ROWS items les plus vendus (20 000 si le quota de lectures du mois est atteint).
-  const scan = (await readsOver(env)) ? 20000 : SCAN_ROWS;
-  const { results } = await env.DB.prepare(
-    `SELECT id, title_en, title_zh, shop_name, category, popularity, first_seen, price_cny FROM (
-       SELECT * FROM items INDEXED BY items_popularity ORDER BY popularity DESC, first_seen DESC LIMIT ?
-     ) ${w.sql} LIMIT 5000`,
-  ).bind(scan, ...w.binds).all();
+  // Chaque base du catalogue lit sa moitié, avec son propre quota.
+  const parts = await Promise.all(perDb(env).map(async (e) => {
+    const scan = (await readsOver(e)) ? 20000 : SCAN_ROWS;
+    return (await e.DB.prepare(
+      `SELECT id, title_en, title_zh, shop_name, category, popularity, first_seen, price_cny FROM (
+         SELECT * FROM items INDEXED BY items_popularity ORDER BY popularity DESC, first_seen DESC LIMIT ?
+       ) ${w.sql} LIMIT 5000`,
+    ).bind(scan, ...w.binds).all()).results;
+  }));
+  const results = parts.flat();
   const scored = results.map((r) => ({ ...r, score: relevance(params.groups, r) })).filter((r) => r.score > 0);
   const sorted = sortRows(scored, params);
   if (!params.sort || params.sort === 'popular') sorted.sort((a, b) => b.score - a.score || b.popularity - a.popularity || b.first_seen - a.first_seen);
@@ -175,15 +180,13 @@ async function plainIds(env, params, money) {
   const w = where(params, money);
   if (params.category || params.autoCategory) {
     // Avec une catégorie : on lit seulement cette catégorie (index), puis on trie ici.
-    const { results } = await env.DB.prepare(
-      `SELECT id, popularity, first_seen, price_cny FROM items INDEXED BY items_category ${w.sql}`,
-    ).bind(...w.binds).all();
+    const results = await allRows(env, `SELECT id, popularity, first_seen, price_cny FROM items INDEXED BY items_category ${w.sql}`, ...w.binds);
     return sortRows(results, params).slice(0, MAX_BULK).map((r) => r.id);
   }
-  const { results } = await env.DB.prepare(
-    `SELECT id FROM items ${w.sql} ORDER BY ${order(params)} LIMIT ?`,
-  ).bind(...w.binds, MAX_BULK).all();
-  return results.map((r) => r.id);
+  // Les meilleurs de chaque base, puis fusion dans l'ordre demandé.
+  const results = await allRows(env, `SELECT id, popularity, first_seen, price_cny FROM items ${w.sql} ORDER BY ${order(params)} LIMIT ?`,
+    ...w.binds, MAX_BULK);
+  return sortRows(results, params).slice(0, MAX_BULK).map((r) => r.id);
 }
 
 function sortRows(rows, params) {
@@ -237,7 +240,7 @@ export async function searchIds(env, sid, params, money) {
 // Items d'une tranche de la liste, dans l'ordre de la liste (sans les items masqués entre-temps).
 export async function itemsByIds(env, ids) {
   if (!ids.length) return [];
-  const { results } = await env.DB.prepare(`SELECT * FROM items WHERE hidden = 0 AND id IN (${ids.map(() => '?').join(',')})`).bind(...ids).all();
+  const results = await itemsWhereIds(env, ids, '*', 'hidden = 0');
   const byId = new Map(results.map((r) => [r.id, r]));
   return ids.map((id) => byId.get(id)).filter(Boolean);
 }
@@ -255,8 +258,7 @@ export async function idsToPost(env, sid, params, money) {
   const keep = new Set();
   for (let i = 0; i < ids.length; i += 90) {
     const chunk = ids.slice(i, i + 90);
-    const { results } = await env.DB.prepare(`SELECT id FROM items WHERE posted_count = 0 AND hidden = 0 AND id IN (${chunk.map(() => '?').join(',')})`)
-      .bind(...chunk).all();
+    const results = await itemsWhereIds(env, chunk, 'id', 'posted_count = 0 AND hidden = 0');
     results.forEach((r) => keep.add(r.id));
   }
   return ids.filter((id) => keep.has(id));

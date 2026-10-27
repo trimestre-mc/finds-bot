@@ -3,7 +3,8 @@
 // Tout le catalogue est ainsi cherchable sans attendre l'indexation complète ; seuls les produits trouvés sont
 // écrits (au plus LIVE_RESULTS par recherche, et un produit déjà connu et inchangé n'écrit rien).
 
-import { finderItemStatements } from './qc.js';
+import { finderItemStatements, finderKey } from './qc.js';
+import { itemEnv, batchByDb } from './shard.js';
 
 const API = 'https://server.finderqc.com/api/spu/webSpuList';
 const UA = 'finds-bot/1.0 (+https://github.com/trimestre-mc/finds-bot)';
@@ -43,8 +44,11 @@ export async function addLiveResults(env, params, money) {
       minCny: params.min != null && rate ? params.min / rate : null,
     });
     const now = Date.now();
-    const stmts = list.flatMap((x) => finderItemStatements(env, x, now));
-    for (let i = 0; i < stmts.length; i += 100) await env.DB.batch(stmts.slice(i, i + 100));
+    // Chaque produit dans la base qui lui revient (voir shard.js).
+    await batchByDb(list.flatMap((x) => {
+      const e = itemEnv(env, finderKey(x));
+      return finderItemStatements(e, x, now).map((st) => [e.DB, st]);
+    }));
     return list.length;
   } catch (err) {
     console.log('recherche FinderQC', String(err).slice(0, 120));

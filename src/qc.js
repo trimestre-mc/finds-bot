@@ -8,6 +8,7 @@ import { popularItemStatements } from './items.js';
 import { canonicalUrl } from './links.js';
 import { detectCategory, isDeadLink } from './categories.js';
 import { budget, rowsWritten } from './budget.js';
+import { itemDb, onDb, perDb, groupByDb, batchByDb } from './shard.js';
 
 const UA = 'finds-bot/1.0 (+https://github.com/trimestre-mc/finds-bot)';
 const API = 'https://server.finderqc.com/api/spu/webSpuInfo';
@@ -122,13 +123,17 @@ export async function runQcChecks(env, limit) {
     found.push(...(qc.similar || []).slice(0, 10));
   }
   // Items similaires : au plus 10 par passage, pris sur le budget quotidien « items » (quota D1 gratuit).
-  const b = await budget(env, 'items');
-  const take = found.slice(0, Math.min(10, b.left));
-  if (take.length) {
-    stmts.push(...popularItemStatements(env, take, 'finderqc').stmts);
+  // Les items similaires vont dans la base qui leur revient (voir shard.js), sur le budget de cette base.
+  const routed = stmts.map((st) => [env.DB, st]);
+  for (const [db, list] of groupByDb(env, found.slice(0, 10).map((x) => `${x.platform}:${x.id}`))) {
+    const e = onDb(env, db);
+    const b = await budget(e, 'items');
+    const take = found.filter((x) => list.includes(`${x.platform}:${x.id}`)).slice(0, b.left);
+    if (!take.length) continue;
+    routed.push(...popularItemStatements(e, take, 'finderqc').stmts.map((st) => [db, st]));
     await b.use(take.length);
   }
-  for (let i = 0; i < stmts.length; i += 100) await env.DB.batch(stmts.slice(i, i + 100));
+  await batchByDb(routed);
   return calls;
 }
 
@@ -141,7 +146,7 @@ export async function refreshQc(env, item) {
   // Récupération en cours chez Repfind : on revérifiera (pas de date de vérification).
   const checkedAt = qc.running ? null : Date.now();
   // Le cache est un plus : si la base refuse l'écriture (quota du jour), on affiche quand même les QC.
-  await env.DB.prepare('UPDATE items SET qc_count = ?, qc_preview = ?, qc_checked_at = ? WHERE id = ?')
+  await itemDb(env, item.id).prepare('UPDATE items SET qc_count = ?, qc_preview = ?, qc_checked_at = ? WHERE id = ?')
     .bind(qc.count, preview, checkedAt, item.id).run().catch((err) => console.log('qc cache', String(err).slice(0, 100)));
   return { ...item, qc_count: qc.count, qc_preview: preview, qc_checked_at: checkedAt, qc_running: qc.running };
 }
@@ -219,7 +224,7 @@ async function cachedLookAlike(env, item) {
   const look = await lookAlikeQc(item).catch((err) => { console.log('qc similaire', String(err).slice(0, 120)); return undefined; });
   if (look === undefined) return null; // erreur (source surchargée) : on réessaiera
   const keep = JSON.stringify({ s: 'similar', item: look ? look.item : null, p: look ? look.photos.slice(0, 8) : [] });
-  if (env && env.DB) await env.DB.prepare('UPDATE items SET qc_preview = ? WHERE id = ? AND COALESCE(qc_count, 0) = 0').bind(keep, item.id).run().catch(() => {});
+  if (env && env.DB) await itemDb(env, item.id).prepare('UPDATE items SET qc_preview = ? WHERE id = ? AND COALESCE(qc_count, 0) = 0').bind(keep, item.id).run().catch(() => {});
   return look;
 }
 
@@ -353,6 +358,9 @@ export function qcSummary(item, community) {
 // indexée ensuite par GitHub). Un cycle complet, puis on recommence le lendemain pour les nouveautés.
 
 const SYNC_PLATFORMS = ['Weidian', 'Taobao', 'Ali1688'];
+// Avec une 2e base (Taobao et 1688, voir shard.js) : deux parcours en parallèle, chacun vers sa base.
+export const SYNC_LANES = { all: { key: 'qcsync', platforms: SYNC_PLATFORMS }, weidian: { key: 'qcsync', platforms: ['Weidian'] },
+  others: { key: 'qcsync:2', platforms: ['Taobao', 'Ali1688'] } };
 const SYNC_PAGE_SIZE = 100;
 const SYNC_LIMIT = 10000; // résultats max par filtre côté FinderQC
 const SYNC_MAX_CENTS = 2000000; // au-delà de 20 000 ¥ : une dernière tranche ouverte
@@ -361,6 +369,13 @@ const SYNC_PAGES_PER_RUN = 8; // temps CPU limité, et FinderQC doit rester disp
 // Un produit du catalogue FinderQC (liste ou recherche) → enregistrement de l'item (titre, prix, ventes, nombre de
 // QC) ; un item déjà connu n'est réécrit que si quelque chose a changé. Item Weidian sans boutique connue : sa
 // boutique sera retrouvée puis indexée en entier.
+// Clé « plateforme:numéro » d'un produit FinderQC (null si inconnu).
+export function finderKey(x) {
+  const platform = PLATFORMS[x.mallType];
+  const id = String(x.itemId || '');
+  return platform && /^\d{6,14}$/.test(id) ? `${platform}:${id}` : null;
+}
+
 export function finderItemStatements(env, x, now = Date.now()) {
   const platform = PLATFORMS[x.mallType];
   const id = String(x.itemId || '');
@@ -400,46 +415,53 @@ async function listPage(filter, page) {
 
 const yuan = (cents) => (cents / 100).toFixed(2);
 
-function sliceFilter(state) {
+function sliceFilter(state, platforms) {
   const last = state.lo >= SYNC_MAX_CENTS;
   return {
-    mallType: SYNC_PLATFORMS[state.plat],
+    mallType: platforms[state.plat],
     minPrice: yuan(state.lo),
     maxPrice: last ? '9999999' : yuan(state.lo + state.w - 1),
   };
 }
 
-export async function syncQcCatalog(env) {
+export async function syncQcCatalog(env, lane = SYNC_LANES.all) {
   let external = 0;
   const used = () => external + (env.DB.calls || 0);
   const day = new Date().toISOString().slice(0, 10);
-  const row = await env.DB.prepare("SELECT value FROM settings WHERE key = 'qcsync'").first();
+  const row = await env.DB.prepare('SELECT value FROM settings WHERE key = ?').bind(lane.key).first();
   let state = null;
   try { state = row ? JSON.parse(row.value) : null; } catch {}
   if (!state || state.v !== 2 || (state.done && state.cycle !== day)) {
     state = { v: 2, cycle: day, plat: 0, lo: 0, w: 1000, page: 1, done: false, seen: 0 };
   }
   if (state.done || (state.pauseUntil && Date.now() < state.pauseUntil)) return 0;
-  const b = await budget(env, 'qcsync');
-  if (!b.left) return 0;
+  // Un budget par base du catalogue : un produit dont la base a épuisé le sien est sauté (il reviendra au tour suivant).
+  // Seulement les bases où vont les plateformes de ce parcours.
+  const laneDbs = new Set(lane.platforms.map((p) => itemDb(env, `${PLATFORMS[p]}:0`)));
+  const shards = await Promise.all(perDb(env).filter((e) => laneDbs.has(e.DB))
+    .map(async (e) => ({ e, b: await budget(e, 'qcsync'), written: 0, rows: 0 })));
+  const open = (db) => shards.find((x) => x.e.DB === db && x.written < x.b.left);
+  if (!shards.some((x) => x.b.left)) return 0;
 
   const now = Date.now();
   let stmts = [];
   let written = 0;
-  let realRows = 0; // lignes vraiment écrites (null si la base ne les donne pas)
   let pages = 0;
   const flush = async () => {
     if (!stmts.length) return;
     const out = stmts;
     stmts = [];
-    const r = rowsWritten(await env.DB.batch(out));
-    realRows = realRows == null || r == null ? null : realRows + r;
+    for (const [db, results] of await batchByDb(out)) {
+      const x = shards.find((y) => y.e.DB === db);
+      const r = rowsWritten(results);
+      x.rows = x.rows == null || r == null ? null : x.rows + r;
+    }
   };
-  while (used() < 32 && written < b.left && pages < SYNC_PAGES_PER_RUN) {
-    if (state.plat >= SYNC_PLATFORMS.length) { state.done = true; break; }
+  while (used() < 32 && shards.some((x) => x.written < x.b.left) && pages < SYNC_PAGES_PER_RUN) {
+    if (state.plat >= lane.platforms.length) { state.done = true; break; }
     let page;
     try {
-      page = await listPage(sliceFilter(state), state.page);
+      page = await listPage(sliceFilter(state, lane.platforms), state.page);
       external++;
       pages++;
     } catch (err) {
@@ -454,9 +476,12 @@ export async function syncQcCatalog(env) {
       continue;
     }
     for (const x of page.list) {
-      const out = finderItemStatements(env, x, now);
+      const shard = open(itemDb(env, finderKey(x)));
+      if (!shard) continue;
+      const out = finderItemStatements(shard.e, x, now);
       if (!out.length) continue;
-      stmts.push(...out);
+      stmts.push(...out.map((st) => [shard.e.DB, st]));
+      shard.written++;
       written++;
       state.seen++;
     }
@@ -477,7 +502,7 @@ export async function syncQcCatalog(env) {
     } else state.page++;
   }
   await flush();
-  await b.use(written, realRows);
-  await env.DB.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('qcsync', ?)").bind(JSON.stringify(state)).run();
+  for (const x of shards) if (x.written) await x.b.use(x.written, x.rows);
+  await env.DB.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)').bind(lane.key, JSON.stringify(state)).run();
   return written;
 }

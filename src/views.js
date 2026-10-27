@@ -9,6 +9,7 @@ import { CATEGORY_BY_KEY, CATEGORIES } from './categories.js';
 import { getConfig, CURRENCIES, ACCENTS, LANGS } from './config.js';
 import { loadSearch, bigCounts } from './ui.js';
 import { communityQc, qcSummary } from './qc.js';
+import { itemsWhereIds, countAll } from './shard.js';
 
 const notice = (msg) => (msg ? text(`> ${msg}`) : null);
 const backHome = () => emojiBtn('🏠', 'Menu', 'home');
@@ -184,8 +185,12 @@ export async function statsView(env, days = 7) {
     env.DB.prepare('SELECT COUNT(*) AS n FROM posts WHERE posted_at > ?').bind(since).first(),
     env.DB.prepare('SELECT COUNT(*) AS n FROM clicks WHERE at > ?').bind(since).first(),
     env.DB.prepare('SELECT agent, COUNT(*) AS n FROM clicks WHERE at > ? GROUP BY agent ORDER BY n DESC LIMIT 6').bind(since).all(),
-    env.DB.prepare(`SELECT c.item_id, COUNT(*) AS n, i.title_en, i.title_zh, i.item_id AS iid, i.url FROM clicks c
-      LEFT JOIN items i ON i.id = c.item_id WHERE c.at > ? GROUP BY c.item_id ORDER BY n DESC LIMIT 5`).bind(since).all(),
+    // Titres lus ensuite dans la base de chaque item (voir shard.js).
+    env.DB.prepare('SELECT item_id, COUNT(*) AS n FROM clicks WHERE at > ? GROUP BY item_id ORDER BY n DESC LIMIT 5').bind(since).all()
+      .then(async (r) => {
+        const info = new Map((await itemsWhereIds(env, r.results.map((x) => x.item_id), 'id, title_en, title_zh, item_id, url')).map((i) => [i.id, i]));
+        return { results: r.results.map((x) => ({ ...x, ...(info.has(x.item_id) ? { title_en: info.get(x.item_id).title_en, title_zh: info.get(x.item_id).title_zh, iid: info.get(x.item_id).item_id, url: info.get(x.item_id).url } : {}) })) };
+      }),
     env.DB.prepare('SELECT channel_id, COUNT(*) AS n FROM clicks WHERE at > ? AND channel_id IS NOT NULL GROUP BY channel_id ORDER BY n DESC LIMIT 3').bind(since).all(),
     env.DB.prepare("SELECT CAST((at / 86400000) AS INTEGER) AS d, COUNT(*) AS n FROM clicks WHERE at > ? GROUP BY d ORDER BY d").bind(Date.now() - 7 * 86400000).all(),
   ]);
@@ -225,11 +230,16 @@ export async function historyView(env, it, page = 0, msg) {
   const total = (await env.DB.prepare('SELECT COUNT(*) AS n FROM posts').first()).n;
   const pages = Math.max(1, Math.ceil(total / HIST_PAGE));
   page = Math.min(Math.max(0, page), pages - 1);
-  const { results } = await env.DB.prepare(
-    `SELECT p.*, i.title_en, i.title_zh, i.item_id AS iid, i.image,
-       (SELECT COUNT(*) FROM clicks c WHERE c.item_id = p.item_id AND c.channel_id = p.channel_id AND c.at >= p.posted_at) AS clicks
-     FROM posts p LEFT JOIN items i ON i.id = p.item_id ORDER BY p.posted_at DESC LIMIT ? OFFSET ?`,
+  const { results: posts } = await env.DB.prepare(
+    `SELECT p.*, (SELECT COUNT(*) FROM clicks c WHERE c.item_id = p.item_id AND c.channel_id = p.channel_id AND c.at >= p.posted_at) AS clicks
+     FROM posts p ORDER BY p.posted_at DESC LIMIT ? OFFSET ?`,
   ).bind(HIST_PAGE, page * HIST_PAGE).all();
+  // Titres lus dans la base de chaque item (voir shard.js).
+  const info = new Map((await itemsWhereIds(env, [...new Set(posts.map((p) => p.item_id))], 'id, title_en, title_zh, item_id, image')).map((i) => [i.id, i]));
+  const results = posts.map((p) => {
+    const i = info.get(p.item_id) || {};
+    return { ...p, title_en: i.title_en, title_zh: i.title_zh, iid: i.item_id, image: i.image };
+  });
   const cards = results.map((p) => {
     const where = p.thread_id ? `<#${p.thread_id}>` : `<#${p.channel_id}>`;
     const jump = p.message_id && !p.thread_id ? `  ·  [voir](https://discord.com/channels/${it.guild_id}/${p.channel_id}/${p.message_id})` : '';
@@ -314,7 +324,7 @@ export async function healthView(env) {
   const [shops, counts, links, queue, last, jade, rates, srcErr, logs] = await Promise.all([
     env.DB.prepare('SELECT status, COUNT(*) AS n FROM shops GROUP BY status').all(),
     bigCounts(env),
-    q('SELECT COUNT(*) AS n FROM link_queue'),
+    countAll(env, 'SELECT COUNT(*) AS n FROM link_queue').then((n) => ({ n })),
     q('SELECT COUNT(*) AS n FROM post_queue'),
     q("SELECT value FROM settings WHERE key = 'last_dispatch'"),
     q("SELECT value FROM settings WHERE key = 'jadeship_at'"),

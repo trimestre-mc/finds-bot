@@ -17,6 +17,7 @@ import {
   schedulesView, scheduleView, scheduleModal, statsView, historyView, settingsView, healthView, findView, convertView,
   categoryChannelsView, categoryChannels, categoryRhythm, CATEGORY_RHYTHMS, categoryRhythmModal, rhythmOf,
 } from './views.js';
+import { itemDb, itemById, batchByDb, deleteShopItems } from './shard.js';
 
 // ---------------------------------------------------------------- Indexeur GitHub
 
@@ -49,7 +50,7 @@ export async function handleGo(url, env, ctx) {
     return new Response(null, { status: 302, headers: { Location: s.url, 'Cache-Control': 'no-store' } });
   }
   const [platform, itemId] = itemKey.split(':');
-  const known = await env.DB.prepare('SELECT * FROM items WHERE id = ?').bind(itemKey).first();
+  const known = await itemById(env, itemKey);
   const item = known || { id: itemKey, platform, item_id: itemId, url: canonicalUrl(platform, itemId) };
   if (!item.url || !/^\d{6,14}$/.test(String(item.item_id))) return new Response('Lien inconnu', { status: 404 });
   let target = item.url;
@@ -94,7 +95,7 @@ export async function handlePublicCommand(it, env, ctx) {
       return panel([container([text('❌ Je n\'ai trouvé aucun lien Weidian, Taobao ou 1688 (ni de lien d\'agent) à convertir.')])]);
     }
     const ref = refs[0];
-    const known = await env.DB.prepare('SELECT * FROM items WHERE id = ?').bind(`${ref.platform}:${ref.itemId}`).first();
+    const known = await itemById(env, `${ref.platform}:${ref.itemId}`);
     // Réponse visible par tout le salon (les erreurs restent privées).
     return panel(await convertView(env, ref, known), false);
   }
@@ -148,7 +149,7 @@ export async function handlePublicComponent(it, env, ctx) {
 
 // Fenêtre QC d'un item, entièrement dans Discord.
 async function openQc(env, key, platform, itemId, view = 0) {
-  let item = await env.DB.prepare('SELECT * FROM items WHERE id = ?').bind(key).first();
+  let item = await itemById(env, key);
   item = await refreshQc(env, item || { id: key, item_id: itemId, platform, url: canonicalUrl(platform, itemId), popularity: 0 });
   const community = view === 0 ? (await communityPhotos(env, key, 10)).photos : [];
   const { results: qcCh } = await env.DB.prepare('SELECT channel_id FROM qc_channels LIMIT 1').all();
@@ -209,7 +210,7 @@ export async function handleFeatureComponent(it, env, ctx, a, b, c, d, values) {
       return update(await resultsView(env, c, 0));
     case 's:hide': {
       if (values.length) {
-        await env.DB.batch(values.map((id) => env.DB.prepare('UPDATE items SET hidden = 1 WHERE id = ?').bind(id)));
+        await batchByDb(values.map((id) => [itemDb(env, id), itemDb(env, id).prepare('UPDATE items SET hidden = 1 WHERE id = ?').bind(id)]));
         await env.DB.prepare('DELETE FROM search_cache').run().catch(() => {}); // les recherches en cache contenaient ces items
         await saveParams(env, c, {});
       }
@@ -381,9 +382,9 @@ export async function handleFeatureComponent(it, env, ctx, a, b, c, d, values) {
       const shop = await env.DB.prepare('SELECT name FROM shops WHERE id = ?').bind(c).first();
       await env.DB.batch([
         env.DB.prepare('INSERT OR REPLACE INTO blacklist (shop_id, name, added_at) VALUES (?, ?, ?)').bind(c, shop ? shop.name : null, Date.now()),
-        env.DB.prepare('DELETE FROM items WHERE shop_id = ? AND manual = 0').bind(c),
         env.DB.prepare('DELETE FROM shops WHERE id = ?').bind(c),
       ]);
+      await deleteShopItems(env, c);
       return update(await catalogsView(env, 0, `🚫 **${escape(shop ? shop.name || c : c)}** est banni : retiré, et jamais réajouté par la découverte.`));
     }
     default: return null;
@@ -525,7 +526,7 @@ async function requestQc(env, it, key, platform, itemId) {
   if (recent && Date.now() - recent.at < 86400000) {
     return [container([text(`🙋 Des QC ont déjà été demandés pour cet item dans <#${channel}> il y a moins de 24 h. Elles apparaîtront ici dès qu'un membre les poste.`)])];
   }
-  const item = await env.DB.prepare('SELECT * FROM items WHERE id = ?').bind(key).first()
+  const item = await itemById(env, key)
     || { id: key, item_id: itemId, platform, url: canonicalUrl(platform, itemId) };
   const title = escape((item.title_en || item.title_zh || `${platform} ${itemId}`).slice(0, 90));
   const lines = `## 🙋 QC demandés\n<@${userId(it)}> cherche des photos QC pour **${title}**.\n` +

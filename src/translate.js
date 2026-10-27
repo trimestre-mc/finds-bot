@@ -72,14 +72,17 @@ async function rewriteInHalves(env, titles) {
 // On en garde pour la recherche multilingue.
 const TITLES_PER_DAY = 6500;
 
+// Quota d'IA du compte Cloudflare : un seul compteur, dans la 1re base, même quand la traduction tourne sur chaque
+// base du catalogue (voir shard.js).
 async function aiBudget(env) {
+  const db = env.MAIN || env.DB;
   const day = new Date().toISOString().slice(0, 10);
-  const row = await env.DB.prepare("SELECT value FROM settings WHERE key = 'ai_titles'").first();
+  const row = await db.prepare("SELECT value FROM settings WHERE key = 'ai_titles'").first();
   let used = 0;
   try { const v = JSON.parse(row ? row.value : '{}'); used = v.day === day ? v.used : 0; } catch {}
   return {
     left: Math.max(0, TITLES_PER_DAY - used),
-    add: (n) => env.DB.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('ai_titles', ?)")
+    add: (n) => db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('ai_titles', ?)")
       .bind(JSON.stringify({ day, used: Math.min(TITLES_PER_DAY, used + n) })).run(),
   };
 }

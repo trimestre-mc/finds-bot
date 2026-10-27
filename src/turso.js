@@ -25,11 +25,10 @@ function watchReads(sql, r) {
   if (r && r.rows_read > HEAVY_READ) console.log('lecture lourde', r.rows_read, sql.replace(/\s+/g, ' ').slice(0, 160));
 }
 
-// Total des lignes lues pendant l'exécution (compteur du mois tenu par budget.js).
-let readCounter = null;
-function toResult(r, sql = '') {
+// db : la base qui a répondu, pour son total de lignes lues pendant l'exécution (compteur du mois dans budget.js).
+function toResult(r, sql = '', db = null) {
   watchReads(sql, r);
-  if (readCounter && r && r.rows_read) readCounter.rowsRead += r.rows_read;
+  if (db && r && r.rows_read) db.rowsRead += r.rows_read;
   const cols = (r.cols || []).map((c) => c.name);
   const results = (r.rows || []).map((row) => Object.fromEntries(row.map((v, i) => [cols[i], fromValue(v)])));
   return {
@@ -39,18 +38,16 @@ function toResult(r, sql = '') {
   };
 }
 
-export function tursoDb(env) {
-  const endpoint = `${String(env.TURSO_URL).replace(/^libsql:\/\//, 'https://').replace(/\/$/, '')}/v2/pipeline`;
-
-  // Chaque appel à Turso est une requête externe (50 max par exécution sur Workers gratuit) : on les compte.
-  const db = { calls: 0, rowsRead: 0 };
-  readCounter = db;
+// shared : compteur de requêtes commun à toutes les bases de l'exécution (50 requêtes externes max sur Workers gratuit).
+export function tursoDb(url, token, shared = { calls: 0 }) {
+  const endpoint = `${String(url).replace(/^libsql:\/\//, 'https://').replace(/\/$/, '')}/v2/pipeline`;
+  const db = { rowsRead: 0, get calls() { return shared.calls; } };
 
   async function pipeline(requests) {
-    db.calls++;
+    shared.calls++;
     const res = await fetch(endpoint, {
       method: 'POST',
-      headers: { Authorization: `Bearer ${env.TURSO_TOKEN}`, 'Content-Type': 'application/json' },
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({ requests: [...requests, { type: 'close' }] }),
     });
     if (!res.ok) throw new Error(`Turso ${res.status}: ${(await res.text()).slice(0, 200)}`);
@@ -73,7 +70,7 @@ export function tursoDb(env) {
 
     async all() {
       const [response] = await pipeline([{ type: 'execute', stmt: { sql: this.sql, args: this.args.map(toArg) } }]);
-      return toResult(response.result, this.sql);
+      return toResult(response.result, this.sql, db);
     }
 
     async first(column) {
@@ -99,15 +96,19 @@ export function tursoDb(env) {
     const { step_results: results, step_errors: errors } = response.result;
     const failed = errors.slice(0, n + 1).find((e) => e);
     if (failed) throw new Error(`Turso : ${failed.message}`);
-    return results.slice(1, n + 1).map((r, i) => toResult(r, statements[i].sql));
+    return results.slice(1, n + 1).map((r, i) => toResult(r, statements[i].sql, db));
   }
 
   return Object.assign(db, { prepare: (sql) => new Statement(sql), batch });
 }
 
-// Utilise Turso si TURSO_URL et TURSO_TOKEN sont configurés, sinon la base D1 liée au Worker.
+// Utilise Turso si TURSO_URL et TURSO_TOKEN sont configurés, sinon la base D1 liée au Worker. Avec TURSO2_URL et
+// TURSO2_TOKEN, une 2e base (autre compte gratuit) reçoit la moitié du catalogue (voir shard.js).
 // Un accès neuf par exécution : le compteur de requêtes repart de zéro à chaque fois.
 export function withDb(env) {
   if (!env.TURSO_URL || !env.TURSO_TOKEN) return env;
-  return Object.assign(Object.create(env), { DB: tursoDb(env) });
+  const shared = { calls: 0 };
+  const extra = { DB: tursoDb(env.TURSO_URL, env.TURSO_TOKEN, shared) };
+  if (env.TURSO2_URL && env.TURSO2_TOKEN) extra.DB2 = tursoDb(env.TURSO2_URL, env.TURSO2_TOKEN, shared);
+  return Object.assign(Object.create(env), extra);
 }
