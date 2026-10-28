@@ -7,6 +7,7 @@
 import { DurableObject } from 'cloudflare:workers';
 import { withDb } from './turso.js';
 import { kvSet } from './kvstore.js';
+import { channelMap } from './watch.js';
 
 const GATEWAY = 'https://gateway.discord.gg/?v=10&encoding=json';
 const INTENTS = (1 << 0) | (1 << 9) | (1 << 15); // GUILDS, GUILD_MESSAGES, MESSAGE_CONTENT
@@ -183,13 +184,9 @@ export class Gateway extends DurableObject {
   async loadChannels() {
     const before = new Set(this.channels.keys());
     const env = withDb(this.env);
-    const [conv, img, ai] = await Promise.all([
-      env.DB.prepare('SELECT channel_id FROM convert_channels').all(),
-      env.DB.prepare('SELECT channel_id FROM image_channels').all(),
-      env.DB.prepare('SELECT channel_id FROM aiqc_channels').all().catch(() => ({ results: [] })),
-    ]);
-    this.channels = new Map([...conv.results.map((c) => [c.channel_id, 'convert']), ...img.results.map((c) => [c.channel_id, 'image']),
-      ...ai.results.map((c) => [c.channel_id, 'aiqc'])]);
+    // Liste des salons : la base, recopiée dans Upstash ; base illisible (quota du jour) → la copie d'Upstash.
+    const map = await channelMap(env);
+    this.channels = new Map(Object.entries(map));
     this.channelsAt = Date.now();
     if (this.channelsAt && [...this.channels.keys()].some((id) => !before.has(id)) && before.size) {
       await this.env.SELF.fetch('https://finds-bot/api/watch/catchup', {

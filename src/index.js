@@ -984,7 +984,7 @@ async function handleApi(request, env, url) {
   // État de la connexion permanente à Discord (et relance si besoin).
   if (path === '/api/gateway' && request.method === 'GET') {
     if (!env.GATEWAY) return json({ ok: false, error: 'pas de Durable Object GATEWAY' });
-    const res = await env.GATEWAY.get(env.GATEWAY.idFromName('main')).fetch('https://gateway/ensure');
+    const res = await env.GATEWAY.get(env.GATEWAY.idFromName('main')).fetch(url.searchParams.get('refresh') ? 'https://gateway/refresh' : 'https://gateway/ensure');
     return json({ ok: true, ...(await res.json()) });
   }
 
@@ -997,6 +997,15 @@ async function handleApi(request, env, url) {
       out.push({ name: g.name, ok: await discordApi(env, 'GET', `/guilds/${g.id}/members?limit=5`).then((l) => l.length).catch((e) => String(e).slice(0, 80)) });
     }
     return json({ ok: true, guilds: out });
+  }
+
+  // Copie de la liste des salons surveillés dans Upstash (secours quand la base est illisible).
+  if (path === '/api/channels/mirror' && request.method === 'POST') {
+    const { kvSet } = await import('./kvstore.js');
+    const body = await request.json();
+    const kinds = { convert_channels: 'convert', image_channels: 'image', aiqc_channels: 'aiqc' };
+    const map = Object.fromEntries((body.channels || []).filter((c) => kinds[c.table] && /^\d+$/.test(c.channel_id)).map((c) => [c.channel_id, kinds[c.table]]));
+    return json({ ok: await kvSet(env, 'channels', JSON.stringify(map)), channels: map });
   }
 
   // Approbation des serveurs : vérification tout de suite (sinon toutes les 3 min).

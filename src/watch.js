@@ -18,7 +18,7 @@ import { ACCENTS } from './config.js';
 import { itemsWhereIds, groupByDb, onDb, batchByDb } from './shard.js';
 import { etxt } from './emojis.js';
 import { aiqcMessage } from './aiqc.js';
-import { kvGet, lockMessage, rateLimit, LIMITS, limitText, logEvent } from './kvstore.js';
+import { kvGet, kvSet, lockMessage, rateLimit, LIMITS, limitText, logEvent } from './kvstore.js';
 
 const MAX_CALLS = 46;
 // Compteur de chaque type de salon (colonne = colonne + n).
@@ -112,10 +112,38 @@ export async function watchChannels(env, ms = 55000, exec = null, force = false)
   return channels.reduce((n, c) => n + c.done, 0);
 }
 
+// Salons surveillés { channel_id: 'convert' | 'image' | 'aiqc' } : lus dans la base et recopiés dans Upstash ; si la
+// base est illisible (quota du jour de D1), la copie d'Upstash.
+const CHANNEL_TABLES = [['convert_channels', 'convert'], ['image_channels', 'image'], ['aiqc_channels', 'aiqc']];
+export async function channelMap(env) {
+  try {
+    const parts = await Promise.all(CHANNEL_TABLES.map(([t]) => env.DB.prepare(`SELECT channel_id FROM ${t}`).all()));
+    const map = Object.fromEntries(parts.flatMap((p, i) => p.results.map((c) => [c.channel_id, CHANNEL_TABLES[i][1]])));
+    await kvSet(env, 'channels', JSON.stringify(map));
+    return map;
+  } catch (err) {
+    console.log('salons (base illisible, copie Upstash)', String(err).slice(0, 120));
+    try { return JSON.parse(await kvGet(env, 'channels') || '{}'); } catch { return {}; }
+  }
+}
+
 // Un message reçu en direct par la connexion permanente (gateway.js) : même traitement que la relecture, une seule
 // fois par message (la position de lecture du salon sert de verrou : un message plus ancien est ignoré).
 export async function handleLiveMessage(env, channelId, m) {
-  for (const [table, kind] of [['convert_channels', 'convert'], ['image_channels', 'image'], ['aiqc_channels', 'aiqc']]) {
+  // Base illisible : le salon et son type viennent de la copie d'Upstash.
+  const offline = await env.DB.prepare('SELECT 1 FROM settings LIMIT 1').first().then(() => false).catch(() => true);
+  if (offline) {
+    const kind = (await channelMap(env))[channelId];
+    if (!kind) return 0;
+    if ((await lockMessage(env, m.id)) === false) return 0;
+    const ctx = await postContext(env);
+    const ch = { channel_id: channelId, guild_id: m.guild_id, kind, done: 0 };
+    if (kind === 'convert') await convertMessage(env, ctx, ch, m).catch((err) => console.log('salon', String(err).slice(0, 120)));
+    else if (kind === 'aiqc') await runAiqc(env, ctx, ch, m, null);
+    else await imageMessage(env, ctx, ch, m, [], null).catch((err) => console.log('salon', String(err).slice(0, 120)));
+    return ch.done;
+  }
+  for (const [table, kind] of CHANNEL_TABLES) {
     const c = await env.DB.prepare(
       `UPDATE ${table} SET last_message_id = ? WHERE channel_id = ?
          AND (last_message_id IS NULL OR CAST(last_message_id AS INTEGER) < CAST(? AS INTEGER)) RETURNING *`,
@@ -151,7 +179,7 @@ async function convertMessage(env, ctx, c, m) {
   if (!refs.length) return calls;
   const cards = [];
   const ids = refs.map((r) => `${r.platform}:${r.itemId}`);
-  const results = await itemsWhereIds(env, ids);
+  const results = await itemsWhereIds(env, ids).catch(() => []); // base illisible : liens convertis sans la fiche
   const known = new Map(results.map((i) => [i.id, i]));
   for (const ref of refs) cards.push(...await convertView(env, ref, known.get(`${ref.platform}:${ref.itemId}`) || null, ctx));
   await logEvent(env, 'convert', refs.map((r) => `${r.platform} ${r.itemId}${known.has(`${r.platform}:${r.itemId}`) ? '' : ' (hors catalogue)'}`).join(', ')).catch(() => {});

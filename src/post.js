@@ -4,12 +4,12 @@ import { discordApi } from './discord.js';
 import { buildAgentLink } from './links.js';
 import { COMPONENTS_V2, container, gallery, text, sep, row, link, escape, Style } from './components.js';
 import { fetchWeidianItem } from './weidian.js';
-import { getConfig, getMoney, getSignup, formatMoney, formatCny, refreshRates, ACCENTS, LANGS, SIGNUP_COLORS } from './config.js';
+import { getConfig, getMoney, getSignup, formatMoney, formatCny, refreshRates, ACCENTS, LANGS, SIGNUP_COLORS, DEFAULTS } from './config.js';
 import { forumTagFor, CATEGORY_BY_KEY } from './categories.js';
 import { qcButtons, refreshQc, communityQc, postForumQc } from './qc.js';
 import { itemDb, itemsWhereIds, batchByDb } from './shard.js';
 import { loadEmojis, emo, etxt, AGENT_EMOJI, PLATFORM_EMOJI } from './emojis.js';
-import { logEvent } from './kvstore.js';
+import { logEvent, kvGet, kvSet } from './kvstore.js';
 
 export const PLATFORM_NAMES = { weidian: 'Weidian', taobao: 'Taobao', '1688': '1688' };
 export const FORUM = 15;
@@ -39,10 +39,22 @@ export async function getAgents(env) {
 }
 
 // Tout ce qu'il faut pour poster : agents, devise, réglages, adresse publique (boutons suivis).
+// La base illisible (quota du jour de D1 atteint) : dernière copie gardée dans Upstash, sinon les valeurs par défaut.
 export async function postContext(env) {
-  const cfg = await getConfig(env);
-  const [agents, money, signup, emojis] = await Promise.all([getAgents(env), getMoney(env, cfg), getSignup(env), loadEmojis(env)]);
-  return { cfg, agents, money, signup, emojis, base: (env.PUBLIC_URL || '').replace(/\/$/, ''), forumTags: new Map() };
+  const base = (env.PUBLIC_URL || '').replace(/\/$/, '');
+  try {
+    const cfg = await getConfig(env);
+    const [agents, money, signup, emojis] = await Promise.all([getAgents(env), getMoney(env, cfg), getSignup(env), loadEmojis(env)]);
+    kvSet(env, 'ctx:cache', JSON.stringify({ cfg, agents, money, signup })).catch(() => {});
+    return { cfg, agents, money, signup, emojis, base, forumTags: new Map() };
+  } catch (err) {
+    console.log('contexte (base illisible)', String(err).slice(0, 120));
+    let kept = null;
+    try { kept = JSON.parse(await kvGet(env, 'ctx:cache') || 'null'); } catch {}
+    const emojis = await loadEmojis(env).catch(() => ({}));
+    return { cfg: (kept && kept.cfg) || { ...DEFAULTS }, agents: (kept && kept.agents) || [], money: (kept && kept.money) || { rate: 0.13, code: 'eur' },
+      signup: (kept && kept.signup) || null, emojis, base, forumTags: new Map() };
+  }
 }
 
 // Bouton « S'inscrire » configuré par le propriétaire : lien suivi si gris, sinon bouton coloré (fenêtre avec le lien).
