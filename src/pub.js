@@ -29,30 +29,29 @@ export const PRESETS = {
   kijfind: {
     label: 'Partenariat · Kij Find',
     title: '',
+    image: 'https://finds-bot.wheatenmoon5861.workers.dev/img/kijfind.png',
     text: [
-      '# 🛍️ Kij Find',
+      '## {fb_bot} Kij Find',
       '-# La communauté des finds Weidian, Taobao et 1688',
-      '',
+      '---',
       'Tu achètes en Chine pour toi ou pour la revente ? **Kij Find** rassemble tout ce qu\'il te faut, au même endroit.',
       '',
-      '> 🔗 **Des liens vérifiés** pour tous tes achats',
-      '> 💰 **Des bons plans** pensés pour la revente',
-      '> 🔥 **Les nouveautés** et les meilleures trouvailles, chaque jour',
-      '> 📸 **Des photos QC**, et un bot qui les analyse pour toi',
-      '> 🤝 **Une communauté** qui partage et s\'entraide',
-      '',
-      'Débutant ou revendeur confirmé : **tout le monde est le bienvenu.**',
-      '',
-      '## 💎 Rejoins l\'aventure',
-      '**[discord.gg/9XpCj6p6Rg](https://discord.gg/9XpCj6p6Rg)**',
+      '{fb_link} **Liens vérifiés** pour tous tes achats',
+      '{fb_price} **Bons plans** pensés pour la revente',
+      '{fb_fire} **Nouveautés** et meilleures trouvailles, chaque jour',
+      '{fb_qc} **Photos QC**, analysées par un bot expert',
+      '{fb_signup} **Communauté** qui partage et s\'entraide',
+      '---',
+      '{fb_verified} Débutant ou revendeur confirmé : **tout le monde est le bienvenu.**',
     ].join('\n'),
     btnLabel: 'Rejoindre Kij Find',
     btnUrl: 'https://discord.gg/9XpCj6p6Rg',
   },
 };
 
-// Le MP envoyé (et son aperçu). Titre facultatif ; le texte est écrit par le propriétaire et garde sa mise en forme
-// Discord (titres, gras, citations, liens).
+// Le MP envoyé (et son aperçu), au style des cartes du bot : image en haut (facultative), titre facultatif, texte écrit
+// par le propriétaire avec sa mise en forme Discord. Dans le texte, {fb_fire} devient l'emoji du bot et une ligne
+// « --- » un séparateur.
 export function adMessage(emojis, d) {
   const e = (n) => etxt(emojis, n);
   const buttons = [
@@ -60,8 +59,10 @@ export function adMessage(emojis, d) {
     d.unsub !== false ? { type: 2, style: Style.SECONDARY, label: 'Se désinscrire', custom_id: 'pub:adoff', emoji: { name: '🔕' } } : null,
   ].filter(Boolean);
   return [container([
+    /^https:\/\//.test(d.image || '') ? { type: 12, items: [{ media: { url: d.image } }] } : null,
     d.title ? text(`## ${e('fb_gift')} ${escape(d.title)}`) : null,
-    text(String(d.text || '').slice(0, 3500)),
+    ...String(d.text || '').slice(0, 3500).replace(/\{(fb_[a-z0-9_]+)\}/g, (_, n) => e(n))
+      .split(/\n-{3,}\n/).flatMap((part, i) => [i ? sep() : null, part.trim() ? text(part.trim()) : null]),
     buttons.length ? sep() : null,
     buttons.length ? row(...buttons) : null,
   ], COLOR)];
@@ -138,14 +139,15 @@ export async function handlePubComponent(it, env, ctx, b, values) {
     case 'open': return update(await pubView(env, it));
     case 'edit': return openModal(modal('m:ad', 'Message de la pub', [
       { id: 'title', label: 'Titre (facultatif)', placeholder: 'ex : -20 % sur BBDBuy ce week-end', value: d.title, max: 100 },
-      { id: 'text', label: 'Message (mise en forme Discord acceptée)', long: true, value: d.text, max: 3000, required: true },
+      { id: 'text', label: 'Message', description: 'Mise en forme Discord, {fb_fire} = emoji du bot, ligne --- = séparateur', long: true, value: d.text, max: 3000, required: true },
       { id: 'btnLabel', label: 'Texte du bouton (facultatif)', placeholder: 'ex : J\'en profite', value: d.btnLabel, max: 60 },
       { id: 'btnUrl', label: 'Lien du bouton (facultatif)', placeholder: 'https://…', value: d.btnUrl, max: 300 },
+      { id: 'image', label: 'Image en haut (lien, facultatif)', placeholder: 'https://…/banniere.png', value: d.image, max: 300 },
     ]));
     case 'preset': {
       const p = PRESETS[values[0]];
       if (!p) return update(await pubView(env, it));
-      await saveDraft(env, { ...d, title: p.title, text: p.text, btnLabel: p.btnLabel, btnUrl: p.btnUrl });
+      await saveDraft(env, { ...d, title: p.title, text: p.text, image: p.image || '', btnLabel: p.btnLabel, btnUrl: p.btnUrl });
       return update(await pubView(env, it, `✅ Modèle « ${p.label} » chargé. Vérifie-le avec « Aperçu en MP ».`));
     }
     case 'roles': await saveDraft(env, { ...d, roles: values.slice(0, 10), guild: it.guild_id }); return update(await pubView(env, it));
@@ -198,7 +200,8 @@ export async function handlePubModal(it, env, v) {
   const d = await getDraft(env);
   const url = String(v.btnUrl || '').trim();
   await saveDraft(env, { ...d, title: String(v.title || '').slice(0, 100), text: String(v.text || '').slice(0, 3000),
-    btnLabel: url ? String(v.btnLabel || 'Voir').slice(0, 60) : '', btnUrl: /^https:\/\//.test(url) ? url : '' });
+    btnLabel: url ? String(v.btnLabel || 'Voir').slice(0, 60) : '', btnUrl: /^https:\/\//.test(url) ? url : '',
+    image: /^https:\/\//.test(String(v.image || '').trim()) ? String(v.image).trim() : '' });
   return update(await pubView(env, it, url && !/^https:\/\//.test(url) ? '⚠️ Le lien doit commencer par https:// : bouton retiré.' : '✅ Message enregistré.'));
 }
 

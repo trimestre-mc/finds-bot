@@ -56,3 +56,9 @@ BUDGET_MONTH_ROWS = "9000000"  # Turso gratuit : 10 M lignes écrites / mois, ma
 type = "Text"
 globs = ["**/*.sql"]
 fallthrough = true
+
+# Images servies par le bot (bannières de pub, voir src/index.js /img/).
+[[rules]]
+type = "Data"
+globs = ["**/*.png"]
+fallthrough = true

@@ -39,6 +39,7 @@ import { itemDb, itemById, itemDbs, perDb, allRows, countAll, batchByDb, groupBy
 import { checkWatches, checkSearchAlerts } from './alerts.js';
 import { sendDailyReport, dailyReport, sendWeeklyTop } from './report.js';
 import { cacheClear, kvGet } from './kvstore.js';
+import KIJFIND_PNG from '../assets/kijfind.png';
 
 // Une boutique est relue tous les 3 jours (quota gratuit D1 : 100 000 lignes écrites par jour).
 const REINDEX_HOURS = 72;
@@ -89,6 +90,10 @@ async function handleFetch(request, env, ctx) {
     if (request.method === 'GET' && (url.pathname === '/dashboard' || url.pathname === '/dashboard/data')) {
       const { handleDashboard } = await import('./dashboard.js');
       return await handleDashboard(url, env);
+    }
+    // Images du bot (bannières des messages de pub).
+    if (request.method === 'GET' && url.pathname === '/img/kijfind.png') {
+      return new Response(KIJFIND_PNG, { headers: { 'Content-Type': 'image/png', 'Cache-Control': 'public, max-age=86400' } });
     }
     if (url.pathname === '/') return new Response('finds-bot en ligne');
     return new Response('Not found', { status: 404 });
