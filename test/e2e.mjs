@@ -100,6 +100,12 @@ const dev = spawn('npx', devArgs, { cwd: ROOT, stdio: ['ignore', 'pipe', 'pipe']
 let devLog = '';
 dev.stdout.on('data', (d) => (devLog += d));
 dev.stderr.on('data', (d) => (devLog += d));
+// Sur GitHub : le journal du Worker est aussi écrit au fil de l'eau (gardé même si le test s'arrête en route).
+if (process.env.CI) {
+  const flush = () => { try { writeFileSync(ROOT + '.wrangler/e2e-dev.log', devLog); } catch {} };
+  dev.stdout.on('data', flush);
+  dev.stderr.on('data', flush);
+}
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // Pages produit Weidian : weidian.com bloque parfois l'adresse IP de la machine de test (en production, chaque job
