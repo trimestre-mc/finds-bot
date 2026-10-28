@@ -121,3 +121,23 @@ test('envoi de pub : journal par destinataire, compteurs, envoi terminé quand l
   assert.equal(kv['ad:failed'], '1');
   assert.equal(JSON.parse(kv['ad:job']).state, 'done');
 });
+
+test('chien de garde : un MP par problème, pas de rappel avant 6 h', async () => {
+  const sets = new Set();
+  const dms = [];
+  globalThis.fetch = async (url, opts = {}) => {
+    const u = String(url);
+    if (u.startsWith('https://up.test')) {
+      return Response.json(JSON.parse(opts.body).map(([c, k]) => (c === 'SET' ? { result: sets.has(k) ? null : (sets.add(k), 'OK') } : { result: null })));
+    }
+    if (u.endsWith('/users/@me/channels')) return Response.json({ id: 'dm' });
+    dms.push(u);
+    return Response.json({ id: 'm' });
+  };
+  const env = { UPSTASH_URL: 'https://up.test', UPSTASH_TOKEN: 't', AGENTS_OWNER_ID: '42', DISCORD_API: 'https://discord.test' };
+  const { alertOwner } = await import('../src/watchdog.js');
+  assert.equal(await alertOwner(env, 'neon', 'Neon presque plein', 'x'), true);
+  assert.equal(await alertOwner(env, 'neon', 'Neon presque plein', 'x'), false);
+  assert.equal(await alertOwner(env, 'd1', 'Base D1 illisible', 'y'), true);
+  assert.equal(dms.length, 2);
+});

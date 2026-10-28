@@ -151,6 +151,11 @@ async function handleScheduled(event, env, ctx) {
       ctx.waitUntil(env.SELF.fetch('https://finds-bot/api/guilds/check', { method: 'POST', headers: { Authorization: `Bearer ${env.INDEXER_SECRET}` } })
         .catch((e) => console.log('serveurs', String(e).slice(0, 120))));
     }
+    // Toutes les 15 min : chien de garde (MP au propriétaire avant qu'un quota ou un service casse), à part.
+    if (env.SELF && new Date().getUTCMinutes() % 15 === 6) {
+      ctx.waitUntil(env.SELF.fetch('https://finds-bot/api/health/check', { method: 'POST', headers: { Authorization: `Bearer ${env.INDEXER_SECRET}` } })
+        .catch((e) => console.log('chien de garde', String(e).slice(0, 120))));
+    }
     // Toutes les 15 min : copie d'une tranche du catalogue dans l'index de recherche (Neon), dans une exécution à part
     // (son propre quota de requêtes).
     // Toutes les 3 min : marque lue sur la photo de quelques items populaires sans marque dans le titre.
@@ -1034,6 +1039,12 @@ async function handleApi(request, env, url) {
     const kinds = { convert_channels: 'convert', image_channels: 'image', aiqc_channels: 'aiqc' };
     const map = Object.fromEntries((body.channels || []).filter((c) => kinds[c.table] && /^\d+$/.test(c.channel_id)).map((c) => [c.channel_id, kinds[c.table]]));
     return json({ ok: await kvSet(env, 'channels', JSON.stringify(map)), channels: map });
+  }
+
+  // Chien de garde : état des services et quotas, MP au propriétaire si un problème approche.
+  if (path === '/api/health/check' && request.method === 'POST') {
+    const { checkHealth } = await import('./watchdog.js');
+    return json({ ok: true, problems: await checkHealth(env) });
   }
 
   // Approbation des serveurs : vérification tout de suite (sinon toutes les 3 min).
