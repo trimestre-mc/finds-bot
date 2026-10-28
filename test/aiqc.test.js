@@ -147,3 +147,9 @@ test('article correspondant : seulement s\'il a la même marque ou la même cat�
   assert.equal(sameArticle('Air Jordan 1 Chicago', 'AJ1 Chicago High OG'), true);
   assert.equal(sameArticle('Supreme sweat gris', 'Supreme Box Logo Crewneck'), true);
 });
+
+test('article correspondant : jamais sur la seule catégorie', async () => {
+  const { sameArticle } = await import('../src/aiqc.js');
+  assert.equal(sameArticle('hoodie', 'Sports tracksuit hoodie pants'), false);
+  assert.equal(sameArticle('Stussy zip hoodie', 'Stussy Basic Zip Hoodie'), true);
+});

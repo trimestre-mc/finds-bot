@@ -16,7 +16,6 @@ import { buildAgentLink, canonicalUrl } from './links.js';
 import { fetchQc, fetchQcPage, goldPhoto } from './qc.js';
 import { cacheGet, cacheSet, dayAdd, kvGet, kvSet, rateLimit, LIMITS, limitText, logEvent } from './kvstore.js';
 import { expandQuery } from './synonyms.js';
-import { detectCategory } from './categories.js';
 
 export const AIQC_PER_DAY = 40; // plafond de sécurité sans Groq ; la vraie limite est le quota d'IA du jour (neurons)
 const AIQC_PER_DAY_GROQ = 150; // avec Groq (~1 000 requêtes/jour gratuites, ~6 par analyse)
@@ -302,9 +301,10 @@ export async function aiqcMessage(env, ctx, c, m) {
     seenText = seen ? [seen.brand, seen.model, seen.item].filter(Boolean).join(' ') : '';
     if (seen && seen.brand) step.log(`Marque reconnue sur la photo : ${seen.brand}${seen.item ? ` · ${seen.item}` : ''}`);
     else if (seen && seen.item) step.log(`Type d'article reconnu : ${seen.item}`);
-    candidate = seenText ? ((look && look.items) || []).find((f) => sameArticle(seenText, f.title)) || null : null;
+    candidate = seen && seen.brand ? ((look && look.items) || []).find((f) => sameArticle(seenText, f.title)) || null : null;
     step.log(candidate ? `Article correspondant dans le catalogue : ${String(candidate.title || '').slice(0, 45)}`
-      : 'Aucun article du catalogue ne correspond : analyse sans référence');
+      : seen && seen.brand ? `Aucun article ${seen.brand} correspondant dans le catalogue : analyse sans référence`
+        : 'Marque non lisible sur la photo : analyse sans référence');
     if (candidate && candidate.qc) gold = goldPhoto(await fetchQcPage(candidate.id, 1).catch(() => null), urls, {}, false);
   }
   step('photos');
@@ -319,18 +319,14 @@ export async function aiqcMessage(env, ctx, c, m) {
   return 8;
 }
 
-// Le résultat de la recherche par image correspond-il à l'article analysé ? Même marque (si les deux en ont une),
-// sinon même catégorie (si les deux sont connues). Dans le doute, non : mieux vaut ne rien proposer qu'un article
-// sans rapport (ex. un caleçon pour un maillot de foot).
+// Le résultat de la recherche par image correspond-il à l'article analysé ? Seulement avec la même marque, reconnue
+// des deux côtés : une catégorie seule (« hoodie ») ne dit pas que c'est le même article. Dans le doute, non : mieux
+// vaut ne rien proposer qu'un article sans rapport.
 export function sameArticle(analysed, candidate) {
   const brands = (t) => new Set(expandQuery(String(t || '')).filter((g) => g.kind === 'brand').map((g) => g.alt[0]));
   const a = brands(analysed);
   const b = brands(candidate);
-  if (a.size && b.size) return [...a].some((x) => b.has(x));
-  if (a.size || b.size) return false;
-  const ca = detectCategory(String(analysed || ''));
-  const cb = detectCategory(String(candidate || ''));
-  return ca !== 'other' && ca === cb;
+  return a.size > 0 && b.size > 0 && [...a].some((x) => b.has(x));
 }
 
 // « L'article qui ressemble le plus » sous l'analyse : photo, prix, ventes, QC, et les boutons acheter / QC / comparer.
