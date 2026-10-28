@@ -76,20 +76,24 @@ async function quickCounts(env, ctx) {
 }
 
 export async function homeView(env, it, msg, ctx = null) {
+  // Chaque lecture tolère une base illisible (quota du jour) : le menu s'affiche quand même, en mode réduit.
+  let offline = false;
+  const safe = (p) => p.catch(() => { offline = true; return { n: 0 }; });
   const [counts, shops, agents, queue, schedules, emojis] = await Promise.all([
-    quickCounts(env, ctx),
-    env.DB.prepare('SELECT COUNT(*) AS n FROM shops').first(),
-    env.DB.prepare('SELECT COUNT(*) AS n FROM agents').first(),
-    env.DB.prepare('SELECT COUNT(*) AS n FROM post_queue').first(),
-    env.DB.prepare('SELECT COUNT(*) AS n FROM schedules WHERE enabled = 1').first(),
+    quickCounts(env, ctx).catch(() => { offline = true; return { items: 0, visible: 0, noPhoto: 0, untranslated: 0, drops: 0 }; }),
+    safe(env.DB.prepare('SELECT COUNT(*) AS n FROM shops').first()),
+    safe(env.DB.prepare('SELECT COUNT(*) AS n FROM agents').first()),
+    safe(env.DB.prepare('SELECT COUNT(*) AS n FROM post_queue').first()),
+    safe(env.DB.prepare('SELECT COUNT(*) AS n FROM schedules WHERE enabled = 1').first()),
     loadEmojis(env),
   ]);
+  if (offline && !msg) msg = '⚠️ Mode réduit : la base est momentanément illisible (quota du jour). Recherche, QC et salons marchent ; les réglages reviennent à minuit UTC.';
   const e = (n) => etxt(emojis, n);
   // Propriétaire du bot : onglet « Secret » (pub, serveurs du bot, dashboard) en plus.
   const owner = !!env.AGENTS_OWNER_ID && !!it && ((it.member && it.member.user && it.member.user.id) || (it.user && it.user.id)) === env.AGENTS_OWNER_ID;
   // Bouton avec un emoji du bot (Unicode de secours).
   const b = (name, label, id, style = Style.SECONDARY) => btn(label, id, style, { emoji: emo(emojis, name) });
-  const money = await getRate(env);
+  const money = await getRate(env).catch(() => ({ rate: 0.13, code: 'EUR' }));
 
   const tips = [];
   if (!shops.n) tips.push(`${e('fb_tip')} Première étape : ajouter des boutiques dans **Catalogues**.`);
@@ -149,20 +153,37 @@ export function searchModal(params = {}, sid = '') {
   ]);
 }
 
+// Recherches enregistrées (pagination, filtres, publication) : dans Upstash pour 24 h, et dans la base en secours.
+// Elles marchent ainsi même quand la base est illisible (quota du jour).
 export async function loadSearch(env, sid) {
-  const row = await env.DB.prepare('SELECT * FROM searches WHERE id = ?').bind(sid).first();
+  try {
+    const kept = JSON.parse(await kvGet(env, `search:${sid}`) || 'null');
+    if (kept) return kept;
+  } catch {}
+  const row = await env.DB.prepare('SELECT * FROM searches WHERE id = ?').bind(sid).first().catch(() => null);
   return row ? { params: JSON.parse(row.params), channelId: row.channel_id, channelType: row.channel_type || 0 } : null;
+}
+
+// Modifie une recherche enregistrée : { params } et/ou { channelId, channelType }.
+export async function updateSearch(env, sid, change) {
+  const s = await loadSearch(env, sid);
+  if (!s) return;
+  const next = { ...s, ...change };
+  await kvSet(env, `search:${sid}`, JSON.stringify(next), 86400);
+  if (change.params) await env.DB.prepare('UPDATE searches SET params = ? WHERE id = ?').bind(JSON.stringify(change.params), sid).run().catch(() => {});
+  if (change.channelId) await env.DB.prepare('UPDATE searches SET channel_id = ?, channel_type = ? WHERE id = ?').bind(change.channelId, change.channelType || 0, sid).run().catch(() => {});
 }
 
 export async function createSearch(env, it, params) {
   const sid = crypto.randomUUID().replaceAll('-', '').slice(0, 12);
   const uid = (it.member && it.member.user.id) || (it.user && it.user.id);
   // Salon de publication : celui des ⚙️ Réglages s'il existe, sinon celui où le panneau est ouvert.
-  const cfg = await getConfig(env);
+  const cfg = await getConfig(env).catch(() => ({}));
   const channel = cfg.defaultChannel || it.channel_id;
   const type = cfg.defaultChannel ? cfg.defaultChannelType : (it.channel && it.channel.type === 15 ? 15 : 0);
+  await kvSet(env, `search:${sid}`, JSON.stringify({ params, channelId: channel, channelType: type }), 86400);
   await env.DB.prepare('INSERT INTO searches (id, guild_id, user_id, params, channel_id, channel_type, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
-    .bind(sid, it.guild_id, uid, JSON.stringify(params), channel, type, Date.now()).run();
+    .bind(sid, it.guild_id, uid, JSON.stringify(params), channel, type, Date.now()).run().catch(() => {});
   return sid;
 }
 

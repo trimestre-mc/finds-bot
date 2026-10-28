@@ -13,7 +13,7 @@ import { getConfig, setConfig, getSignup, CURRENCIES, LANGS, ACCENTS } from './c
 import { messageText, collectQc } from './discover.js';
 import { CATEGORY_BY_KEY } from './categories.js';
 import { expandQuery } from './synonyms.js';
-import { homeView, loadSearch, createSearch, resultsView, filtersView, catalogsView } from './ui.js';
+import { homeView, loadSearch, createSearch, resultsView, filtersView, catalogsView, updateSearch } from './ui.js';
 import {
   schedulesView, scheduleView, scheduleModal, statsView, historyView, settingsView, healthView, findView, convertView, couponView, guideView,
   categoryChannelsView, categoryChannels, categoryRhythm, CATEGORY_RHYTHMS, categoryRhythmModal, rhythmOf,
@@ -317,7 +317,7 @@ async function openQc(env, key, platform, itemId, view = 0) {
 async function saveParams(env, sid, change) {
   const s = await loadSearch(env, sid);
   if (!s) return false;
-  await env.DB.prepare('UPDATE searches SET params = ? WHERE id = ?').bind(JSON.stringify(withoutCache({ ...s.params, ...change })), sid).run();
+  await updateSearch(env, sid, { params: withoutCache({ ...s.params, ...change }) });
   return true;
 }
 

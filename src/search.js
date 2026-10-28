@@ -282,7 +282,8 @@ export async function searchIds(env, sid, params, money) {
   const { _ids, ...clean } = params;
   const ids = await cachedIds(env, clean, money);
   params._ids = ids;
-  await env.DB.prepare('UPDATE searches SET params = ? WHERE id = ?').bind(JSON.stringify(params), sid).run();
+  const { updateSearch } = await import('./ui.js');
+  await updateSearch(env, sid, { params });
   return ids;
 }
 

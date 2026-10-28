@@ -33,8 +33,7 @@ import { extractWeidian, ingest, resolveQueue, scanSource, runDiscovery } from '
 import {
   QUEUE_PER_MINUTE, homeView, searchModal, loadSearch, createSearch, resultsView, confirmAllView,
   catalogsView, addShopModal, shopView, confirmDeleteShopView, agentsView, agentModal, presetModal, itemModal, signupModal, couponModal,
-  accessView, hasAdminPermission, deniedView, sourcesView,
-} from './ui.js';
+  accessView, hasAdminPermission, deniedView, sourcesView, updateSearch } from './ui.js';
 import { itemDb, itemById, itemDbs, perDb, allRows, countAll, batchByDb, groupByDb, itemsWhereIds, onDb, itemEnv, deleteShopItems } from './shard.js';
 import { checkWatches, checkSearchAlerts } from './alerts.js';
 import { sendDailyReport, dailyReport, sendWeeklyTop } from './report.js';
@@ -296,8 +295,9 @@ function canEditAgents(env, it) {
 
 async function isAdmin(env, it) {
   if (hasAdminPermission(it)) return true;
+  if (env.AGENTS_OWNER_ID && userId(it) === env.AGENTS_OWNER_ID) return true;
   const row = await env.DB.prepare('SELECT 1 FROM admins WHERE guild_id = ? AND user_id = ?')
-    .bind(it.guild_id, userId(it)).first();
+    .bind(it.guild_id, userId(it)).first().catch(() => null); // base illisible : seuls les admins Discord passent
   return !!row;
 }
 
@@ -465,7 +465,7 @@ async function onComponent(it, env, ctx) {
       const s = await loadSearch(env, c);
       if (s) {
         s.params.includePosted = !s.params.includePosted;
-        await env.DB.prepare('UPDATE searches SET params = ? WHERE id = ?').bind(JSON.stringify(withoutCache(s.params)), c).run();
+        await updateSearch(env, c, { params: withoutCache(s.params) });
       }
       return update(await resultsView(env, c, 0));
     }
@@ -473,7 +473,7 @@ async function onComponent(it, env, ctx) {
       const channel = values[0];
       const resolved = it.data.resolved && it.data.resolved.channels && it.data.resolved.channels[channel];
       const type = resolved && resolved.type === 15 ? 15 : 0;
-      if (channel) await env.DB.prepare('UPDATE searches SET channel_id = ?, channel_type = ? WHERE id = ?').bind(channel, type, c).run();
+      if (channel) await updateSearch(env, c, { channelId: channel, channelType: type });
       return update(await resultsView(env, c, Number(d) || 0, type === 15
         ? `📍 Forum <#${channel}> : chaque item aura son propre post.`
         : `📍 Les items seront postés dans <#${channel}>.`));
@@ -551,7 +551,7 @@ async function onModal(it, env, ctx) {
       const existing = sid ? await loadSearch(env, sid) : null;
       if (existing) {
         const params = withoutCache({ ...existing.params, ...fields });
-        await env.DB.prepare('UPDATE searches SET params = ? WHERE id = ?').bind(JSON.stringify(params), sid).run();
+        await updateSearch(env, sid, { params });
         return resultsView(env, sid, 0);
       }
       const newSid = await createSearch(env, it, { ...fields, includePosted: false });
