@@ -81,7 +81,8 @@ async function visionAllowed(env) {
 // Recherche par image complète : formes (FinderQC) + marque lue sur la photo (modèle de vision). Les items de la
 // bonne marque passent devant ; s'il en manque, une recherche par texte (« chrome hearts hoodie ») complète.
 // Renvoie { items, seen } (seen : ce que le modèle a reconnu, ou null).
-export async function smartImageSearch(env, attachment, prefer = 'cloudflare') {
+// more : autres photos du même article, lues avec la première pour trouver la marque.
+export async function smartImageSearch(env, attachment, prefer = 'cloudflare', more = []) {
   // FinderQC parfois surchargé : un 2e essai ; s'il échoue encore, la marque lue sur la photo suffit (recherche par
   // texte). « Impossible » seulement si les deux manquent.
   const once = () => searchByImage(attachment.url, attachment.filename, 12);
@@ -90,7 +91,7 @@ export async function smartImageSearch(env, attachment, prefer = 'cloudflare') {
       .catch((err) => { console.log('recherche image FinderQC', String(err).slice(0, 160)); return null; }),
     visionAllowed(env).then(async (ok) => {
       if (!ok) return null;
-      const seen = await describeImage(env, smallImageUrl(attachment), undefined, prefer);
+      const seen = await describeImage(env, [smallImageUrl(attachment), ...more], undefined, prefer);
       // Neurons Cloudflare vraiment utilisés (0 si Groq a répondu).
       if (!seen || seen.neurons) await aiNeurons(env).then((b) => b.add(seen ? seen.neurons : VISION_NEURONS)).catch(() => {});
       return seen;

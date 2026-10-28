@@ -261,12 +261,16 @@ async function cloudflareChat(env, cfModel, messages, maxTokens, cfExtra) {
 const clean = (v) => (typeof v === 'string' && v.trim() && !/^(null|none|unknown|n\/a)$/i.test(v.trim()) ? v.trim().slice(0, 40) : null);
 
 // { brand, model, item, color } (champs null si inconnus), ou null si le modèle n'a pas répondu.
+// imageUrl : une photo, ou plusieurs photos du même article (3 au plus, lues ensemble : le logo peut être sur n'importe
+// laquelle, ex. la languette ou le talon d'une chaussure).
 export async function describeImage(env, imageUrl, model = VISION_MODEL, prefer = 'cloudflare') {
   if (!env.AI && !env.GROQ_API_KEY) return null;
+  const urls = (Array.isArray(imageUrl) ? imageUrl : [imageUrl]).filter(Boolean).slice(0, 3);
   // En JPEG 768 px (wsrv.nl) : accepté par tous les modèles (le WebP ne l'est pas toujours), moins de jetons.
-  const image = await asDataUrl(smaller(imageUrl)).catch(() => asDataUrl(imageUrl));
+  const images = await Promise.all(urls.map((u) => asDataUrl(smaller(u)).catch(() => asDataUrl(u))));
+  const intro = images.length > 1 ? `These ${images.length} photos show the SAME item from different angles: read the text on all of them. ` : '';
   const res = await chat(env, {
-    messages: [{ role: 'user', content: [{ type: 'text', text: PROMPT }, { type: 'image_url', image_url: { url: image } }] }],
+    messages: [{ role: 'user', content: [{ type: 'text', text: intro + PROMPT }, ...images.map((url) => ({ type: 'image_url', image_url: { url } }))] }],
     cfModel: model, maxTokens: 120, prefer,
   });
   const out = res.text;
@@ -286,15 +290,28 @@ export async function describeImage(env, imageUrl, model = VISION_MODEL, prefer 
 
 // ---------------------------------------------------------------- Analyse des QC par l'IA
 
+// Point qui parle de ce qui n'est pas visible (pas d'un défaut vu sur la photo).
+const UNSEEN = /absente?s?\b|non visible|pas visible|invisible|non vérifiable|pas vérifiable|impossible (de|à) (vérifier|juger|voir|lire)|non lisible|illisible|manquante?s?\b|pas assez détaill|non montré|pas montré|à confirmer/i;
+
+// Article = chaussures ? (consignes de contrôle propres aux chaussures)
+const isShoe = (what) => /sneaker|shoe|chaussure|basket|trainer|jordan|dunk|air force|af1|yeezy|b2[0-9]|b30|runner|boot|loafer|mocassin|slide|mule/i.test(String(what || ''));
+
 const QC_PROMPT = (ctx) => `Tu es un expert en contrôle qualité (QC) de vêtements, chaussures et accessoires achetés via un agent en Chine.
 ${ctx.ref ? 'La PREMIÈRE image est la photo du vendeur (le produit attendu). La suivante est' : ctx.count > 1 ? 'Les images sont' : 'L\'image est'} ${ctx.count > 1 ? `les photos QC n°${ctx.from} et n°${ctx.from + 1}` : `la photo QC n°${ctx.from}`} (ce que l'agent a reçu) : un article vu en entier ou en gros plan.
 ${ctx.what ? `Article annoncé : ${ctx.what}. Si le logo ou les étiquettes visibles indiquent une autre marque, c'est la marque visible qui compte (corrige « article »).` : ''}
 ${ctx.what ? '' : `Pour reconnaître la marque, lis les logos avec soin (écriture gothique, logo en relief ou ton sur ton). Repères : ${BRAND_CUES}`}
 Ce sont des reps : sois un contrôleur SÉVÈRE. Compare à ce que tu sais du VRAI produit de la marque (forme et police exactes du logo, matière, méthode d'impression, quincaillerie, proportions) et cherche activement les signes d'un mauvais batch :
-- matière bon marché (polyester brillant ou tissu fin au lieu de coton épais, aspect plastique) ;
+${isShoe(ctx.what) ? `CHAUSSURES (ne les juge PAS comme un vêtement : pas de « polyester », pas de « tissu fin » ; mesh, nylon, synthétique et cuir lisse sont normaux selon le modèle) :
+- forme : bout (toe box) trop gonflé ou trop pointu, talon penché vu de dos, hauteur du col, silhouette différente du vrai modèle ;
+- symétrie entre les deux chaussures (formes, logos et coutures à la même place) ;
+- colle qui déborde à la jonction semelle-tige, semelle mal alignée ou tachée ;
+- coutures de travers, doublées irrégulières, fils qui dépassent ;
+- logo (marque, swoosh, CD, Jumpman…) déformé, mal placé ou de mauvaise taille ;
+- matière : cuir craquelé ou plastique, daim irrégulier, plis profonds.` : `- matière bon marché (polyester brillant ou tissu fin au lieu de coton épais, aspect plastique) ;
 - impression floue, pixelisée, sublimée sur tout le vêtement, couleurs baveuses ;
 - logo ou police déformés (lettres mal dessinées, mauvaises proportions, mauvais espacement), motif de marque mal reproduit ;
-- fermeture éclair ou boutons génériques, coutures de travers, fils, colle, étiquettes absentes ou mal imprimées.
+- fermeture éclair ou boutons génériques, coutures de travers, fils, colle.`}
+Un élément qui n'est PAS VISIBLE sur la photo (logo, étiquette, boîte, semelle…) n'est jamais un défaut : ne le mets pas en « probleme », c'est une photo à demander.
 Ne dis « net », « centré » ou « conforme » que si c'est vraiment visible et vérifié ; au moindre doute, mets « attention ».
 IGNORE ce que l'agent ajoute à la photo : filigrane, QR code, logo de l'agent (ex. BBDBuy), texte chinois de l'entrepôt, règle graduée, autocollant ou carton de taille posé sur l'article. Ce ne sont pas des défauts du produit.
 « probleme » seulement pour un défaut réellement visible ; un doute ou une chose à confirmer = « attention ».
@@ -371,6 +388,8 @@ const MERGE_SYSTEM = 'Tu es un expert QC de reps (vêtements, chaussures, sacs, 
   + 'Plusieurs points « attention » sans preuve de bonne qualité : 6 au plus. '
   + 'Ignore les points sur le filigrane, le QR code, le logo de l\'agent, la règle ou un autocollant de taille posé par l\'agent : ce ne sont pas des défauts. '
   + 'Un doute (« à confirmer ») n\'est jamais un « probleme » : c\'est « attention ». '
+  + 'Un élément NON VISIBLE sur les photos (logo, étiquette, boîte, semelle…) n\'est PAS un défaut et ne baisse PAS la note : mets-le seulement dans « manque ». '
+  + 'La note juge uniquement ce qui est visible. Chaussures : ne parle pas de polyester ni de densité de coutures comme pour un vêtement ; juge la forme, la symétrie, la colle, la semelle et le logo. '
   + 'STYLE : ton professionnel et factuel, phrases courtes, sans argot ni familiarité, sans formules d\'IA (« il semble que », « semble être », « notable »). '
   + 'Exemples : « Police BAPE déformée : lettres trop serrées », « Swoosh net et correctement placé », « Tissu fin et brillant, probablement du polyester ». '
   + 'Le conseil : une phrase sobre et impersonnelle (ex : « Batch conforme, l\'achat peut être validé. », « Demander un échange : le logo n\'est pas conforme. »). '
@@ -551,12 +570,19 @@ export async function analyzeQc(env, photos, { ref = null, what = null, model = 
     const worst = ok.map((p) => p.raw.verdict).reduce((a, b) => ((rank[b] ?? 1) > (rank[a] ?? 1) ? b : a), 'ok');
     merged = { verdict: worst, points: ok.flatMap((p) => p.raw.points).slice(0, 6), conseil: ok.map((p) => p.raw.conseil).find(Boolean) };
   }
+  // Ce qui n'est pas visible n'est pas un défaut : un « probleme » de ce genre redevient « attention », et sans vrai
+  // défaut visible la note ne descend pas sous 5.
+  const points = merged.points.slice(0, 6).map((p) => ({ etat: etat(p.etat), texte: String(p.texte || '').slice(0, 160) })).filter((p) => p.texte)
+    .map((p) => (p.etat === 'probleme' && UNSEEN.test(p.texte) ? { ...p, etat: 'attention' } : p));
+  let score = noteOf(merged);
+  let verdict = ['ok', 'a_verifier', 'probleme'].includes(merged.verdict) ? merged.verdict : 'a_verifier';
+  if (!points.some((p) => p.etat === 'probleme') && score != null && score < 5) { score = 5; verdict = 'a_verifier'; }
   return {
-    verdict: ['ok', 'a_verifier', 'probleme'].includes(merged.verdict) ? merged.verdict : 'a_verifier',
-    points: merged.points.slice(0, 6).map((p) => ({ etat: etat(p.etat), texte: String(p.texte || '').slice(0, 160) })).filter((p) => p.texte),
+    verdict,
+    points,
     conseil: merged.conseil ? String(merged.conseil).slice(0, 200) : null,
     article: clean(merged.article) || article,
-    note: noteOf(merged),
+    note: score,
     manque: Array.isArray(merged.manque) ? merged.manque.slice(0, 4).map((x) => String(x).slice(0, 80)).filter(Boolean) : [],
     vu: observations.map((o) => o.vu).filter(Boolean),
     photos: photosSeen,

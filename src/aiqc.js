@@ -296,7 +296,7 @@ export async function aiqcMessage(env, ctx, c, m) {
   let seenText = '';
   let candidate = null;
   if (!refItem) {
-    const look = await smartImageSearch(env, shots[0], 'ovh').catch((err) => { console.log('analyse IA (recherche)', String(err).slice(0, 120)); return null; });
+    const look = await smartImageSearch(env, shots[0], 'ovh', shots.slice(1, 3).map(smallImageUrl)).catch((err) => { console.log('analyse IA (recherche)', String(err).slice(0, 120)); return null; });
     const seen = look && look.seen;
     seenText = seen ? [seen.brand, seen.model, seen.item].filter(Boolean).join(' ') : '';
     if (seen && seen.brand) step.log(`Marque reconnue sur la photo : ${seen.brand}${seen.item ? ` · ${seen.item}` : ''}`);

@@ -153,3 +153,17 @@ test('article correspondant : jamais sur la seule catégorie', async () => {
   assert.equal(sameArticle('hoodie', 'Sports tracksuit hoodie pants'), false);
   assert.equal(sameArticle('Stussy zip hoodie', 'Stussy Basic Zip Hoodie'), true);
 });
+
+test('analyse QC : ce qui n\'est pas visible n\'est pas un défaut', async () => {
+  const { analyzeQc } = await import('../src/vision.js');
+  const merged = JSON.stringify({ article: 'Dior sneakers', verdict: 'probleme', note: 2, conseil: 'x', manque: [],
+    points: [{ etat: 'probleme', texte: 'Logo Dior absent ou non visible sur les sneakers' }, { etat: 'probleme', texte: 'Étiquette intérieure absente, pointure non vérifiable' }] });
+  const photo = JSON.stringify({ vu: 'sneakers', article: 'Dior sneakers', verdict: 'a_verifier', points: [{ etat: 'attention', texte: 'Logo non visible' }] });
+  let n = 0;
+  const env = { OVH_OFF: '1', AI: { run: async () => ({ response: n++ === 0 ? photo : merged }) } };
+  globalThis.fetch = async () => new Response(new Uint8Array(3000), { headers: { 'content-type': 'image/jpeg' } });
+  const r = await analyzeQc(env, ['https://img.finderqc.com/1.jpg'], { what: 'Dior sneakers' });
+  assert.ok(r.points.every((p) => p.etat !== 'probleme'));
+  assert.equal(r.note, 5);
+  assert.equal(r.verdict, 'a_verifier');
+});
