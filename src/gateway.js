@@ -58,6 +58,10 @@ export class Gateway extends DurableObject {
     if (!this.alive()) await this.connect();
     if (this.alive()) {
       const env = withDb(this.env);
+      // Signal « connexion active » au plus toutes les 2 min (chaque écriture compte dans le quota mensuel d'Upstash ;
+      // la relecture de secours de watch.js attend 4 min sans signal avant de prendre le relais).
+      if (this.aliveAt && Date.now() - this.aliveAt < 115000) return;
+      this.aliveAt = Date.now();
       this.aliveSaved = await kvSet(env, 'gateway:alive', Date.now(), 300);
       if (!this.aliveSaved) {
         await env.DB.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('gateway:alive', ?)").bind(String(Date.now())).run().catch(() => {});

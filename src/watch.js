@@ -37,7 +37,8 @@ export async function watchChannels(env, ms = 55000, exec = null, force = false)
   const kept = force ? undefined : await kvGet(env, 'gateway:alive');
   const alive = force ? null : kept !== undefined ? (kept ? { value: kept } : null)
     : await env.DB.prepare("SELECT value FROM settings WHERE key = 'gateway:alive'").first().catch(() => null);
-  if (alive && Date.now() - Number(alive.value) < 75000) return 0;
+  // Signal écrit toutes les 2 min par la connexion (gateway.js) : sans signal depuis 4 min, elle est tombée.
+  if (alive && Date.now() - Number(alive.value) < 240000) return 0;
   const deadline = Date.now() + ms;
   let external = 0;
   const used = () => external + (env.DB.calls || 0);
