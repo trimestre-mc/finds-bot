@@ -150,6 +150,11 @@ async function handleScheduled(event, env, ctx) {
       ctx.waitUntil(env.SELF.fetch('https://finds-bot/api/guilds/check', { method: 'POST', headers: { Authorization: `Bearer ${env.INDEXER_SECRET}` } })
         .catch((e) => console.log('serveurs', String(e).slice(0, 120))));
     }
+    // Toutes les 30 min : les recherches les plus faites recalculées à l'avance (résultat instantané), à part.
+    if (env.SELF && new Date().getUTCMinutes() % 30 === 9) {
+      ctx.waitUntil(env.SELF.fetch('https://finds-bot/api/search/prewarm', { method: 'POST', headers: { Authorization: `Bearer ${env.INDEXER_SECRET}` } })
+        .catch((e) => console.log('recherches populaires', String(e).slice(0, 120))));
+    }
     // Toutes les 15 min : chien de garde (MP au propriétaire avant qu'un quota ou un service casse), à part.
     if (env.SELF && new Date().getUTCMinutes() % 15 === 6) {
       ctx.waitUntil(env.SELF.fetch('https://finds-bot/api/health/check', { method: 'POST', headers: { Authorization: `Bearer ${env.INDEXER_SECRET}` } })
@@ -1048,6 +1053,18 @@ async function handleApi(request, env, url) {
     const kinds = { convert_channels: 'convert', image_channels: 'image', aiqc_channels: 'aiqc' };
     const map = Object.fromEntries((body.channels || []).filter((c) => kinds[c.table] && /^\d+$/.test(c.channel_id)).map((c) => [c.channel_id, kinds[c.table]]));
     return json({ ok: await kvSet(env, 'channels', JSON.stringify(map)), channels: map });
+  }
+
+  // Recherches les plus faites recalculées à l'avance.
+  if (path === '/api/search/prewarm' && request.method === 'POST') {
+    const { prewarmPopular } = await import('./search.js');
+    // Amorce facultative : { seed: ['nike tech fleece', …] } compte ces recherches une fois.
+    const body = await request.json().catch(() => ({}));
+    if (Array.isArray(body.seed) && body.seed.length) {
+      const { redis } = await import('./kvstore.js');
+      await redis(env, body.seed.slice(0, 50).map((q) => ['ZINCRBY', 'q:pop', '1', String(q).toLowerCase().trim().slice(0, 100)]));
+    }
+    return json({ ok: true, warmed: await prewarmPopular(env) });
   }
 
   // MP au propriétaire depuis l'extérieur (test de nuit sur GitHub en échec).

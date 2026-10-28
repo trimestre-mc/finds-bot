@@ -1,12 +1,12 @@
 // Recherche dans les items indexés.
 
-import { relevance, relaxQuery } from './synonyms.js';
+import { relevance, relaxQuery, expandQuery } from './synonyms.js';
 import { addLiveResults } from './livesearch.js';
 import { readsOver } from './budget.js';
 import { perDb, allRows, itemsWhereIds } from './shard.js';
 import { translate } from './translate.js';
 import { detectCategory } from './categories.js';
-import { cacheGet, cacheSet, logEvent } from './kvstore.js';
+import { cacheGet, cacheSet, logEvent, redis } from './kvstore.js';
 import { searchIndexReady, indexSearch, fuzzySearch, indexList, indexItems } from './searchindex.js';
 
 export const PAGE_SIZE = 5;
@@ -277,6 +277,10 @@ function cacheKey(params) {
 
 export async function cachedIds(env, params, money) {
   if (params.q) await logEvent(env, 'search', `« ${String(params.q).slice(0, 60)} »`).catch(() => {});
+  // Recherches /find les plus faites : comptées pour être recalculées à l'avance (prewarmPopular).
+  if (params.q && params.public) {
+    await redis(env, [['ZINCRBY', 'q:pop', '1', String(params.q).toLowerCase().trim().slice(0, 100)], ['ZREMRANGEBYRANK', 'q:pop', '0', '-501']]).catch(() => {});
+  }
   const key = cacheKey(params);
   const row = await cacheGet(env, key);
   if (row && Date.now() - row.at < CACHE_MS) return JSON.parse(row.ids);
@@ -326,4 +330,27 @@ export async function idsToPost(env, sid, params, money) {
     results.forEach((r) => keep.add(r.id));
   }
   return ids.filter((id) => keep.has(id));
+}
+
+// Toutes les 30 min : les 25 recherches /find les plus faites sont recalculées à l'avance (mêmes paramètres que /find),
+// leur résultat est alors instantané. Au plus ~25 s de travail par passage. Renvoie le nombre recalculé.
+export async function prewarmPopular(env, n = 25) {
+  const r = await redis(env, [['ZREVRANGE', 'q:pop', '0', String(n - 1)]]);
+  const queries = (r && r[0]) || [];
+  const { getRate } = await import('./post.js');
+  const money = await getRate(env).catch(() => ({ rate: 0.13, code: 'EUR' }));
+  const until = Date.now() + 25000;
+  let done = 0;
+  for (const q of queries) {
+    if (Date.now() > until) break;
+    const params = { q, groups: expandQuery(q), variants: [], category: null, autoCategory: null, max: null, includePosted: true, sort: 'popular', public: true };
+    const key = cacheKey(params);
+    const row = await cacheGet(env, key);
+    if (row && Date.now() - row.at < CACHE_MS - 3600000) continue; // encore frais plus d'une heure
+    const ids = await allResultIds(env, params, money).catch(() => null);
+    if (!ids) continue;
+    await cacheSet(env, key, JSON.stringify(ids));
+    done++;
+  }
+  return done;
 }
