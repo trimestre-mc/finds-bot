@@ -20,6 +20,9 @@ const BRAND_CUES = 'Iconic designs: Chrome Hearts = gothic/fleur crosses, dagger
   'Prada = triangle plaque; Burberry = check pattern, horse knight; Celine = triomphe arcs; Miu Miu = "MIU MIU" text; Vale = "VALE" text.';
 
 // Texte du logo → marque connue (synonyms.js) : la marque écrite sur l'article l'emporte sur l'avis du modèle.
+// Agents (leur nom est en filigrane sur les photos QC) : jamais pris pour la marque de l'article.
+const AGENTS_RE = /\b(c[oa]pbuy|bbdbuy|kakobuy|cnfans|mulebuy|hoobuy|sugargoo|pandabuy|superbuy|wegobuy|acbuy|litbuy|orientdig|oopbuy|allchinabuy|joyagoo|lovegobuy|basetao|cssbuy|hagobuy|itaobuy|loongbuy|usfans|gtbuy|cssbuy|ponybuy|eastmallbuy|findqc|finderqc)\b/i;
+
 // Marques reconnaissables seulement à leur nom écrit (pas à un symbole seul) : acceptées seulement si le nom est lu.
 const TEXT_BRANDS = new Set(['supreme', 'stussy', 'essentials', 'trapstar', 'gallery dept', 'corteiz', 'kith', 'represent', 'rhude',
   'amiri', 'hellstar', 'sp5der', 'broken planet', 'syna', 'palace', 'diesel', 'balenciaga', 'celine', 'miu miu', 'prada',
@@ -285,6 +288,8 @@ export async function describeImage(env, imageUrl, model = VISION_MODEL, prefer 
   // Marque qui s'écrit toujours sur l'article (Supreme, Stüssy…) mais dont le nom n'a pas été lu : deviné, pas lu → rien.
   const claimed = brandIn(brand);
   if (!written && claimed && TEXT_BRANDS.has(claimed.toLowerCase())) brand = null;
+  // Nom d'un agent (filigrane des photos QC : « Copbuy », « BBDBuy »…) : pas une marque.
+  if (brand && AGENTS_RE.test(brand)) brand = null;
   return { brand, model: clean(raw.model), item: clean(raw.item), color: clean(raw.color), text: clean(raw.text), neurons: res.neurons, provider: res.provider };
 }
 
