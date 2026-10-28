@@ -326,6 +326,17 @@ export function voteRow(item, en = false, emojis = null, view = 0) {
 
 // Message public des QC partagées par un membre : les photos de la page qu'il regardait (communauté + lots
 // d'agents), qui les a partagées, et les boutons de la carte (acheter, toutes les QC, comparer…). null : rien à montrer.
+// Photo de référence pour l'analyse IA : la vue d'ensemble d'un autre batch du même article (pas un de ceux analysés).
+// Pas de référence si les membres jugent l'article plutôt RL. { url, same, gl } ou null.
+export function goldPhoto(qc, exclude = [], item = {}, same = true) {
+  const gl = Number(item.gl_votes) || 0;
+  const rl = Number(item.rl_votes) || 0;
+  if (rl > gl) return null;
+  const skip = new Set(exclude);
+  const b = ((qc && qc.batches) || []).find((x) => x.photos.length && !x.photos.some((u) => skip.has(u)));
+  return b ? { url: b.photos[0], same, gl: gl > rl } : null;
+}
+
 // Photos QC d'une page de la fenêtre QC (communauté en 1re page, puis lots d'agents). { qc, batches, photos }
 export async function qcPagePhotos(env, item, view) {
   const first = view * BATCHES_PER_VIEW;

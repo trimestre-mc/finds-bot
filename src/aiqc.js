@@ -13,6 +13,7 @@ import { ACCENTS } from './config.js';
 import { searchByImage } from './imagesearch.js';
 import { trackedLink, formatPrice } from './post.js';
 import { buildAgentLink, canonicalUrl } from './links.js';
+import { fetchQc, fetchQcPage, goldPhoto } from './qc.js';
 
 export const AIQC_PER_DAY = 40; // plafond de sécurité sans Groq ; la vraie limite est le quota d'IA du jour (neurons)
 const AIQC_PER_DAY_GROQ = 150; // avec Groq (~1 000 requêtes/jour gratuites, ~6 par analyse)
@@ -55,7 +56,7 @@ async function uncount(env) {
 }
 
 // Analyse (ou résultat déjà gardé) d'un lot de photos. { result, cached } ; result null si limite du jour ou échec.
-export async function qcAnalysis(env, photos, { ref = null, what = null } = {}) {
+export async function qcAnalysis(env, photos, { ref = null, what = null, gold = null } = {}) {
   const shots = photos.filter((u) => /^https:\/\//.test(u || '')).slice(0, PHOTOS);
   if (!shots.length) return { result: null, reason: 'photos' };
   const key = `aiqc:${await hashKey([ref || '', ...shots])}`;
@@ -64,7 +65,7 @@ export async function qcAnalysis(env, photos, { ref = null, what = null } = {}) 
   if (!(await allowed(env))) return { result: null, reason: 'limite' };
   let quota = false;
   let busy = false;
-  const result = await analyzeQc(env, shots, { ref, what }).catch((err) => {
+  const result = await analyzeQc(env, shots, { ref, what, gold }).catch((err) => {
     console.log('analyse QC', String(err).slice(0, 160));
     quota = /4006/.test(String(err));
     busy = /occupe/.test(String(err));
@@ -84,6 +85,13 @@ export async function qcAnalysis(env, photos, { ref = null, what = null } = {}) 
   if (result.neurons) await aiNeurons(env).then((b) => b.add(Math.round(result.neurons))).catch(() => {});
   await env.DB.prepare('INSERT OR REPLACE INTO search_cache (key, ids, at) VALUES (?, ?, ?)').bind(key, JSON.stringify(result), Date.now()).run().catch(() => {});
   return { result, cached: false };
+}
+
+// Ce que l'IA a fait en plus de lire les photos.
+function extrasText(x) {
+  if (!x) return '';
+  const done = [x.zoom && 'gros plan du logo / de l\'étiquette', x.compared && 'comparée à un autre batch', x.verified && 'doutes revérifiés'].filter(Boolean);
+  return done.length ? ` (${done.join(', ')})` : '';
 }
 
 // Carte de l'analyse. title : article analysé ; photos : montrées en petit (facultatif).
@@ -110,7 +118,7 @@ export function analysisView(emojis, res, { title = null, photos = [], who = nul
     text(r.points.map((p) => `${ICON[p.etat] || '•'} ${escape(p.texte)}`).join('\n') || '-# Pas de détail.'),
     r.manque && r.manque.length ? text(`📸 **À demander à ton agent :** ${r.manque.map((x) => escape(x)).join(' · ')}`) : null,
     r.conseil ? text(`💡 ${escape(r.conseil)}`) : null,
-    text(`-# Avis automatique de l'IA sur ${r.photos || Math.min(photos.length || PHOTOS, PHOTOS)} photo(s), pas une garantie : zoome sur les photos et compare avec les votes GL / RL des membres.` +
+    text(`-# Avis automatique de l'IA sur ${r.photos || Math.min(photos.length || PHOTOS, PHOTOS)} photo(s)${extrasText(r.extras)}, pas une garantie : zoome sur les photos et compare avec les votes GL / RL des membres.` +
       (who ? `  ·  Demandé par <@${who}>` : '') + (res.cached ? '  ·  analyse déjà faite' : '')),
     ...(match || []),
   ], v.color)];
@@ -130,22 +138,27 @@ export async function aiqcMessage(env, ctx, c, m) {
     components: [container([text(`### ${etxt(ctx.emojis, 'fb_loading')} Analyse de tes QC en cours…\n-# L'IA regarde tes ${shots.length} photo(s) : défauts, coutures, logo, taille, mesures.`)], accent)],
     message_reference: { message_id: m.id, fail_if_not_exists: false },
   });
-  // Lien de l'item dans le message : photo du vendeur comme référence.
+  // Lien de l'item dans le message : photo du vendeur comme référence, et un autre batch de l'article.
   let ref = null;
   let title = null;
+  let gold = null;
   const { extractItemRefs } = await import('./links.js');
   const refItem = extractItemRefs(m.content || '')[0];
+  const urls = shots.map(smallImageUrl);
   if (refItem) {
     const { itemById } = await import('./shard.js');
-    const item = await itemById(env, `${refItem.platform}:${refItem.itemId}`).catch(() => null);
-    if (item) { ref = /^https:\/\//.test(item.image || '') ? item.image : null; title = item.title_en || item.title_zh; }
+    const item = await itemById(env, `${refItem.platform}:${refItem.itemId}`).catch(() => null)
+      || { id: `${refItem.platform}:${refItem.itemId}`, platform: refItem.platform, item_id: refItem.itemId };
+    if (item.image || item.title_en) { ref = /^https:\/\//.test(item.image || '') ? item.image : null; title = item.title_en || item.title_zh; }
+    gold = goldPhoto(await fetchQc(item, 1).catch(() => null), urls, item);
   }
-  // En même temps : l'article qui ressemble le plus (recherche par image FinderQC, sans quota d'IA), avec ses
-  // boutons d'achat et de QC. Sauf si le membre a donné le lien de l'item.
-  const [res, found] = await Promise.all([
-    qcAnalysis(env, shots.map(smallImageUrl), { ref, what: title }),
-    refItem ? Promise.resolve([]) : searchByImage(shots[0].url, shots[0].filename, 3).catch(() => []),
-  ]);
+  // Sinon : l'article qui ressemble le plus (recherche par image FinderQC, sans quota d'IA), montré avec ses boutons
+  // d'achat et de QC ; une de ses QC sert de référence (l'IA vérifie d'abord que c'est le même article).
+  const found = refItem ? [] : await searchByImage(shots[0].url, shots[0].filename, 3).catch(() => []);
+  if (!gold && found[0] && found[0].qc) {
+    gold = goldPhoto(await fetchQcPage(found[0].id, 1).catch(() => null), urls, {}, false);
+  }
+  const res = await qcAnalysis(env, urls, { ref, what: title, gold });
   c.done++;
   await discordApi(env, 'PATCH', `/channels/${c.channel_id}/messages/${pending.id}`, {
     flags: COMPONENTS_V2, allowed_mentions: { parse: [] },

@@ -120,3 +120,19 @@ test('qcGuide : savoir général par type d\'article, même sans marque connue',
   assert.equal(knownType('article inconnu'), false);
   assert.equal(knownType('Air Jordan 4'), true);
 });
+
+test('analyse QC : taille d\'image, gros plan, batch de référence', async () => {
+  const { imageSize, cropUrl } = await import('../src/vision.js');
+  const { goldPhoto } = await import('../src/qc.js');
+  const png = new Uint8Array(32); png.set([0x89, 0x50, 0x4e, 0x47], 0); png.set([0, 0, 4, 0, 0, 0, 3, 0], 16);
+  assert.deepEqual(imageSize(png), { w: 1024, h: 768 });
+  const jpg = new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 0, 4, 0, 0, 0xff, 0xc0, 0, 11, 8, 0x02, 0x58, 0x03, 0x20, 3, 0, 0, 0, 0]);
+  assert.deepEqual(imageSize(jpg), { w: 800, h: 600 });
+  const u = cropUrl('https://x/a.jpg', [40, 40, 60, 50], { w: 1000, h: 1000 });
+  assert.match(u, /^https:\/\/wsrv\.nl\/\?url=https%3A%2F%2Fx%2Fa\.jpg&cx=320&cy=320&cw=360&ch=260&w=768/);
+  assert.equal(cropUrl('https://x/a.jpg', [0, 0, 100, 100], { w: 1000, h: 1000 }), null);
+  assert.equal(cropUrl('https://x/a.jpg', [40, 40, 60, 50], null), null);
+  const qc = { batches: [{ photos: ['a1', 'a2'] }, { photos: ['b1'] }] };
+  assert.deepEqual(goldPhoto(qc, ['a2'], { gl_votes: 3, rl_votes: 1 }), { url: 'b1', same: true, gl: true });
+  assert.equal(goldPhoto(qc, [], { gl_votes: 0, rl_votes: 2 }), null);
+});

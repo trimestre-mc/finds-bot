@@ -5,7 +5,7 @@ import { discordApi, followup } from './discord.js';
 import { COMPONENTS_V2, container, text, escape, section, thumb } from './components.js';
 import { panel, update, openModal, later, userId } from './respond.js';
 import { buildAgentLink, canonicalUrl, extractItemRefs } from './links.js';
-import { communityQc, refreshQc, communityPhotos, qcWindow, qcShareMessage, qcPagePhotos } from './qc.js';
+import { communityQc, refreshQc, communityPhotos, qcWindow, qcShareMessage, qcPagePhotos, goldPhoto } from './qc.js';
 import { qcAnalysis, analysisView } from './aiqc.js';
 import { cachedIds, withoutCache } from './search.js';
 import { postContext, processQueue, logError, FORUM } from './post.js';
@@ -197,9 +197,11 @@ export async function handlePublicComponent(it, env, ctx) {
     if (!canonicalUrl(platform, itemId)) return null;
     return later(it, env, ctx, async () => {
       const item = (await itemById(env, key)) || { id: key, item_id: itemId, platform, url: canonicalUrl(platform, itemId) };
-      const { photos } = await qcPagePhotos(env, item, view);
+      const { photos, qc, batches } = await qcPagePhotos(env, item, view);
       const shots = photos.slice(0, 3);
-      const res = await qcAnalysis(env, shots, { ref: /^https:\/\//.test(item.image || '') ? item.image : null, what: item.title_en || item.title_zh || null });
+      // Référence : un autre batch du même article (déjà téléchargé avec la page, aucune requête de plus).
+      const gold = goldPhoto(qc, [...shots, ...batches.flatMap((b) => b.photos)], item);
+      const res = await qcAnalysis(env, shots, { ref: /^https:\/\//.test(item.image || '') ? item.image : null, what: item.title_en || item.title_zh || null, gold });
       const emojis = await loadEmojis(env);
       const title = item.title_en || item.title_zh || null;
       if (kind === 'aiqcshare') {
