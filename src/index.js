@@ -723,6 +723,17 @@ async function handleApi(request, env, url) {
     });
   }
 
+  // Diagnostic : Groq répond-il (quota du jour) ? Une toute petite requête au modèle de vision.
+  if (path === '/api/groq-check' && request.method === 'GET') {
+    if (!env.GROQ_API_KEY) return json({ ok: false, error: 'pas de clé GROQ_API_KEY' });
+    const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+      method: 'POST', headers: { Authorization: `Bearer ${env.GROQ_API_KEY}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: env.GROQ_VISION_MODEL || 'qwen/qwen3.8-27b', messages: [{ role: 'user', content: 'Réponds juste : ok' }], max_tokens: Number(url.searchParams.get('room')) || 5, reasoning_effort: 'none' }),
+    });
+    const rest = await env.DB.prepare("SELECT value FROM settings WHERE key = 'groq:rest'").first().catch(() => null);
+    return json({ ok: res.ok, status: res.status, error: res.ok ? null : (await res.text()).slice(0, 300), restUntil: rest ? Number(rest.value) : null });
+  }
+
   // Diagnostic : modèles disponibles chez Groq (les noms changent avec le temps).
   if (path === '/api/groq-models' && request.method === 'GET') {
     if (!env.GROQ_API_KEY) return json({ ok: false, error: 'pas de clé GROQ_API_KEY' });
