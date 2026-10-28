@@ -207,9 +207,9 @@ try {
   check('non-admin : panneau refusé', /Accès réservé/.test(allText(denied.data.data)));
 
   const home = await menu();
-  check('/menu ouvre le panneau (éphémère, V2)', home.data.type === 4 && home.data.data.flags === (64 | V2) && /# 🛍️ Finds/.test(allText(home.data.data)));
+  check('/menu ouvre le panneau (éphémère, V2)', home.data.type === 4 && home.data.data.flags === (64 | V2) && /# .*Finds/.test(allText(home.data.data)));
   check('accueil : limites Discord', validate('accueil', home.data.data));
-  check('accueil : conseils de démarrage', /Commence par ajouter/.test(allText(home.data.data)));
+  check('accueil : conseils de démarrage', /Première étape : ajouter des boutiques/.test(allText(home.data.data)));
 
   const agModal = await click('ag:pick', ['bbdbuy']);
   check('menu Agents → BBDBuy → formulaire « code »', agModal.data.type === 9 && agModal.data.data.custom_id === 'm:agent:bbdbuy');
@@ -272,7 +272,7 @@ try {
   const cardText = posted ? allText(posted.body) : '';
   const pics = posted && findComp(posted.body, (c) => c.type === 12);
   checkPages('carte postée : galerie de photos', pics && pics.items.length >= 2 && pics.items.length <= 4, pics && `${pics.items.length} photos`);
-  check('carte postée : prix en € en avant', /## \d+,\d{2} €  ·  ¥\d/.test(cardText), cardText.split('\n').find((l) => l.includes('¥')));
+  check('carte postée : prix en € en avant', /## .*\d+,\d{2} €  ·  ¥\d/.test(cardText), cardText.split('\n').find((l) => l.includes('¥')));
   const buy = posted && findComp(posted.body, (c) => c.type === 2 && c.label === 'Acheter sur BBDBuy');
   const view = posted && findComp(posted.body, (c) => c.type === 2 && c.label === 'Weidian');
   check('carte postée : bouton « Acheter sur BBDBuy » avec code, à côté de « Voir l\'annonce »',
@@ -565,7 +565,7 @@ try {
   const accAdd = await click('acc:add', ['555']);
   check('donner l\'accès', /Accès donné à <@555>/.test(allText(accAdd.data.data)));
   const viaAdded = await interact({ type: 2, member: { user: { id: '555' }, permissions: '0' }, data: { name: 'menu' } });
-  check('membre ajouté peut ouvrir le menu', /# 🛍️ Finds/.test(allText(viaAdded.data.data)));
+  check('membre ajouté peut ouvrir le menu', /# .*Finds/.test(allText(viaAdded.data.data)));
   const notAdmin = await interact({ type: 3, member: { user: { id: '555' }, permissions: '0' }, message: { id: 'm1' }, data: { custom_id: 'acc:add', component_type: 5, values: ['666'] } });
   check('membre ajouté ne peut pas donner l\'accès', /Seuls les administrateurs/.test(allText(notAdmin.data.data)));
 
@@ -573,7 +573,7 @@ try {
   check('item Taobao manuel', /Item ajouté/.test(allText(itm.data.data)));
 
   const h2 = await click('home');
-  check('accueil avec stats (+ items similaires découverts via les QC)', Number((allText(h2.data.data).match(/\*\*(\d+)\*\* items/) || [])[1]) >= 62, allText(h2.data.data).split('\n').find((l) => /items/.test(l)));
+  check('accueil avec stats (+ items similaires découverts via les QC)', Number((allText(h2.data.data).match(/\*\*(\d+)\*\* articles/) || [])[1]) >= 62, allText(h2.data.data).split('\n').find((l) => /articles/.test(l)));
 } catch (err) {
   failures++;
   console.error(err);

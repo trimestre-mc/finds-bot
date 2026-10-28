@@ -854,6 +854,15 @@ async function handleApi(request, env, url) {
     const { kvSet } = await import('./kvstore.js');
     return json({ ok: await kvSet(env, `sidx:tail:${tag}`, Number(rowid) || 0) });
   }
+  // Étiquettes de marque dans l'index : règles à jour et un paquet d'items étiquetés (à relancer jusqu'à left = 0).
+  if (path === '/api/searchindex/tags' && request.method === 'POST') {
+    const { syncBrandTags } = await import('./searchindex.js');
+    try {
+      return json({ ok: true, ...await syncBrandTags(env, Number(url.searchParams.get('batch')) || 4000) });
+    } catch (err) {
+      return json({ ok: false, error: String(err.message || err).slice(0, 300) });
+    }
+  }
   if (path === '/api/searchindex' && request.method === 'GET') {
     const { neon, kvGet } = await import('./kvstore.js');
     const { searchIndexReady } = await import('./searchindex.js');

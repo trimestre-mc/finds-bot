@@ -35,7 +35,8 @@ export async function bigCounts(env) {
     const row = await env.DB.prepare("SELECT value FROM settings WHERE key = 'big_counts'").first().catch(() => null);
     try { kept = row && JSON.parse(row.value); } catch {}
   }
-  if (kept && Date.now() - kept.at < 3600000) return kept;
+  // Petite base (moins de 50 000 items) : comptages peu coûteux, toujours à jour.
+  if (kept && kept.items > 50000 && Date.now() - kept.at < 3600000) return kept;
   let c = null;
   const { searchIndexReady } = await import('./searchindex.js');
   if (await searchIndexReady(env).catch(() => false)) {

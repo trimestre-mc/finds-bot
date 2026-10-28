@@ -7,7 +7,7 @@ import { perDb, allRows, itemsWhereIds } from './shard.js';
 import { translate } from './translate.js';
 import { detectCategory } from './categories.js';
 import { cacheGet, cacheSet, logEvent } from './kvstore.js';
-import { searchIndexReady, indexSearch, fuzzySearch, indexList } from './searchindex.js';
+import { searchIndexReady, indexSearch, fuzzySearch, indexList, indexItems } from './searchindex.js';
 
 export const PAGE_SIZE = 5;
 export const MAX_BULK = 500;
@@ -135,12 +135,17 @@ export async function allResultIds(env, params, money) {
     // Peu de résultats avec tous les mots : on complète sans le moins important (couleur, puis type, puis mot
     // inconnu). Les résultats exacts restent en tête.
     // Tout le catalogue FinderQC en direct (pas pour une recherche limitée à une boutique).
-    if (!params.shop && params.live !== false) await addLiveResults(env, params, money);
+    const indexed = await searchIndexReady(env).catch(() => false);
+    // Sans l'index : recherche en direct chez FinderQC d'abord (ajoutée aux bases). Avec l'index : seulement si l'index
+    // trouve trop peu (plus rapide, et FinderQC moins sollicité).
+    if (!indexed && !params.shop && params.live !== false) await addLiveResults(env, params, money);
     let groups = params.groups;
     const ids = [];
-    const indexed = await searchIndexReady(env).catch(() => false);
     for (let tries = 0; groups && tries < 3 && ids.length < FEW_RESULTS; tries++, groups = relaxQuery(groups)) {
       for (const id of await rankedIds(env, { ...params, groups }, money, indexed)) if (!ids.includes(id)) ids.push(id);
+    }
+    if (indexed && ids.length < FEW_RESULTS && !params.shop && params.live !== false && await addLiveResults(env, params, money, true)) {
+      for (const id of await rankedIds(env, params, money, indexed)) if (!ids.includes(id)) ids.push(id);
     }
     // Toujours trop peu : faute de frappe probable (« hodie », « jordna »), mots approchants dans l'index.
     if (indexed && ids.length < FEW_RESULTS && params.q) {
@@ -177,8 +182,13 @@ async function rankedIds(env, params, money, indexed = false) {
 }
 
 // Pertinence, tri et doublons d'une liste de résultats (bases ou index).
+// Accessoires « pour » une marque (inserts de sac, coques, boîtes, stickers…) : ils passent après les vrais articles,
+// sauf si la recherche les demande (« lv insert », « coque stone island »).
+const ACCESSORY = /\b(suitable for|compatible|for (lv|louis|gucci|dior|chanel|hermes|prada|goyard|ysl|celine)|phone case|case for|iphone|airpods|storage|organi[sz]er|insert|liner|lining bag|dust ?bag|gift box|box only|sticker|keychain|key chain|lanyard|shoelace|lace)\b/i;
 function rankRows(results, params) {
-  const scored = results.map((r) => ({ ...r, score: relevance(params.groups, r) })).filter((r) => r.score > 0);
+  const wantsAccessory = ACCESSORY.test((params.groups || []).map((g) => g.alt.join(' ')).join(' '));
+  const scored = results.map((r) => ({ ...r, score: relevance(params.groups, r) })).filter((r) => r.score > 0)
+    .map((r) => (!wantsAccessory && ACCESSORY.test(r.title_en || '') ? { ...r, score: r.score - 2.5 } : r));
   const sorted = sortRows(scored, params);
   if (!params.sort || params.sort === 'popular') sorted.sort((a, b) => b.score - a.score || b.popularity - a.popularity || b.first_seen - a.first_seen);
   // Même produit chez plusieurs vendeurs : on garde le premier (le plus vendu). Les longs titres copiés-collés
@@ -290,7 +300,11 @@ export async function searchIds(env, sid, params, money) {
 // Items d'une tranche de la liste, dans l'ordre de la liste (sans les items masqués entre-temps).
 export async function itemsByIds(env, ids) {
   if (!ids.length) return [];
-  const results = await itemsWhereIds(env, ids, '*', 'hidden = 0');
+  // Base illisible (quota du jour) : les fiches viennent de l'index de recherche Neon (sans photo).
+  const results = await itemsWhereIds(env, ids, '*', 'hidden = 0').catch(async (err) => {
+    console.log('fiches (base illisible, index Neon)', String(err).slice(0, 100));
+    return indexItems(env, ids);
+  });
   const byId = new Map(results.map((r) => [r.id, r]));
   return ids.map((id) => byId.get(id)).filter(Boolean);
 }

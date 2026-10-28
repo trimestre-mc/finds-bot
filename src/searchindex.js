@@ -6,8 +6,9 @@
 
 import { neon, kvGet, kvSet, logEvent } from './kvstore.js';
 import { perDb, itemsWhereIds } from './shard.js';
-import { mentionsBrand, brandNames } from './synonyms.js';
+import { mentionsBrand, brandNames, brandRules } from './synonyms.js';
 import { describeImage } from './vision.js';
+import { canonicalUrl } from './links.js';
 import { DROP_WINDOW_DAYS } from './search.js';
 
 // Texte indexé : titre anglais + la partie latine du titre chinois et de la boutique (« BAPE 卫衣 » → « bape »). Les
@@ -29,7 +30,14 @@ const SCHEMA = [
   'ALTER TABLE items_search ADD COLUMN IF NOT EXISTS brand TEXT',
   'ALTER TABLE items_search ADD COLUMN IF NOT EXISTS brand_checked BIGINT',
   'CREATE INDEX IF NOT EXISTS items_search_brand ON items_search (brand) WHERE brand IS NOT NULL',
+  // Marques de chaque item (étiquettes calculées par Neon avec brand_rules) : recherche d'une marque instantanée.
+  'CREATE TABLE IF NOT EXISTS brand_rules (name TEXT PRIMARY KEY, re TEXT NOT NULL)',
+  'ALTER TABLE items_search ADD COLUMN IF NOT EXISTS brands TEXT[]',
+  'CREATE INDEX IF NOT EXISTS items_search_brands ON items_search USING gin (brands)',
 ];
+
+// Étiquettes de marque d'un item, calculées dans Neon à partir de son texte (x = ligne en cours d'insertion).
+const TAGS = `coalesce((SELECT array_agg(r.name) FROM brand_rules r WHERE lower(coalesce(x.title_en,'') || ' ' || coalesce(x.title_zh,'') || ' ' || coalesce(x.shop_name,'')) ~ r.re), '{}')`;
 
 let schemaReady = null;
 function ensureSchema(env) {
@@ -76,6 +84,8 @@ export async function syncSearchIndex(env) {
     }
     await kvSet(env, `sidx:cursor:${tag}`, cursor);
   }
+  // Étiquettes de marque pas encore toutes calculées : un paquet à chaque passage.
+  if (!(await tagsReady(env))) await syncBrandTags(env).catch((err) => console.log('étiquettes de marque', String(err).slice(0, 120)));
   return copied;
 }
 
@@ -88,16 +98,16 @@ async function copyRows(env, e, after) {
   ).bind(after, CHUNK).all();
   if (!results.length) return { n: 0, last: null };
   await neon(env, `INSERT INTO items_search (id, title_en, title_zh, shop_name, shop_id, category, popularity, first_seen, price,
-       hidden, posted, qc, prev_price, price_changed_at)
+       hidden, posted, qc, prev_price, price_changed_at, brands)
      SELECT id, title_en, title_zh, shop_name, shop_id, category, coalesce(popularity, 0), first_seen, price_cny,
-       coalesce(hidden, 0), coalesce(posted_count, 0), coalesce(qc_count, 0), prev_price, price_changed_at
+       coalesce(hidden, 0), coalesce(posted_count, 0), coalesce(qc_count, 0), prev_price, price_changed_at, ${TAGS}
      FROM jsonb_to_recordset($1::jsonb) AS x(id TEXT, title_en TEXT, title_zh TEXT, shop_name TEXT, shop_id TEXT, category TEXT,
        popularity INTEGER, first_seen BIGINT, price_cny REAL, hidden SMALLINT, posted_count INTEGER, qc_count INTEGER,
        prev_price REAL, price_changed_at BIGINT)
      ON CONFLICT (id) DO UPDATE SET title_en = EXCLUDED.title_en, title_zh = EXCLUDED.title_zh, shop_name = EXCLUDED.shop_name,
        shop_id = EXCLUDED.shop_id, category = EXCLUDED.category, popularity = EXCLUDED.popularity, first_seen = EXCLUDED.first_seen,
        price = EXCLUDED.price, hidden = EXCLUDED.hidden, posted = EXCLUDED.posted, qc = EXCLUDED.qc,
-       prev_price = EXCLUDED.prev_price, price_changed_at = EXCLUDED.price_changed_at`,
+       prev_price = EXCLUDED.prev_price, price_changed_at = EXCLUDED.price_changed_at, brands = EXCLUDED.brands`,
   [JSON.stringify(results.map(({ rid, ...x }) => x))]);
   return { n: results.length, last: results[results.length - 1].rid };
 }
@@ -124,7 +134,9 @@ export function neonWhere(params, money) {
       if (latinAlt(a)) {
         const spaced = a.includes(' ') ? [a.replace(/ /g, ''), a.replace(/ /g, '-')] : [];
         for (const form of new Set([a, `${a}s`, ...spaced])) latin.push(esc(form));
-      } else {
+      } else if (!g.alt.some(latinAlt)) {
+        // Mot chinois seul (sans équivalent latin) : cherché sans index. S'il a un nom latin, celui-ci suffit (titres
+        // traduits en anglais) et la requête reste rapide (index de trigrammes).
         const like = p(`%${a}%`);
         ors.push(`(lower(title_zh) LIKE ${like} OR lower(shop_name) LIKE ${like} OR lower(title_en) LIKE ${like})`);
       }
@@ -135,6 +147,11 @@ export function neonWhere(params, money) {
     // Marque lue sur la photo (titre sans marque).
     const names = g.kind === 'brand' ? brandNames(g) : [];
     if (names.length) ors.push(`brand IN (SELECT jsonb_array_elements_text(${p(JSON.stringify(names))}::jsonb))`);
+    // Étiquettes de marque prêtes : la marque se cherche par étiquette (index), au lieu de relire chaque titre.
+    if (g.kind === 'brand' && params.tagged) {
+      clauses.push(`(brands && ARRAY[${p(g.alt[0])}]::text[]${names.length ? ` OR brand IN (SELECT jsonb_array_elements_text(${p(JSON.stringify(names))}::jsonb))` : ''})`);
+      continue;
+    }
     if (ors.length) clauses.push(`(${ors.join(' OR ')})`);
   }
   if (params.min != null) clauses.push(`price >= ${p(params.min / money.rate)}`);
@@ -153,8 +170,16 @@ const COLS = 'id, title_en, title_zh, shop_name, category, popularity, first_see
 const num = (r) => ({ ...r, popularity: Number(r.popularity) || 0, first_seen: Number(r.first_seen) || 0, price_cny: r.price_cny == null ? null : Number(r.price_cny) });
 
 // Recherche par mots dans l'index (les 5 000 plus vendus qui correspondent). null si Neon ne répond pas.
+// Étiquettes de marque prêtes ? (gardé 60 s en mémoire)
+let tagMemo = null;
+async function tagged(env) {
+  if (tagMemo && Date.now() - tagMemo.at < 60000) return tagMemo.ok;
+  tagMemo = { at: Date.now(), ok: await tagsReady(env).catch(() => false) };
+  return tagMemo.ok;
+}
+
 export async function indexSearch(env, params, money) {
-  const w = neonWhere(params, money);
+  const w = neonWhere({ ...params, tagged: await tagged(env) }, money);
   try {
     const rows = await neon(env, `SELECT ${COLS} FROM items_search ${w.sql} ORDER BY popularity DESC, first_seen DESC LIMIT 5000`, w.binds);
     return rows.map(num);
@@ -224,7 +249,7 @@ const LIST_ORDER = {
   price_desc: 'price DESC NULLS LAST',
 };
 export async function indexList(env, params, money) {
-  const w = neonWhere(params, money);
+  const w = neonWhere({ ...params, tagged: await tagged(env) }, money);
   const sort = params.sort && LIST_ORDER[params.sort] ? params.sort : params.latest ? 'recent' : 'popular';
   try {
     return (await neon(env, `SELECT ${COLS} FROM items_search ${w.sql} ORDER BY ${LIST_ORDER[sort]} LIMIT 1000`, w.binds)).map(num);
@@ -232,4 +257,58 @@ export async function indexList(env, params, money) {
     console.log('index de recherche (liste)', String(err).slice(0, 160));
     return null;
   }
+}
+
+// Fiches d'items tirées de l'index (quand les bases sont illisibles) : mêmes champs que la table items, sans photo.
+export async function indexItems(env, ids) {
+  if (!ids.length) return [];
+  const rows = await neon(env, `SELECT id, title_en, title_zh, shop_name, shop_id, category, popularity, first_seen, price, posted, qc, prev_price, price_changed_at
+    FROM items_search WHERE hidden = 0 AND id IN (SELECT jsonb_array_elements_text($1::jsonb))`, [JSON.stringify(ids.slice(0, 500))]);
+  return rows.map((r) => {
+    const [platform, itemId] = r.id.split(':');
+    return { id: r.id, platform, item_id: itemId, url: canonicalUrl(platform, itemId), title_en: r.title_en, title_zh: r.title_zh,
+      shop_name: r.shop_name, shop_id: r.shop_id, category: r.category, popularity: Number(r.popularity) || 0, first_seen: Number(r.first_seen) || null,
+      price_cny: r.price == null ? null : Number(r.price), posted_count: Number(r.posted) || 0, qc_count: Number(r.qc) || 0,
+      prev_price: r.prev_price == null ? null : Number(r.prev_price), price_changed_at: Number(r.price_changed_at) || null, image: null, hidden: 0 };
+  });
+}
+
+// Produits FinderQC trouvés en direct → index de recherche tout de suite (titre, prix, ventes, QC, catégorie).
+export async function indexUpsert(env, list) {
+  const { finderKey } = await import('./qc.js');
+  const { detectCategory } = await import('./categories.js');
+  const rows = list.map((x) => ({ id: finderKey(x), title_en: x.enTitle || null, title_zh: x.originalTitle || null, category: detectCategory(x.enTitle || x.originalTitle || ''),
+    popularity: Math.max(0, Number(x.oneYear) || 0), first_seen: Date.now(), price: x.cnPrice != null ? Number(x.cnPrice) : null, qc: Number(x.qcPhotosCount) || 0 }))
+    .filter((r) => /^(weidian|taobao|1688):\d+$/.test(r.id));
+  if (!rows.length) return 0;
+  await neon(env, `INSERT INTO items_search (id, title_en, title_zh, category, popularity, first_seen, price, qc, brands)
+    SELECT id, title_en, title_zh, category, popularity, first_seen, price, qc, ${TAGS} FROM jsonb_to_recordset($1::jsonb)
+      AS x(id TEXT, title_en TEXT, title_zh TEXT, shop_name TEXT, category TEXT, popularity INTEGER, first_seen BIGINT, price REAL, qc INTEGER)
+    ON CONFLICT (id) DO NOTHING`, [JSON.stringify(rows)]);
+  return rows.length;
+}
+
+// Règles de marque (synonyms.js) recopiées dans Neon quand elles changent, puis étiquettes des items sans étiquette
+// (par paquets : après un changement de règles, toutes les étiquettes sont recalculées). Renvoie { rules, tagged, left }.
+export async function syncBrandTags(env, batch = 4000) {
+  await ensureSchema(env);
+  const rules = brandRules();
+  const version = String(rules.map((r) => r.name + r.re).join('|').length) + ':' + rules.length;
+  if ((await kvGet(env, 'sidx:rules')) !== version) {
+    await neon(env, 'DELETE FROM brand_rules');
+    await neon(env, 'INSERT INTO brand_rules (name, re) SELECT name, re FROM jsonb_to_recordset($1::jsonb) AS x(name TEXT, re TEXT)', [JSON.stringify(rules)]);
+    await neon(env, 'UPDATE items_search SET brands = NULL WHERE brands IS NOT NULL');
+    await kvSet(env, 'sidx:rules', version);
+    await kvSet(env, 'sidx:tagged', '0');
+  }
+  await neon(Object.assign(Object.create(env), { NEON_TIMEOUT: 25000 }), `UPDATE items_search x SET brands = ${TAGS}
+    WHERE x.id IN (SELECT id FROM items_search WHERE brands IS NULL LIMIT ${Number(batch) || 4000})`);
+  const [r] = await neon(env, 'SELECT count(*) FILTER (WHERE brands IS NULL) AS left FROM items_search');
+  const left = Number(r.left);
+  if (!left) await kvSet(env, 'sidx:tagged', '1');
+  return { rules: rules.length, left };
+}
+
+export async function tagsReady(env) {
+  return (await kvGet(env, 'sidx:tagged')) === '1';
 }

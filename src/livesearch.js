@@ -34,7 +34,8 @@ export async function finderSearch(query, { maxCny = null, minCny = null } = {})
 }
 
 // Cherche chez FinderQC et enregistre les produits trouvés. Ne fait jamais échouer la recherche du bot.
-export async function addLiveResults(env, params, money) {
+// toIndex : les produits trouvés vont aussi tout de suite dans l'index de recherche (sinon visibles 15 min plus tard).
+export async function addLiveResults(env, params, money, toIndex = false) {
   if (env.LIVE_SEARCH === '0') return 0; // banc de test : base de test figée
   const query = liveQuery(params.groups);
   if (!query) return 0;
@@ -49,7 +50,11 @@ export async function addLiveResults(env, params, money) {
     await batchByDb(list.flatMap((x) => {
       const e = itemEnv(env, finderKey(x));
       return finderItemStatements(e, x, now).map((st) => [e.DB, st]);
-    }));
+    })).catch((err) => console.log('recherche FinderQC (base)', String(err).slice(0, 100)));
+    if (toIndex && list.length) {
+      const { indexUpsert } = await import('./searchindex.js');
+      await indexUpsert(env, list).catch((err) => console.log('recherche FinderQC (index)', String(err).slice(0, 100)));
+    }
     return list.length;
   } catch (err) {
     console.log('recherche FinderQC', String(err).slice(0, 120));

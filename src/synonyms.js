@@ -7,7 +7,7 @@
 const TYPES = [
   { words: ['tee', 'tees', 't-shirt', 't-shirts', 'tshirt', 'tshirts', 't shirt', 'teeshirt', 'tee-shirt'], alt: ['tee', 't-shirt', 'tshirt', 't shirt', '短袖', 't恤'], cat: 'tees' },
   { words: ['polo', 'polos'], alt: ['polo'], cat: 'tees' },
-  { words: ['hoodie', 'hoodies', 'sweat', 'sweatshirt', 'sweatshirts', 'hoody', 'crewneck'], alt: ['hoodie', 'hoody', 'sweatshirt', 'crewneck', 'pullover', '卫衣', '帽衫'], cat: 'hoodies' },
+  { words: ['sweat a capuche', 'hoodie', 'hoodies', 'sweat', 'sweatshirt', 'sweatshirts', 'hoody', 'crewneck', 'capuche'], alt: ['hoodie', 'hoody', 'sweatshirt', 'crewneck', 'pullover', '卫衣', '帽衫'], cat: 'hoodies' },
   { words: ['zip', 'zipup', 'zip-up'], alt: ['zip', '拉链'], cat: 'hoodies' },
   { words: ['sweater', 'sweaters', 'pull', 'pulls', 'knit', 'knitwear', 'cardigan', 'maille'], alt: ['sweater', 'knit', 'cardigan', 'jumper', '毛衣', '针织', '开衫'], cat: 'knit' },
   { words: ['shirt', 'shirts', 'chemise', 'chemises'], alt: ['shirt', 'button up', '衬衫'], cat: 'knit' },
@@ -383,4 +383,18 @@ export function brandIn(text) {
     return name.replace(/\b([a-z])/g, (c) => c.toUpperCase());
   }
   return null;
+}
+
+// Règles de marque pour l'index de recherche (Neon) : nom de la marque et expression régulière Postgres (noms, modèles
+// et noms codés). Neon étiquette chaque item avec ses marques une fois pour toutes (searchindex.js).
+export function brandRules() {
+  const pg = (a) => a.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return DICT.filter((d) => d.kind === 'brand').map((d) => {
+    const lat = d.alt.filter((a) => /^[a-z0-9' &.-]+$/.test(a)).map((a) => pg(a).replace(/[ -]/g, '[ -]?'));
+    const cjk = d.alt.filter((a) => !/^[a-z0-9' &.-]+$/.test(a)).map(pg);
+    const parts = [];
+    if (lat.length) parts.push(`(^|[^a-z0-9])(${lat.join('|')})s?([^a-z0-9]|$)`);
+    if (cjk.length) parts.push(`(${cjk.join('|')})`);
+    return { name: d.alt[0], re: parts.join('|') };
+  }).filter((r) => r.re);
 }
