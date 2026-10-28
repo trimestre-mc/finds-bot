@@ -79,3 +79,11 @@ test('approbation des serveurs : 1er passage = serveurs actuels approuvés, puis
   assert.equal(await guildApproved(env, '3'), false);
   assert.equal(await checkNewGuilds(env), 0); // déjà signalé : pas de 2e MP
 });
+
+test('MP de pub : mentionne le membre (en haut, ou à la place de {user})', async () => {
+  const { adMessage } = await import('../src/pub.js');
+  assert.match(JSON.stringify(adMessage({}, { text: 'Promo' }, '123')), /Salut <@123>/);
+  const placed = JSON.stringify(adMessage({}, { text: 'Hey {user}, regarde ça' }, '123'));
+  assert.match(placed, /Hey <@123>, regarde ça/);
+  assert.doesNotMatch(placed, /Salut <@123>/);
+});

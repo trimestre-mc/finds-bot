@@ -51,8 +51,8 @@ export const PRESETS = {
 
 // Le MP envoyé (et son aperçu), au style des cartes du bot : image en haut (facultative), titre facultatif, texte écrit
 // par le propriétaire avec sa mise en forme Discord. Dans le texte, {fb_fire} devient l'emoji du bot et une ligne
-// « --- » un séparateur.
-export function adMessage(emojis, d) {
+// « --- » un séparateur. to : membre qui reçoit le MP, mentionné en haut (ou là où le texte écrit {user}).
+export function adMessage(emojis, d, to = null) {
   const e = (n) => etxt(emojis, n);
   const buttons = [
     d.btnLabel && /^https:\/\//.test(d.btnUrl || '') ? { type: 2, style: Style.LINK, label: d.btnLabel.slice(0, 80), url: d.btnUrl, emoji: emo(emojis, 'fb_link') } : null,
@@ -60,8 +60,9 @@ export function adMessage(emojis, d) {
   ].filter(Boolean);
   return [container([
     /^https:\/\//.test(d.image || '') ? { type: 12, items: [{ media: { url: d.image } }] } : null,
+    to && !/\{user\}/.test(d.text || '') ? text(`👋 Salut <@${to}> !`) : null,
     d.title ? text(`## ${e('fb_gift')} ${escape(d.title)}`) : null,
-    ...String(d.text || '').slice(0, 3500).replace(/\{(fb_[a-z0-9_]+)\}/g, (_, n) => e(n))
+    ...String(d.text || '').slice(0, 3500).replace(/\{(fb_[a-z0-9_]+)\}/g, (_, n) => e(n)).replace(/\{user\}/g, to ? `<@${to}>` : '')
       .split(/\n-{3,}\n/).flatMap((part, i) => [i ? sep() : null, part.trim() ? text(part.trim()) : null]),
     buttons.length ? sep() : null,
     buttons.length ? row(...buttons) : null,
@@ -139,7 +140,7 @@ export async function handlePubComponent(it, env, ctx, b, values) {
     case 'open': return update(await pubView(env, it));
     case 'edit': return openModal(modal('m:ad', 'Message de la pub', [
       { id: 'title', label: 'Titre (facultatif)', placeholder: 'ex : -20 % sur BBDBuy ce week-end', value: d.title, max: 100 },
-      { id: 'text', label: 'Message', description: 'Mise en forme Discord, {fb_fire} = emoji du bot, ligne --- = séparateur', long: true, value: d.text, max: 3000, required: true },
+      { id: 'text', label: 'Message', description: 'Mise en forme Discord, {user} = mention du membre, {fb_fire} = emoji du bot, --- = séparateur', long: true, value: d.text, max: 3000, required: true },
       { id: 'btnLabel', label: 'Texte du bouton (facultatif)', placeholder: 'ex : J\'en profite', value: d.btnLabel, max: 60 },
       { id: 'btnUrl', label: 'Lien du bouton (facultatif)', placeholder: 'https://…', value: d.btnUrl, max: 300 },
       { id: 'image', label: 'Image en haut (lien, facultatif)', placeholder: 'https://…/banniere.png', value: d.image, max: 300 },
@@ -157,7 +158,7 @@ export async function handlePubComponent(it, env, ctx, b, values) {
       if (!d.text) return update(await pubView(env, it, '❌ Écris d\'abord le message.'));
       try {
         const dm = await discordApi(env, 'POST', '/users/@me/channels', { recipient_id: userId(it) });
-        await discordApi(env, 'POST', `/channels/${dm.id}/messages`, { flags: 32768, allowed_mentions: { parse: [] }, components: adMessage(await loadEmojis(env), d) });
+        await discordApi(env, 'POST', `/channels/${dm.id}/messages`, { flags: 32768, allowed_mentions: { users: [userId(it)] }, components: adMessage(await loadEmojis(env), d, userId(it)) });
         return update(await pubView(env, it, '✅ Aperçu envoyé en MP.'));
       } catch (err) {
         return update(await pubView(env, it, `❌ Aperçu impossible : ${escape(String(err.message || err).slice(0, 120))}`));
@@ -222,13 +223,12 @@ export async function runPubQueue(env) {
     return 0;
   }
   const emojis = await loadEmojis(env);
-  const components = adMessage(emojis, job.draft || {});
   let sent = 0;
   let failed = 0;
   for (const [i, id] of popped.entries()) {
     try {
       const dm = await discordApi(env, 'POST', '/users/@me/channels', { recipient_id: id });
-      await discordApi(env, 'POST', `/channels/${dm.id}/messages`, { flags: 32768, allowed_mentions: { parse: [] }, components });
+      await discordApi(env, 'POST', `/channels/${dm.id}/messages`, { flags: 32768, allowed_mentions: { users: [id] }, components: adMessage(emojis, job.draft || {}, id) });
       sent++;
     } catch (err) {
       if (/429/.test(String(err))) {
