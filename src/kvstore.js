@@ -177,3 +177,13 @@ export async function kvMany(env, keys) {
   const r = await pipeline(env, keys.map((k) => ['GET', k]));
   return r ? Object.fromEntries(keys.map((k, i) => [k, r[i]])) : {};
 }
+
+// Verrou court (ttl en secondes) : true si pris, false s'il est déjà pris, undefined sans Upstash.
+export async function kvLock(env, key, ttl) {
+  const r = await pipeline(env, [['SET', key, String(Date.now()), 'NX', 'EX', String(ttl)]]);
+  return r === undefined ? undefined : r[0] === 'OK';
+}
+
+export async function kvDel(env, key) {
+  await pipeline(env, [['DEL', key]]);
+}

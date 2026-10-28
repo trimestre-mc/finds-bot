@@ -16,7 +16,7 @@ import {
   runSchedules, runQcChannels,
 } from './features.js';
 import { categorizePending, detectCategory, isDeadLink } from './categories.js';
-import { fetchQcPage, runQcChecks, refreshQc, qcWindow, syncQcCatalog, SYNC_LANES } from './qc.js';
+import { fetchQcPage, runQcChecks, refreshQc, qcWindow, syncQcCatalog, SYNC_LANES, SYNC_PAGES_DEDICATED } from './qc.js';
 import { popularItemStatements } from './items.js';
 import { budget, rowsWritten, readsOver, recordReads } from './budget.js';
 import { getSignup, setSignup, getCoupon, setCoupon, parseCouponLinks, SIGNUP_COLORS } from './config.js';
@@ -167,7 +167,12 @@ async function handleScheduled(event, env, ctx) {
     }
     if (!open.length) return;
     // Catalogue Taobao + 1688 (2e base) : aussi chaque minute, en plus du passage toutes les 3 minutes.
-    if (env.DB2 && event.cron === '* * * * *') ctx.waitUntil(syncQcCatalog(env, SYNC_LANES.others).catch((e) => console.log('synchro QC', String(e))));
+    // Taobao + 1688 : chaque minute, dans une exécution à part (20 pages, son propre quota de requêtes).
+    if (env.DB2 && event.cron === '* * * * *') {
+      ctx.waitUntil((env.SELF
+        ? env.SELF.fetch('https://finds-bot/api/qcsync?lane=others', { method: 'POST', headers: { Authorization: `Bearer ${env.INDEXER_SECRET}` } })
+        : syncQcCatalog(env, SYNC_LANES.others)).catch((e) => console.log('synchro QC', String(e))));
+    }
     if (!over) await ensureIndexes(env).catch((e) => console.log('index', String(e).slice(0, 120)));
     await Promise.all([
       // Traduction et catégories : dans chaque base sous son plafond (quota d'IA commun, voir translate.js).
@@ -926,6 +931,16 @@ async function handleApi(request, env, url) {
   }
 
   // Recherche d'une photo d'un salon de recherche par image, lancée par watch.js dans une exécution à part.
+  // Synchro du catalogue FinderQC d'un parcours, dans une exécution à part (lancée chaque minute par le cron).
+  if (path === '/api/qcsync' && request.method === 'POST') {
+    const lane = SYNC_LANES[url.searchParams.get('lane')] || SYNC_LANES.others;
+    try {
+      return json({ ok: true, written: await syncQcCatalog(env, lane, SYNC_PAGES_DEDICATED) });
+    } catch (err) {
+      return json({ ok: false, error: String(err.message || err).slice(0, 300) });
+    }
+  }
+
   // Analyse IA d'un message de salon, lancée par watch.js dans une exécution à part.
   if (path === '/api/watch/aiqc' && request.method === 'POST') {
     const { c, m } = await request.json();

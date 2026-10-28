@@ -7,7 +7,7 @@ import { CAPS } from './budget.js';
 import { discordApi } from './discord.js';
 
 const DAYS = 7;
-const TYPES = ['aiqc', 'image', 'convert', 'search', 'brand', 'error'];
+const TYPES = ['aiqc', 'image', 'convert', 'search', 'brand', 'sync', 'error'];
 
 async function hmac(secret, msg) {
   const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
@@ -132,7 +132,7 @@ const pct=(a,b)=>b?Math.min(100,Math.round(100*a/b)):0;const mb=b=>b==null?'–'
 const ago=ms=>{if(!ms)return'–';const s=Math.round((Date.now()-ms)/1000);return s<60?s+' s':s<3600?Math.round(s/60)+' min':s<86400?Math.round(s/3600)+' h':Math.round(s/86400)+' j'};
 const hh=ms=>new Date(ms).toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
 const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-const TAG={aiqc:['Analyse IA','#8b5cf6'],image:['Image','#22d3ee'],convert:['Conversion','#f97316'],search:['Recherche','#3b82f6'],brand:['Marque','#ec4899'],error:['Erreur','#ef4444']};
+const TAG={aiqc:['Analyse IA','#8b5cf6'],image:['Image','#22d3ee'],convert:['Conversion','#f97316'],search:['Recherche','#3b82f6'],brand:['Marque','#ec4899'],sync:['Synchro','#10b981'],error:['Erreur','#ef4444']};
 let seen=new Set(),first=true;
 function bar(v,cap,label,unit=''){const p=pct(v,cap);const c=p>90?'b':p>70?'w':'';return '<div class="row"><span>'+label+'</span><b>'+fmt(v)+unit+' <span class="sub">/ '+fmt(cap)+unit+'</span></b></div><div class="bar"><i class="'+c+'" style="width:'+p+'%"></i></div>'}
 function spark(list){const m=Math.max(1,...list.map(x=>x.n));return '<div class="spark">'+list.map(x=>'<span title="'+x.day+' : '+x.n+'" style="height:'+Math.max(4,Math.round(100*x.n/m))+'%"></span>').join('')+'</div>'}

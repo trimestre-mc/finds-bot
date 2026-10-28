@@ -10,6 +10,7 @@ import { detectCategory, isDeadLink } from './categories.js';
 import { budget, rowsWritten } from './budget.js';
 import { itemDb, onDb, perDb, groupByDb, batchByDb } from './shard.js';
 import { emo, etxt } from './emojis.js';
+import { kvGet, kvSet, kvLock, kvDel, logEvent } from './kvstore.js';
 
 const UA = 'finds-bot/1.0 (+https://github.com/trimestre-mc/finds-bot)';
 const API = 'https://server.finderqc.com/api/spu/webSpuInfo';
@@ -434,6 +435,8 @@ const SYNC_PAGE_SIZE = 100;
 const SYNC_LIMIT = 10000; // résultats max par filtre côté FinderQC
 const SYNC_MAX_CENTS = 2000000; // au-delà de 20 000 ¥ : une dernière tranche ouverte
 const SYNC_PAGES_PER_RUN = 8; // temps CPU limité, et FinderQC doit rester disponible pour les fenêtres QC
+// Exécution dédiée (SELF, chaque minute) : plus de pages, toujours sous la limite de 50 requêtes par exécution.
+export const SYNC_PAGES_DEDICATED = 20;
 
 // Un produit du catalogue FinderQC (liste ou recherche) → enregistrement de l'item (titre, prix, ventes, nombre de
 // QC) ; un item déjà connu n'est réécrit que si quelque chose a changé. Item Weidian sans boutique connue : sa
@@ -493,30 +496,37 @@ function sliceFilter(state, platforms) {
   };
 }
 
-export async function syncQcCatalog(env, lane = SYNC_LANES.all) {
+export async function syncQcCatalog(env, lane = SYNC_LANES.all, pagesPerRun = SYNC_PAGES_PER_RUN) {
   const day = new Date().toISOString().slice(0, 10);
-  const row = await env.DB.prepare('SELECT value FROM settings WHERE key = ?').bind(lane.key).first();
+  // Position du parcours dans Upstash (sinon les réglages) : elle doit s'enregistrer même si la base refuse les écritures.
+  let raw = await kvGet(env, `${lane.key}:state`);
+  if (!raw) raw = ((await env.DB.prepare('SELECT value FROM settings WHERE key = ?').bind(lane.key).first().catch(() => null)) || {}).value;
   let state = null;
-  try { state = row ? JSON.parse(row.value) : null; } catch {}
+  try { state = raw ? JSON.parse(raw) : null; } catch {}
   if (!state || state.v !== 2 || (state.done && state.cycle !== day)) {
     state = { v: 2, cycle: day, plat: 0, lo: 0, w: 1000, page: 1, done: false, seen: 0 };
   }
   if (state.done || (state.pauseUntil && Date.now() < state.pauseUntil)) return 0;
   // Un seul passage à la fois par parcours (il tourne chaque minute et toutes les 3 minutes).
   const lockKey = `${lane.key}:lock`;
-  const lock = await env.DB.prepare(
-    `INSERT INTO settings (key, value) VALUES (?1, ?2)
-     ON CONFLICT(key) DO UPDATE SET value = excluded.value WHERE CAST(settings.value AS INTEGER) < ?3 RETURNING value`,
-  ).bind(lockKey, String(Date.now() + 50000), Date.now()).first();
-  if (!lock) return 0;
+  const fast = await kvLock(env, lockKey, 60);
+  if (fast === false) return 0;
+  if (fast === undefined) {
+    const lock = await env.DB.prepare(
+      `INSERT INTO settings (key, value) VALUES (?1, ?2)
+       ON CONFLICT(key) DO UPDATE SET value = excluded.value WHERE CAST(settings.value AS INTEGER) < ?3 RETURNING value`,
+    ).bind(lockKey, String(Date.now() + 50000), Date.now()).first();
+    if (!lock) return 0;
+  }
   try {
-    return await syncLane(env, lane, state);
+    return await syncLane(env, lane, state, pagesPerRun);
   } finally {
-    await env.DB.prepare("UPDATE settings SET value = '0' WHERE key = ?").bind(lockKey).run().catch(() => {});
+    if (fast) await kvDel(env, lockKey);
+    else await env.DB.prepare("UPDATE settings SET value = '0' WHERE key = ?").bind(lockKey).run().catch(() => {});
   }
 }
 
-async function syncLane(env, lane, state) {
+async function syncLane(env, lane, state, pagesPerRun = SYNC_PAGES_PER_RUN) {
   let external = 0;
   const used = () => external + (env.DB.calls || 0);
   // Un budget par base du catalogue : un produit dont la base a épuisé le sien est sauté (il reviendra au tour suivant).
@@ -541,7 +551,7 @@ async function syncLane(env, lane, state) {
       x.rows = x.rows == null || r == null ? null : x.rows + r;
     }
   };
-  while (used() < 32 && shards.some((x) => x.written < x.b.left) && pages < SYNC_PAGES_PER_RUN) {
+  while (used() < 40 && shards.some((x) => x.written < x.b.left) && pages < pagesPerRun) {
     if (state.plat >= lane.platforms.length) { state.done = true; break; }
     let page;
     try {
@@ -587,6 +597,9 @@ async function syncLane(env, lane, state) {
   }
   await flush();
   for (const x of shards) if (x.written) await x.b.use(x.written, x.rows);
-  await env.DB.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)').bind(lane.key, JSON.stringify(state)).run();
+  if (!(await kvSet(env, `${lane.key}:state`, JSON.stringify(state)))) {
+    await env.DB.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)').bind(lane.key, JSON.stringify(state)).run();
+  }
+  if (written) await logEvent(env, 'sync', `${written} articles ${lane.platforms.join(' / ')} synchronisés`).catch(() => {});
   return written;
 }
