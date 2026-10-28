@@ -39,13 +39,16 @@ export async function getAgents(env) {
 }
 
 // Tout ce qu'il faut pour poster : agents, devise, réglages, adresse publique (boutons suivis).
+let ctxSaved = 0;
+
 // La base illisible (quota du jour de D1 atteint) : dernière copie gardée dans Upstash, sinon les valeurs par défaut.
 export async function postContext(env) {
   const base = (env.PUBLIC_URL || '').replace(/\/$/, '');
   try {
     const cfg = await getConfig(env);
     const [agents, money, signup, emojis] = await Promise.all([getAgents(env), getMoney(env, cfg), getSignup(env), loadEmojis(env)]);
-    kvSet(env, 'ctx:cache', JSON.stringify({ cfg, agents, money, signup })).catch(() => {});
+    // Copie de secours au plus toutes les 10 min (chaque écriture compte dans le quota mensuel d'Upstash).
+    if (Date.now() - ctxSaved > 600000) { ctxSaved = Date.now(); kvSet(env, 'ctx:cache', JSON.stringify({ cfg, agents, money, signup })).catch(() => {}); }
     return { cfg, agents, money, signup, emojis, base, forumTags: new Map() };
   } catch (err) {
     console.log('contexte (base illisible)', String(err).slice(0, 120));
