@@ -1,0 +1,38 @@
+name: test-nightly
+
+# Chaque nuit (4 h 30 à Paris en hiver) : tests rapides puis test de bout en bout (Worker en local + faux Discord + vrai
+# indexeur Weidian). En cas d'échec, le bot envoie un MP au propriétaire avec le lien vers le détail.
+on:
+  schedule:
+    - cron: '30 3 * * *'
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Installer
+        run: |
+          npm ci --no-audit --no-fund
+          npm ci --prefix indexer --no-audit --no-fund
+          npx --prefix indexer playwright install --with-deps chromium
+
+      - name: Tests rapides
+        run: npm test
+
+      - name: Test de bout en bout
+        run: npm run test:e2e
+
+      - name: Prévenir le propriétaire
+        if: failure()
+        run: |
+          curl -s -X POST -H "Authorization: Bearer ${{ secrets.INDEXER_SECRET }}" -H "Content-Type: application/json" \
+            -d "{\"title\":\"Le test de nuit a échoué\",\"detail\":\"Quelque chose a cassé dans le bot. Détail : ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}" \
+            "${{ secrets.WORKER_URL }}/api/notify-owner"

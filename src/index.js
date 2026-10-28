@@ -1050,6 +1050,13 @@ async function handleApi(request, env, url) {
     return json({ ok: await kvSet(env, 'channels', JSON.stringify(map)), channels: map });
   }
 
+  // MP au propriétaire depuis l'extérieur (test de nuit sur GitHub en échec).
+  if (path === '/api/notify-owner' && request.method === 'POST') {
+    const { alertOwner } = await import('./watchdog.js');
+    const body = await request.json();
+    return json({ ok: await alertOwner(env, `ext:${String(body.title || '').slice(0, 40)}`, String(body.title || 'Alerte').slice(0, 100), String(body.detail || '').slice(0, 800)) });
+  }
+
   // Chien de garde : état des services et quotas, MP au propriétaire si un problème approche.
   if (path === '/api/health/check' && request.method === 'POST') {
     const { checkHealth } = await import('./watchdog.js');
