@@ -72,7 +72,7 @@ async function visionAllowed(env) {
     console.log('compteur IA', String(err).slice(0, 100));
     return { used: 0 };
   });
-  return row && row.used <= VISION_PER_DAY;
+  return !row || row.used <= VISION_PER_DAY; // pas de compteur (écritures bloquées) : on laisse passer
 }
 
 // Recherche par image complète : formes (FinderQC) + marque lue sur la photo (modèle de vision). Les items de la

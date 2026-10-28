@@ -76,10 +76,14 @@ export async function watchChannels(env, ms = 55000, exec = null, force = false)
         await logError(env, c.kind === 'image' ? 'recherche image' : 'conversion', `<#${c.channel_id}> : ${String(err.message || err).slice(0, 200)}`);
         continue;
       }
+      // Messages auxquels le bot a déjà répondu (sa réponse est liée au message) : jamais deux fois, même si la
+      // position de lecture n'a pas pu être enregistrée (base sans écriture possible).
+      const answered = new Set(messages.filter((x) => x.author && x.author.bot && x.message_reference).map((x) => x.message_reference.message_id));
       for (const m of messages.sort((a, b) => (newer(a.id, b.id) ? 1 : -1))) {
         if (used() >= MAX_CALLS - 6) break; // plus de place : la suite à la prochaine exécution
         c.cursor = m.id;
         if (m.author && m.author.bot) continue;
+        if (answered.has(m.id)) continue;
         if (!ctx) ctx = await postContext(env);
         try {
           if (c.kind === 'convert') external += await convertMessage(env, ctx, c, m);

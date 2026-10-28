@@ -117,10 +117,18 @@ export function withDb(env) {
   if (!env.TURSO_URL || !env.TURSO_TOKEN) return env;
   const shared = { calls: 0 };
   // MAIN_DB = "d1" : la 1re base Turso est mise de côté (ex. quota de lectures du mois atteint, lectures bloquées) ;
+  // (Quota d'écritures du jour de D1 épuisé : les écritures sont ignorées au lieu de faire planter le bot ; voir d1Statement.)
   // réglages et items Weidian dans D1 (gratuit, 5 M lectures/jour), Taobao et 1688 toujours dans la 2e base Turso.
   if (env.MAIN_DB === 'd1') {
     const d1 = env.DB;
-    const main = { isD1: true, rowsRead: 0, get calls() { return shared.calls; }, prepare: (sql) => d1.prepare(sql), batch: (list) => d1.batch(list) };
+    const main = {
+      isD1: true, rowsRead: 0, get calls() { return shared.calls; },
+      prepare: (sql) => d1Statement(d1.prepare(sql), WRITE.test(sql)),
+      batch: (list) => d1.batch(list.map((x) => x.inner || x)).catch((err) => {
+        if (!writesFull(err)) throw err;
+        return list.map(() => ({ results: [], meta: { rows_written: 0, skipped: true } }));
+      }),
+    };
     const extra = { DB: main };
     if (env.TURSO2_URL && env.TURSO2_TOKEN) extra.DB2 = tursoDb(env.TURSO2_URL, env.TURSO2_TOKEN, shared);
     return Object.assign(Object.create(env), extra);
@@ -128,4 +136,26 @@ export function withDb(env) {
   const extra = { DB: tursoDb(env.TURSO_URL, env.TURSO_TOKEN, shared) };
   if (env.TURSO2_URL && env.TURSO2_TOKEN) extra.DB2 = tursoDb(env.TURSO2_URL, env.TURSO2_TOKEN, shared);
   return Object.assign(Object.create(env), extra);
+}
+
+// D1 gratuit : 100 000 lignes écrites par jour. Quota épuisé → une écriture ne fait rien (résultat vide) au lieu de
+// lever une erreur : le bot continue de lire et de répondre jusqu'à minuit UTC.
+const WRITE = /^\s*(INSERT|UPDATE|DELETE|REPLACE)\b/i;
+const writesFull = (err) => /daily row write limit|exceeded D1's free tier/i.test(String(err && err.message || err));
+
+function d1Statement(stmt, write) {
+  if (!write) return stmt;
+  const guard = (p, empty) => p.catch((err) => {
+    if (!writesFull(err)) throw err;
+    console.log('D1 : quota d\'écritures du jour atteint, écriture ignorée');
+    return empty;
+  });
+  return {
+    inner: stmt,
+    bind: (...args) => d1Statement(stmt.bind(...args), true),
+    run: () => guard(stmt.run(), { results: [], meta: { rows_written: 0, skipped: true } }),
+    all: () => guard(stmt.all(), { results: [], meta: { rows_written: 0, skipped: true } }),
+    first: (col) => guard(stmt.first(col), null),
+    raw: (o) => guard(stmt.raw(o), []),
+  };
 }

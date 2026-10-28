@@ -47,7 +47,7 @@ async function allowed(env) {
     console.log('compteur IA', String(err).slice(0, 100));
     return { used: 0 };
   });
-  return row && row.used <= (env.GROQ_API_KEY ? AIQC_PER_DAY_GROQ : AIQC_PER_DAY);
+  return !row || row.used <= (env.GROQ_API_KEY ? AIQC_PER_DAY_GROQ : AIQC_PER_DAY); // pas de compteur (écritures bloquées) : on laisse passer
 }
 
 // Une analyse qui n'a pas pu se faire (IA saturée) ne compte pas dans la limite du jour.
