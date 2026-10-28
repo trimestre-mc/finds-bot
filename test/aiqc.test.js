@@ -27,10 +27,10 @@ test('analyse IA des QC : résultat lisible, gardé en cache, limite du jour', a
   const first = await qcAnalysis(env, photos);
   assert.equal(first.result.verdict, 'a_verifier');
   assert.equal(first.result.article, 'Nike Tech Fleece Shorts');
-  assert.equal(calls, 4); // identification de l'article + une analyse par photo (2) + la fusion
+  assert.equal(calls, 3); // identification de l'article + une analyse pour toutes les photos + la fusion
   const again = await qcAnalysis(env, photos);
   assert.equal(again.cached, true);
-  assert.equal(calls, 4); // en cache : aucun appel de plus
+  assert.equal(calls, 3); // en cache : aucun appel de plus
   const view = JSON.stringify(analysisView({}, first, { title: 'Nike Tech Fleece Shorts', photos }));
   assert.match(view, /Quelques points à vérifier/);
   assert.match(view, /⚠️ Photo 2 : fil qui dépasse/);
