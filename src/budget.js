@@ -13,9 +13,11 @@ const SHARE = { items: 0.4, qcsync: 0.3, pages: 0.2, categorize: 0.1 };
 // la synchro du catalogue FinderQC.
 const SHARE_DB2 = { items: 0.05, qcsync: 0.85, pages: 0, categorize: 0.1 };
 // Les budgets agrandis ne valent que si Turso est réellement branché (sinon retour aux limites de D1).
-const cap = (env, kind) => (env.TURSO_URL && Number(env[`BUDGET_${kind.toUpperCase()}`])) || CAPS[kind];
+// (Base D1 en base principale, voir MAIN_DB dans turso.js : budgets de D1.)
+const turso = (env) => env.TURSO_URL && !(env.DB && env.DB.isD1);
+const cap = (env, kind) => (turso(env) && Number(env[`BUDGET_${kind.toUpperCase()}`])) || CAPS[kind];
 // Plafond mensuel (lignes estimées) : on garde une marge pour les posts, clics et QC, qui ne sont pas budgétés.
-const monthCap = (env) => (env.TURSO_URL && Number(env.BUDGET_MONTH_ROWS)) || 0;
+const monthCap = (env) => (turso(env) && Number(env.BUDGET_MONTH_ROWS)) || 0;
 
 // Part du jour : ce qui restait du mois ce matin, divisé par les jours restants (aujourd'hui compris).
 export function dailyRows(capRows, startRows, date = new Date()) {
@@ -37,7 +39,7 @@ export function rowsWritten(results) {
 
 // Plafond de LECTURES du mois (Turso gratuit : 500 M). Au-delà, plus de travail de fond : il reste de quoi
 // répondre sur Discord jusqu'au 1er du mois suivant.
-const readsCap = (env) => (env.TURSO_URL && Number(env.READS_MONTH_CAP)) || 0;
+const readsCap = (env) => (turso(env) && Number(env.READS_MONTH_CAP)) || 0;
 
 export async function readsOver(env) {
   if (!readsCap(env)) return false;

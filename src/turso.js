@@ -116,6 +116,15 @@ export function tursoDb(url, token, shared = { calls: 0 }) {
 export function withDb(env) {
   if (!env.TURSO_URL || !env.TURSO_TOKEN) return env;
   const shared = { calls: 0 };
+  // MAIN_DB = "d1" : la 1re base Turso est mise de côté (ex. quota de lectures du mois atteint, lectures bloquées) ;
+  // réglages et items Weidian dans D1 (gratuit, 5 M lectures/jour), Taobao et 1688 toujours dans la 2e base Turso.
+  if (env.MAIN_DB === 'd1') {
+    const d1 = env.DB;
+    const main = { isD1: true, rowsRead: 0, get calls() { return shared.calls; }, prepare: (sql) => d1.prepare(sql), batch: (list) => d1.batch(list) };
+    const extra = { DB: main };
+    if (env.TURSO2_URL && env.TURSO2_TOKEN) extra.DB2 = tursoDb(env.TURSO2_URL, env.TURSO2_TOKEN, shared);
+    return Object.assign(Object.create(env), extra);
+  }
   const extra = { DB: tursoDb(env.TURSO_URL, env.TURSO_TOKEN, shared) };
   if (env.TURSO2_URL && env.TURSO2_TOKEN) extra.DB2 = tursoDb(env.TURSO2_URL, env.TURSO2_TOKEN, shared);
   return Object.assign(Object.create(env), extra);

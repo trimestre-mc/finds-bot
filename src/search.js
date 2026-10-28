@@ -152,7 +152,8 @@ async function rankedIds(env, params, money) {
   // Lecture bornée : au plus les SCAN_ROWS items les plus vendus (3 000 si le quota de lectures du mois est atteint).
   // Chaque base du catalogue lit sa moitié, avec son propre quota.
   const parts = await Promise.all(perDb(env).map(async (e) => {
-    const scan = (await readsOver(e)) ? 3000 : SCAN_ROWS;
+    // D1 (5 M lectures/jour) : 20 000 lignes au plus par recherche.
+    const scan = (await readsOver(e)) ? 3000 : e.DB.isD1 ? 20000 : SCAN_ROWS;
     return (await e.DB.prepare(
       `SELECT id, title_en, title_zh, shop_name, category, popularity, first_seen, price_cny FROM (
          SELECT * FROM items INDEXED BY items_popularity ORDER BY popularity DESC, first_seen DESC LIMIT ?

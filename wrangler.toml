@@ -42,6 +42,8 @@ BUDGET_ITEMS = "200000"
 BUDGET_PAGES = "200000"
 BUDGET_CATEGORIZE = "200000"
 BUDGET_QCSYNC = "200000"
+# Base principale : "turso" (normal) ou "d1" (1re base Turso mise de côté, voir src/turso.js).
+MAIN_DB = "d1"  # 28/10/2026 : lectures de la 1re base bloquées par Turso jusqu'au 1er novembre
 READS_MONTH_CAP = "480000000"  # Turso gratuit : 500 M lignes lues / mois ; au-delà, plus de travail de fond
 BUDGET_MONTH_ROWS = "9000000"  # Turso gratuit : 10 M lignes écrites / mois, marge pour posts, clics et traductions
 

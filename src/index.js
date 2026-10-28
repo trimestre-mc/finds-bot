@@ -879,6 +879,25 @@ async function handleApi(request, env, url) {
   // Aperçu du rapport du jour (sans l'envoyer).
   if (path === '/api/report' && request.method === 'GET') return json({ ok: true, components: await dailyReport(env) });
 
+  // Remise en place de salons surveillés (ex. après un changement de base) : { channels: [{ table, channel_id }] }.
+  // Le serveur de chaque salon est demandé à Discord ; seuls les messages postés à partir de maintenant comptent.
+  if (path === '/api/restore-channels' && request.method === 'POST') {
+    const body = await request.json();
+    const tables = new Set(['image_channels', 'convert_channels', 'aiqc_channels', 'qc_channels']);
+    const done = [];
+    for (const c of (body.channels || []).slice(0, 20)) {
+      if (!tables.has(c.table) || !/^\d{5,25}$/.test(String(c.channel_id))) continue;
+      const ch = await discordApi(env, 'GET', `/channels/${c.channel_id}`).catch(() => null);
+      if (!ch || !ch.guild_id) continue;
+      const cols = c.table === 'qc_channels' ? '(channel_id, guild_id)' : '(channel_id, guild_id, added_at)';
+      const vals = c.table === 'qc_channels' ? '(?, ?)' : '(?, ?, ?)';
+      const binds = c.table === 'qc_channels' ? [c.channel_id, ch.guild_id] : [c.channel_id, ch.guild_id, Date.now()];
+      await env.DB.prepare(`INSERT OR IGNORE INTO ${c.table} ${cols} VALUES ${vals}`).bind(...binds).run();
+      done.push(`${c.table}:${ch.name}`);
+    }
+    return json({ ok: true, done });
+  }
+
   // Diagnostic : état de chaque base du catalogue (taille approchée par le dernier rowid, compteurs du mois).
   if (path === '/api/db-stats' && request.method === 'GET') {
     return json(await Promise.all(itemDbs(env).map(async (db, i) => {
