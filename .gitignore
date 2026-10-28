@@ -3,3 +3,4 @@ node_modules/
 .dev.vars
 .secrets
 indexer/node_modules/
+wrangler.ci.toml

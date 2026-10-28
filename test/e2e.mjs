@@ -5,7 +5,7 @@
 import { spawn, execSync } from 'node:child_process';
 import { generateKeyPairSync, sign } from 'node:crypto';
 import { createServer } from 'node:http';
-import { writeFileSync, rmSync } from 'node:fs';
+import { writeFileSync, rmSync, readFileSync } from 'node:fs';
 
 const ROOT = new URL('..', import.meta.url).pathname;
 const WORKER = 'http://localhost:8787';
@@ -89,7 +89,14 @@ const sql = (q) => JSON.parse(sh(`npx wrangler d1 execute finds-bot --local --js
 // Requête contenant des guillemets doubles (JSON) : passée par un fichier.
 const sqlFile = (q) => { const f = ROOT + '.wrangler/e2e.sql'; writeFileSync(f, q); sh(`npx wrangler d1 execute finds-bot --local --file ${f}`); };
 
-const dev = spawn('npx', ['wrangler', 'dev', '--port', '8787', '--test-scheduled', '--var', 'LIVE_SEARCH:0', '--var', 'GATEWAY_OFF:1'], { cwd: ROOT, stdio: ['ignore', 'pipe', 'pipe'] });
+// Sur GitHub (CI) : sans le lien vers l'IA de Cloudflare, qui demanderait une clé d'API (le bot fonctionne sans IA).
+const devArgs = ['wrangler', 'dev', '--port', '8787', '--test-scheduled', '--var', 'LIVE_SEARCH:0', '--var', 'GATEWAY_OFF:1'];
+if (process.env.CI) {
+  const conf = readFileSync(ROOT + 'wrangler.toml', 'utf8').replace(/\n\[ai\]\nbinding = "AI"\n/, '\n');
+  writeFileSync(ROOT + 'wrangler.ci.toml', conf);
+  devArgs.push('--config', 'wrangler.ci.toml');
+}
+const dev = spawn('npx', devArgs, { cwd: ROOT, stdio: ['ignore', 'pipe', 'pipe'] });
 let devLog = '';
 dev.stdout.on('data', (d) => (devLog += d));
 dev.stderr.on('data', (d) => (devLog += d));
