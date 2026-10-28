@@ -44,10 +44,8 @@ export async function discordApi(env, method, path, body) {
   for (let attempt = 0; attempt < 3; attempt++) {
     const res = await fetch((env.DISCORD_API || DEFAULT_API) + path, {
       method,
-      headers: {
-        Authorization: `Bot ${env.DISCORD_BOT_TOKEN}`,
-        'Content-Type': 'application/json',
-      },
+      // Content-Type seulement avec un corps : Discord refuse une requête sans corps annoncée en JSON (ex. DELETE).
+      headers: body ? { Authorization: `Bot ${env.DISCORD_BOT_TOKEN}`, 'Content-Type': 'application/json' } : { Authorization: `Bot ${env.DISCORD_BOT_TOKEN}` },
       body: body ? JSON.stringify(body) : undefined,
     });
     if (res.status === 429) {

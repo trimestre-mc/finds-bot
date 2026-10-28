@@ -146,7 +146,11 @@ async function handleScheduled(event, env, ctx) {
       if (!over) await runQcChannels(env).catch((e) => console.log('salons QC', String(e)));
     })());
     // Nouveau serveur ajouté : MP d'approbation au propriétaire (guilds.js).
-    ctx.waitUntil(import('./guilds.js').then(({ checkNewGuilds }) => checkNewGuilds(env)).catch((e) => console.log('serveurs', String(e).slice(0, 120))));
+    // Dans une exécution à part : la synchro ci-dessus prend presque toute la limite de requêtes de celle-ci.
+    if (env.SELF) {
+      ctx.waitUntil(env.SELF.fetch('https://finds-bot/api/guilds/check', { method: 'POST', headers: { Authorization: `Bearer ${env.INDEXER_SECRET}` } })
+        .catch((e) => console.log('serveurs', String(e).slice(0, 120))));
+    }
     // Toutes les 15 min : copie d'une tranche du catalogue dans l'index de recherche (Neon), dans une exécution à part
     // (son propre quota de requêtes).
     // Toutes les 3 min : marque lue sur la photo de quelques items populaires sans marque dans le titre.

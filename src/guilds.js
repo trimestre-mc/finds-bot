@@ -42,8 +42,10 @@ export async function checkNewGuilds(env) {
   let sent = 0;
   for (const g of guilds) {
     if (ok.has(g.id) || pending.has(g.id)) continue;
+    // Marqué « signalé » seulement si le MP est bien parti (sinon, nouvel essai au prochain passage).
+    const ok2 = await dmOwner(env, g).then(() => true).catch((err) => { console.log('approbation (MP)', String(err).slice(0, 120)); return false; });
+    if (!ok2) continue;
     await redis(env, [['SADD', 'guilds:pending', g.id]]);
-    await dmOwner(env, g).catch((err) => console.log('approbation (MP)', String(err).slice(0, 120)));
     sent++;
   }
   return sent;
