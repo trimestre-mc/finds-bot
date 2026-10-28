@@ -67,6 +67,8 @@ export async function homeView(env, it, msg, ctx = null) {
     loadEmojis(env),
   ]);
   const e = (n) => etxt(emojis, n);
+  // Propriétaire du bot : onglets « Pub » et « Serveurs du bot » en plus.
+  const owner = !!env.AGENTS_OWNER_ID && !!it && ((it.member && it.member.user && it.member.user.id) || (it.user && it.user.id)) === env.AGENTS_OWNER_ID;
   // Bouton avec un emoji du bot (Unicode de secours).
   const b = (name, label, id, style = Style.SECONDARY) => btn(label, id, style, { emoji: emo(emojis, name) });
   const money = await getRate(env);
@@ -114,8 +116,8 @@ export async function homeView(env, it, msg, ctx = null) {
     ),
     row(b('fb_bot', 'Publier le guide ici', 'guide:post'), b('fb_coupon', 'Publier /coupon ici', 'coupon:post'),
       // Onglet « Pub » (MP aux rôles choisis) : visible seulement par le propriétaire du bot.
-      env.AGENTS_OWNER_ID && it && ((it.member && it.member.user && it.member.user.id) || (it.user && it.user.id)) === env.AGENTS_OWNER_ID
-        ? b('fb_bell', 'Pub (bêta)', 'ad:open') : null),
+      owner ? b('fb_bell', 'Pub (bêta)', 'ad:open') : null,
+      owner ? b('fb_shop', 'Serveurs du bot', 'srv:open') : null),
   ])];
 }
 

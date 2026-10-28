@@ -280,6 +280,12 @@ async function isAdmin(env, it) {
 async function onComponent(it, env, ctx) {
   const [a, b, c, d] = it.data.custom_id.split(':');
   const values = it.data.values || [];
+  if (a === 'srv') {
+    // Serveurs du bot (propriétaire seulement), voir servers.js.
+    const { handleServersComponent } = await import('./servers.js');
+    const out = await handleServersComponent(it, env, b, c, values);
+    if (out) return out;
+  }
   if (a === 'ad') {
     // Onglet « Pub » (bêta, propriétaire seulement), voir pub.js.
     const { handlePubComponent } = await import('./pub.js');
