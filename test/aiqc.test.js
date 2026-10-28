@@ -99,3 +99,12 @@ test('Groq d\'abord (score sur 10, photos à demander), Cloudflare en secours si
   assert.ok(fallback.result, 'analyse faite par Cloudflare');
   assert.ok(cf > 0);
 });
+
+test('points d\'expert par marque : la bonne marque, plusieurs logos officiels acceptés', async () => {
+  const { qcGuide } = await import('../src/qcguide.js');
+  assert.match(qcGuide('BAPE hoodie camouflage bleu'), /têtes de singe/);
+  assert.match(qcGuide('Supreme hoodie gris'), /Ne pénalise pas l'absence de box logo/);
+  assert.match(qcGuide('Air Jordan 4'), /Jumpman/);
+  assert.match(qcGuide('article inconnu'), /plusieurs logos officiels/);
+  assert.doesNotMatch(qcGuide('article inconnu'), /Supreme|BAPE/);
+});

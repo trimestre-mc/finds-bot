@@ -1,6 +1,8 @@
 // Lecture d'une photo par un modèle de vision gratuit (Workers AI) : marque (logo, étiquette), modèle et type
 // d'article. Complète la recherche par image de FinderQC, qui compare les formes mais rate souvent la marque.
 
+import { qcGuide } from './qcguide.js';
+
 export const VISION_MODEL = '@cf/meta/llama-4-scout-17b-16e-instruct';
 
 const BRAND_CUES = 'Iconic designs: Chrome Hearts = gothic/fleur crosses, daggers, horseshoe, "Made in Hollywood"; Supreme = red box logo, ' +
@@ -164,6 +166,7 @@ Ne dis « net », « centré » ou « conforme » que si c'est vraiment visible 
 IGNORE ce que l'agent ajoute à la photo : filigrane, QR code, logo de l'agent (ex. BBDBuy), texte chinois de l'entrepôt, règle graduée, autocollant ou carton de taille posé sur l'article. Ce ne sont pas des défauts du produit.
 « probleme » seulement pour un défaut réellement visible ; un doute ou une chose à confirmer = « attention ».
 Vérifie aussi : défauts (taches, trous, fils qui dépassent, colle), coutures, symétrie, couleur${ctx.ref ? ' par rapport à la photo du vendeur' : ''}, étiquettes, finitions, forme.
+${qcGuide(ctx.what)}
 Points d'expert selon le type d'article :
 - Chaussures : forme du bout et du talon, symétrie des deux pieds, traces de colle, coutures, logo de semelle et de languette, étiquette intérieure (taille, code).
 - Hauts (t-shirt, sweat, veste) : logo/brodé/imprimé (netteté, centrage), cordons et œillets, poignets et bas, étiquettes de col et de lavage.
@@ -265,7 +268,7 @@ export async function analyzeQc(env, photos, { ref = null, what = null, model = 
           + 'Liste les photos importantes qui manquent pour ce type d\'article (ex : étiquette intérieure, profil, semelle, dos, logo de près, couture de près), seulement si elles manquent vraiment. '
           + 'Réponds UNIQUEMENT en JSON : {"article": "marque + type, 5 mots max (ex : Supreme hoodie gris, Air Jordan 4) ou null", "verdict": "ok" ou "a_verifier" ou "probleme", '
           + '"note": nombre de 0 à 10, "points": [{"etat": "ok" ou "attention" ou "probleme", "texte": "phrase courte"}], "manque": ["photo à demander, 6 mots max"], "conseil": "une phrase"}. 3 à 6 points. /no_think' },
-        { role: 'user', content: JSON.stringify(observations) },
+        { role: 'user', content: `${qcGuide([what, ...observations.map((o) => o.article)].filter(Boolean).join(' '))}\nObservations : ${JSON.stringify(observations)}` },
       ],
     });
     merged = parseFirstObject(res.text);
