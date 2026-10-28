@@ -7,7 +7,7 @@ import { perDb, allRows, itemsWhereIds } from './shard.js';
 import { translate } from './translate.js';
 import { detectCategory } from './categories.js';
 import { cacheGet, cacheSet, logEvent } from './kvstore.js';
-import { searchIndexReady, indexSearch, fuzzySearch } from './searchindex.js';
+import { searchIndexReady, indexSearch, fuzzySearch, indexList } from './searchindex.js';
 
 export const PAGE_SIZE = 5;
 export const MAX_BULK = 500;
@@ -166,8 +166,10 @@ async function rankedIds(env, params, money, indexed = false) {
     // D1 (5 M lectures/jour) : 20 000 lignes au plus par recherche.
     const scan = (await readsOver(e)) ? 3000 : e.DB.isD1 ? 20000 : SCAN_ROWS;
     return (await e.DB.prepare(
+      // Secours si l'index de recherche (Neon) ne répond pas : les items les plus récents (ordre d'arrivée, sans
+      // index en plus, voir schema.sql).
       `SELECT id, title_en, title_zh, shop_name, category, popularity, first_seen, price_cny FROM (
-         SELECT * FROM items INDEXED BY items_popularity ORDER BY popularity DESC, first_seen DESC LIMIT ?
+         SELECT * FROM items ORDER BY rowid DESC LIMIT ?
        ) ${w.sql} LIMIT 5000`,
     ).bind(scan, ...w.binds).all()).results;
   }));
@@ -193,24 +195,47 @@ function rankRows(results, params) {
 }
 
 async function plainIds(env, params, money) {
+  // Listes (catégorie, nouveautés, baisses de prix…) : dans l'index de recherche Neon, sans lire les bases ni avoir
+  // besoin de leurs index de popularité et de catégorie (retirés pour écrire moins par item, voir schema.sql).
+  if (await searchIndexReady(env).catch(() => false)) {
+    const rows = await indexList(env, params, money);
+    if (rows) {
+      let ids = rows.map((r) => r.id);
+      // L'index est mis à jour une fois par jour : « déjà posté » et « masqué » revérifiés dans les bases.
+      if (!params.includePosted || ids.length) ids = await stillListable(env, ids.slice(0, MAX_BULK * 2), !params.includePosted);
+      return ids.slice(0, MAX_BULK);
+    }
+  }
   const w = where(params, money);
   if ((params.category || params.autoCategory) && (!params.sort || params.sort === 'popular') && !params.latest) {
     // Catégorie, les plus vendus d'abord (salons par catégorie, drops) : on parcourt l'index de popularité et on
     // s'arrête aux MAX_BULK premiers de la catégorie, au lieu de lire toute la catégorie (jusqu'à ~100 000 lignes).
     const results = await allRows(env,
-      `SELECT id, popularity, first_seen, price_cny FROM items INDEXED BY items_popularity ${w.sql} ORDER BY popularity DESC, first_seen DESC LIMIT ?`,
+      `SELECT id, popularity, first_seen, price_cny FROM items ${w.sql} ORDER BY popularity DESC, first_seen DESC LIMIT ?`,
       ...w.binds, MAX_BULK);
     return sortRows(results, params).slice(0, MAX_BULK).map((r) => r.id);
   }
   if (params.category || params.autoCategory) {
     // Autres tris dans une catégorie : on lit seulement cette catégorie (index), puis on trie ici.
-    const results = await allRows(env, `SELECT id, popularity, first_seen, price_cny FROM items INDEXED BY items_category ${w.sql}`, ...w.binds);
+    const results = await allRows(env, `SELECT id, popularity, first_seen, price_cny FROM items ${w.sql}`, ...w.binds);
     return sortRows(results, params).slice(0, MAX_BULK).map((r) => r.id);
   }
   // Les meilleurs de chaque base, puis fusion dans l'ordre demandé.
   const results = await allRows(env, `SELECT id, popularity, first_seen, price_cny FROM items ${w.sql} ORDER BY ${order(params)} LIMIT ?`,
     ...w.binds, MAX_BULK);
   return sortRows(results, params).slice(0, MAX_BULK).map((r) => r.id);
+}
+
+// Items encore proposables (pas masqués, et pas déjà postés si unposted), dans l'ordre donné. Par paquets de 90
+// (limite de paramètres d'une requête D1).
+async function stillListable(env, ids, unposted) {
+  const ok = new Set();
+  for (let i = 0; i < ids.length; i += 90) {
+    const rows = await itemsWhereIds(env, ids.slice(i, i + 90), 'id', unposted ? 'hidden = 0 AND posted_count = 0' : 'hidden = 0').catch(() => null);
+    if (!rows) return ids; // base illisible : on garde la liste de l'index
+    for (const r of rows) ok.add(r.id);
+  }
+  return ids.filter((id) => ok.has(id));
 }
 
 function sortRows(rows, params) {

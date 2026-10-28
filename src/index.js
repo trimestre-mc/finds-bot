@@ -1000,6 +1000,26 @@ async function handleApi(request, env, url) {
     return json({ ok: true, guilds: out });
   }
 
+  // Moins d'écritures par item : retire des bases Turso les index devenus inutiles (popularité, catégorie ; la recherche
+  // et les listes passent par Neon). À lancer sur chaque base Turso, dont la base 1 au retour sur Turso.
+  if (path === '/api/db/slim' && request.method === 'POST') {
+    const { tursoDb } = await import('./turso.js');
+    const dbs = [];
+    if (env.TURSO_URL && env.TURSO_TOKEN) dbs.push(['base 1', tursoDb(env.TURSO_URL, env.TURSO_TOKEN, { calls: 0 })]);
+    if (env.DB2 && !env.DB2.isD1) dbs.push(['base 2', env.DB2]);
+    const out = {};
+    for (const [name, db] of dbs) {
+      try {
+        await db.prepare('DROP INDEX IF EXISTS items_popularity').run();
+        await db.prepare('DROP INDEX IF EXISTS items_category').run();
+        out[name] = 'ok';
+      } catch (err) {
+        out[name] = String(err.message || err).slice(0, 160);
+      }
+    }
+    return json({ ok: true, ...out });
+  }
+
   // Copie de secours du contexte des cartes (agents, réglages) dans Upstash, utilisée si la base est illisible.
   if (path === '/api/ctx-cache' && request.method === 'POST') {
     const { kvSet } = await import('./kvstore.js');

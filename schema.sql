@@ -52,8 +52,9 @@ CREATE TABLE IF NOT EXISTS items (
 );
 CREATE INDEX IF NOT EXISTS items_shop ON items(shop_id);
 CREATE INDEX IF NOT EXISTS items_untranslated ON items(title_en) WHERE title_en IS NULL;
-CREATE INDEX IF NOT EXISTS items_popularity ON items(popularity DESC, first_seen DESC);
-CREATE INDEX IF NOT EXISTS items_category ON items(category);
+-- Pas d'index de popularité ni de catégorie (retirés le 28/10/2026) : la recherche et les listes (catégories,
+-- nouveautés, baisses de prix) passent par l'index de recherche Neon (searchindex.js). Chaque index coûtait des
+-- écritures pour chaque item ajouté ou modifié (quota d'écritures de Turso).
 -- Pas d'index « sans photo », « sans catégorie » ni « récents » : chacun coûtait des écritures pour chaque item
 -- (quota Turso) ; les tâches passent par l'index de popularité, l'index de catégorie ou l'ordre d'arrivée (rowid).
 CREATE INDEX IF NOT EXISTS items_qcdue ON items(qc_checked_at) WHERE popularity > 0 OR posted_count > 0 OR manual = 1;

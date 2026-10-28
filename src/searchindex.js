@@ -214,3 +214,22 @@ export async function scanBrands(env) {
   }
   return found.length;
 }
+
+// Liste triée (catégorie, nouveautés, baisses de prix, prix…) dans l'index : jusqu'à 1 000 items. null si Neon ne
+// répond pas.
+const LIST_ORDER = {
+  popular: 'popularity DESC, first_seen DESC',
+  recent: 'first_seen DESC NULLS LAST',
+  price_asc: 'price ASC NULLS LAST',
+  price_desc: 'price DESC NULLS LAST',
+};
+export async function indexList(env, params, money) {
+  const w = neonWhere(params, money);
+  const sort = params.sort && LIST_ORDER[params.sort] ? params.sort : params.latest ? 'recent' : 'popular';
+  try {
+    return (await neon(env, `SELECT ${COLS} FROM items_search ${w.sql} ORDER BY ${LIST_ORDER[sort]} LIMIT 1000`, w.binds)).map(num);
+  } catch (err) {
+    console.log('index de recherche (liste)', String(err).slice(0, 160));
+    return null;
+  }
+}
