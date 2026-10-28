@@ -12,6 +12,7 @@ import { formatMoney, getConfig, getSignup, getCoupon, SIGNUP_COLORS } from './c
 import { communityQc, qcSummary } from './qc.js';
 import { countAll, allRows } from './shard.js';
 import { loadEmojis, etxt, emo } from './emojis.js';
+import { kvGet, kvSet } from './kvstore.js';
 
 export const QUEUE_PER_MINUTE = POSTS_PER_MINUTE;
 const SHOPS_PER_PAGE = 6;
@@ -24,24 +25,40 @@ const backHome = () => emojiBtn('🏠', 'Menu', 'home');
 
 // ---------------------------------------------------------------- Accueil
 
-// Comptages sur toute la table des items (~500 000 lignes lues chacun) : recalculés au plus une fois par heure.
+// Comptages sur tout le catalogue : gardés une heure dans Upstash (la base peut refuser les écritures), calculés dans
+// l'index de recherche Neon (aucune limite de lectures) ; dans les bases seulement si l'index n'est pas prêt. Le 28/10,
+// ces COUNT(*) recalculés à chaque /menu ont lu 11 M de lignes D1 en une journée (quota : 5 M).
 export async function bigCounts(env) {
-  const row = await env.DB.prepare("SELECT value FROM settings WHERE key = 'big_counts'").first();
-  try {
-    const c = row && JSON.parse(row.value);
-    // Petite base : comptages peu coûteux, toujours à jour.
-    if (c && c.items > 50000 && Date.now() - c.at < 3600000) return c;
-  } catch {}
-  const n = (sql, ...b) => countAll(env, sql, ...b);
-  const [items, visible, noPhoto, untranslated, drops] = await Promise.all([
-    n('SELECT COUNT(*) AS n FROM items'),
-    n('SELECT COUNT(*) AS n FROM items WHERE hidden = 0'),
-    n("SELECT COUNT(*) AS n FROM items WHERE platform = 'weidian' AND images IS NULL"),
-    n('SELECT COUNT(*) AS n FROM items WHERE title_en IS NULL AND translate_failed < 3'),
-    n('SELECT COUNT(*) AS n FROM items WHERE hidden = 0 AND prev_price > price_cny AND price_changed_at > ?', Date.now() - 14 * 86400000),
-  ]);
-  const c = { at: Date.now(), items, visible, noPhoto, untranslated, drops };
-  await env.DB.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('big_counts', ?)").bind(JSON.stringify(c)).run();
+  let kept = null;
+  try { kept = JSON.parse(await kvGet(env, 'big_counts') || 'null'); } catch {}
+  if (!kept) {
+    const row = await env.DB.prepare("SELECT value FROM settings WHERE key = 'big_counts'").first().catch(() => null);
+    try { kept = row && JSON.parse(row.value); } catch {}
+  }
+  if (kept && Date.now() - kept.at < 3600000) return kept;
+  let c = null;
+  const { searchIndexReady } = await import('./searchindex.js');
+  if (await searchIndexReady(env).catch(() => false)) {
+    const { neon } = await import('./kvstore.js');
+    const [r] = await neon(env, `SELECT count(*) AS items, count(*) FILTER (WHERE hidden = 0) AS visible,
+        count(*) FILTER (WHERE title_en IS NULL) AS untranslated,
+        count(*) FILTER (WHERE hidden = 0 AND prev_price > price AND price_changed_at > $1) AS drops FROM items_search`, [Date.now() - 14 * 86400000]).catch(() => [null]);
+    // Sans photo : seulement connu des bases (gardé du dernier comptage).
+    if (r) c = { at: Date.now(), items: Number(r.items), visible: Number(r.visible), noPhoto: kept ? kept.noPhoto : 0, untranslated: Number(r.untranslated), drops: Number(r.drops) };
+  }
+  if (!c) {
+    const n = (sql, ...b) => countAll(env, sql, ...b);
+    const [items, visible, noPhoto, untranslated, drops] = await Promise.all([
+      n('SELECT COUNT(*) AS n FROM items'),
+      n('SELECT COUNT(*) AS n FROM items WHERE hidden = 0'),
+      n("SELECT COUNT(*) AS n FROM items WHERE platform = 'weidian' AND images IS NULL"),
+      n('SELECT COUNT(*) AS n FROM items WHERE title_en IS NULL AND translate_failed < 3'),
+      n('SELECT COUNT(*) AS n FROM items WHERE hidden = 0 AND prev_price > price_cny AND price_changed_at > ?', Date.now() - 14 * 86400000),
+    ]);
+    c = { at: Date.now(), items, visible, noPhoto, untranslated, drops };
+  }
+  await kvSet(env, 'big_counts', JSON.stringify(c), 7200);
+  await env.DB.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('big_counts', ?)").bind(JSON.stringify(c)).run().catch(() => {});
   return c;
 }
 
@@ -52,6 +69,7 @@ async function quickCounts(env, ctx) {
   const late = await Promise.race([fresh, new Promise((r) => setTimeout(() => r(null), 1800))]);
   if (late) return late;
   if (ctx) ctx.waitUntil(fresh.catch(() => {}));
+  try { const kept = JSON.parse(await kvGet(env, 'big_counts') || 'null'); if (kept) return kept; } catch {}
   const row = await env.DB.prepare("SELECT value FROM settings WHERE key = 'big_counts'").first().catch(() => null);
   try { if (row) return JSON.parse(row.value); } catch {}
   return { items: 0, visible: 0, noPhoto: 0, untranslated: 0, drops: 0 };

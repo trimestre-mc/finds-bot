@@ -58,6 +58,10 @@ export async function syncSearchIndex(env) {
       if (fresh.last) await kvSet(env, `sidx:tail:${tag}`, fresh.last);
     }
     let cursor = Number(await kvGet(env, `sidx:cursor:${tag}`)) || 0;
+    // Tour complet (prix, popularité, QC à jour) au plus une fois par jour : chaque tour relit toute la base, ce qui a
+    // épuisé le quota de lectures de D1 le 28/10. Entre deux tours, seulement les nouveaux items (ci-dessus).
+    const lastDone = Number(await kvGet(env, `sidx:done:${tag}`)) || 0;
+    if (!cursor && Date.now() - lastDone < 24 * 3600000) continue;
     for (let i = 0; i < PER_RUN - 1; i++) {
       const r = await copyRows(env, e, cursor);
       copied += r.n;
