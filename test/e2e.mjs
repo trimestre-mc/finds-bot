@@ -254,7 +254,8 @@ try {
   console.log('… traduction (3 passages du cron)');
   for (let i = 0; i < 3; i++) { await fetch(WORKER + '/__scheduled?cron=*+*+*+*+*'); await sleep(8000); }
   const translated = sql('SELECT COUNT(*) AS n FROM items WHERE title_en IS NOT NULL')[0].n;
-  if (!translated && /4006|daily free allocation/.test(devLog)) console.log('⚠️ titres traduits : quota IA du jour épuisé, non testable aujourd\'hui');
+  if (!translated && process.env.CI) console.log('⚠️ titres traduits : pas d\'IA sur GitHub, non testable ici');
+  else if (!translated && /4006|daily free allocation/.test(devLog)) console.log('⚠️ titres traduits : quota IA du jour épuisé, non testable aujourd\'hui');
   else check('titres traduits', translated > 0);
 
   const latest = await click('search:latest');

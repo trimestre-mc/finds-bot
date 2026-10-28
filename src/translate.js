@@ -11,6 +11,7 @@ const BATCH = 40; // plus de titres par appel : les consignes, envoyées à chaq
 
 export async function translate(env, text, from, to) {
   if (!text || !text.trim()) return '';
+  if (!env.AI) return text; // pas d'IA : texte tel quel
   const out = await env.AI.run(MT_MODEL, { text, source_lang: from, target_lang: to });
   return (out && out.translated_text ? out.translated_text : '').trim();
 }
@@ -136,6 +137,7 @@ export async function aiNeurons(env) {
 
 // Traduit un lot d'items sans titre anglais. Renvoie le nombre traduit.
 export async function translatePending(env, limit) {
+  if (!env.AI) return 0; // pas d'IA (ex. test sur GitHub) : les titres attendent
   const budget = await aiNeurons(env);
   if (budget.used >= TRANSLATE_NEURONS) return 0;
   const { results } = await env.DB.prepare(
