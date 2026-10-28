@@ -155,7 +155,15 @@ const QC_PROMPT = (ctx) => `Tu es un expert en contrôle qualité (QC) de vêtem
 ${ctx.ref ? `La PREMIÈRE image est la photo du vendeur (le produit attendu). La seconde est la photo QC n°${ctx.n || 1} (ce que l'agent a reçu).` : `L'image est la photo QC n°${ctx.n || 1} (ce que l'agent a reçu).`}
 ${ctx.what ? `Article : ${ctx.what}.` : ''}
 Pour reconnaître la marque, lis les logos avec soin (écriture gothique, logo en relief ou ton sur ton). Repères : ${BRAND_CUES}
-Vérifie ce qui est visible : défauts (taches, trous, fils qui dépassent, colle), coutures, symétrie, logo/imprimé (placement, netteté, alignement), couleur${ctx.ref ? ' par rapport à la photo du vendeur' : ''}, étiquettes, finitions, forme.
+Ce sont des reps : sois un contrôleur SÉVÈRE. Compare à ce que tu sais du VRAI produit de la marque (forme et police exactes du logo, matière, méthode d'impression, quincaillerie, proportions) et cherche activement les signes d'un mauvais batch :
+- matière bon marché (polyester brillant ou tissu fin au lieu de coton épais, aspect plastique) ;
+- impression floue, pixelisée, sublimée sur tout le vêtement, couleurs baveuses ;
+- logo ou police déformés (lettres mal dessinées, mauvaises proportions, mauvais espacement), motif de marque mal reproduit ;
+- fermeture éclair ou boutons génériques, coutures de travers, fils, colle, étiquettes absentes ou mal imprimées.
+Ne dis « net », « centré » ou « conforme » que si c'est vraiment visible et vérifié ; au moindre doute, mets « attention ».
+IGNORE ce que l'agent ajoute à la photo : filigrane, QR code, logo de l'agent (ex. BBDBuy), texte chinois de l'entrepôt, règle graduée, autocollant ou carton de taille posé sur l'article. Ce ne sont pas des défauts du produit.
+« probleme » seulement pour un défaut réellement visible ; un doute ou une chose à confirmer = « attention ».
+Vérifie aussi : défauts (taches, trous, fils qui dépassent, colle), coutures, symétrie, couleur${ctx.ref ? ' par rapport à la photo du vendeur' : ''}, étiquettes, finitions, forme.
 Points d'expert selon le type d'article :
 - Chaussures : forme du bout et du talon, symétrie des deux pieds, traces de colle, coutures, logo de semelle et de languette, étiquette intérieure (taille, code).
 - Hauts (t-shirt, sweat, veste) : logo/brodé/imprimé (netteté, centrage), cordons et œillets, poignets et bas, étiquettes de col et de lavage.
@@ -247,7 +255,13 @@ export async function analyzeQc(env, photos, { ref = null, what = null, model = 
           + 'supprime les doublons et les contradictions (un fait lu sur une photo l\'emporte sur « pas visible » sur une autre), pas de phrases vagues. '
           + 'Toutes les photos montrent le même article (gros plans + vue d\'ensemble) : n\'écris JAMAIS « deux articles différents » ; si une photo semble montrer autre chose, c\'est un gros plan du même article. La couleur peut varier avec la lumière. '
           + 'Ne confonds pas la pointure (ex : US 11) avec le modèle (ex : Air Jordan 4) ; le modèle vient du design, pas de l\'étiquette de taille. '
-          + 'Note la qualité visible de 0 à 10 (10 = parfait, 7 = petits défauts sans gravité, 4 ou moins = défaut à faire corriger ou retour). '
+          + 'Sois SÉVÈRE et honnête : les membres comptent sur toi pour éviter les mauvais batchs ; n\'invente aucune qualité. '
+          + 'Note de 0 à 10 : 9-10 = fidèle au vrai produit et aucun défaut ; 7-8 = petits défauts mineurs ; 5-6 = défauts visibles mais portable ; '
+          + '3-4 = mauvais batch (logo ou police faux, matière ou impression bon marché) ; 0-2 = défaut majeur ou article raté. '
+          + 'Un logo ou une police déformés, une matière ou une impression manifestement bon marché : note 4 au plus et verdict "probleme". '
+          + 'Plusieurs points « attention » sans preuve de bonne qualité : 6 au plus. '
+          + 'Ignore les points sur le filigrane, le QR code, le logo de l\'agent, la règle ou un autocollant de taille posé par l\'agent : ce ne sont pas des défauts. '
+          + 'Un doute (« à confirmer ») n\'est jamais un « probleme » : c\'est « attention ». '
           + 'Liste les photos importantes qui manquent pour ce type d\'article (ex : étiquette intérieure, profil, semelle, dos, logo de près, couture de près), seulement si elles manquent vraiment. '
           + 'Réponds UNIQUEMENT en JSON : {"article": "marque + type, 5 mots max (ex : Supreme hoodie gris, Air Jordan 4) ou null", "verdict": "ok" ou "a_verifier" ou "probleme", '
           + '"note": nombre de 0 à 10, "points": [{"etat": "ok" ou "attention" ou "probleme", "texte": "phrase courte"}], "manque": ["photo à demander, 6 mots max"], "conseil": "une phrase"}. 3 à 6 points. /no_think' },

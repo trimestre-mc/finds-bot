@@ -44,9 +44,21 @@ export async function bigCounts(env) {
   return c;
 }
 
-export async function homeView(env, it, msg) {
+// Discord exige une réponse en 3 s : les comptages attendent au plus 1,8 s, sinon les derniers chiffres connus
+// (le comptage finit en arrière-plan pour la prochaine fois).
+async function quickCounts(env, ctx) {
+  const fresh = bigCounts(env);
+  const late = await Promise.race([fresh, new Promise((r) => setTimeout(() => r(null), 1800))]);
+  if (late) return late;
+  if (ctx) ctx.waitUntil(fresh.catch(() => {}));
+  const row = await env.DB.prepare("SELECT value FROM settings WHERE key = 'big_counts'").first().catch(() => null);
+  try { if (row) return JSON.parse(row.value); } catch {}
+  return { items: 0, visible: 0, noPhoto: 0, untranslated: 0, drops: 0 };
+}
+
+export async function homeView(env, it, msg, ctx = null) {
   const [counts, shops, agents, queue, schedules] = await Promise.all([
-    bigCounts(env),
+    quickCounts(env, ctx),
     env.DB.prepare('SELECT COUNT(*) AS n FROM shops').first(),
     env.DB.prepare('SELECT COUNT(*) AS n FROM agents').first(),
     env.DB.prepare('SELECT COUNT(*) AS n FROM post_queue').first(),
