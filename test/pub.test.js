@@ -87,3 +87,37 @@ test('MP de pub : mentionne le membre (en haut, ou à la place de {user})', asyn
   assert.match(placed, /Hey <@123>, regarde ça/);
   assert.doesNotMatch(placed, /Salut <@123>/);
 });
+
+test('envoi de pub : journal par destinataire, compteurs, envoi terminé quand la file est vide', async () => {
+  const kv = { 'ad:job': JSON.stringify({ state: 'running', total: 2, draft: { text: 'Promo' } }), 'ad:queue': ['1', '2'], 'ad:log': [] };
+  globalThis.fetch = async (url, opts = {}) => {
+    const u = String(url);
+    if (u.startsWith('https://up.test')) {
+      return Response.json(JSON.parse(opts.body).map(([c, k, ...v]) => {
+        if (c === 'GET') return { result: Array.isArray(kv[k]) ? null : (kv[k] ?? null) };
+        if (c === 'SET') { kv[k] = v[0]; return { result: 'OK' }; }
+        if (c === 'DEL') { delete kv[k]; return { result: 1 }; }
+        if (c === 'LPOP') { const n = Number(v[0]) || 1; const out = (kv[k] || []).splice(0, n); return { result: out }; }
+        if (c === 'LPUSH') { kv[k] = [...v.reverse(), ...(kv[k] || [])]; return { result: kv[k].length }; }
+        if (c === 'LTRIM' || c === 'EXPIRE') return { result: 'OK' };
+        if (c === 'LLEN') return { result: (kv[k] || []).length };
+        if (c === 'INCRBY' || c === 'INCR') { kv[k] = String((Number(kv[k]) || 0) + Number(v[0] || 1)); return { result: Number(kv[k]) }; }
+        if (c === 'LRANGE') return { result: kv[k] || [] };
+        return { result: null };
+      }));
+    }
+    const body = opts.body ? JSON.parse(opts.body) : {};
+    if (u.endsWith('/users/@me/channels')) return Response.json({ id: `dm${body.recipient_id}` });
+    if (u.includes('/channels/dm2/messages')) return new Response('{"message":"Cannot send messages to this user","code":50007}', { status: 403 });
+    return Response.json({ id: 'm' });
+  };
+  const env = { UPSTASH_URL: 'https://up.test', UPSTASH_TOKEN: 't', DISCORD_API: 'https://discord.test', DB: { prepare: () => ({ first: async () => null }) } };
+  const { runPubQueue } = await import('../src/pub.js');
+  assert.equal(await runPubQueue(env), 1);
+  const log = kv['ad:log'].map((x) => JSON.parse(x));
+  assert.ok(log.some((l) => l.id === '1' && l.ok));
+  assert.ok(log.some((l) => l.id === '2' && !l.ok && l.why === 'MP fermés'));
+  assert.equal(kv['ad:sent'], '1');
+  assert.equal(kv['ad:failed'], '1');
+  assert.equal(JSON.parse(kv['ad:job']).state, 'done');
+});

@@ -6,7 +6,7 @@
 import { container, text, sep, row, btn, Style, escape, modal } from './components.js';
 import { discordApi } from './discord.js';
 import { panel, update, openModal, later, userId } from './respond.js';
-import { kvGet, kvSet, redis } from './kvstore.js';
+import { kvGet, kvSet, redis, logEvent } from './kvstore.js';
 import { loadEmojis, etxt, emo } from './emojis.js';
 
 const MAX_RECIPIENTS = 300; // bêta
@@ -73,14 +73,18 @@ export async function pubView(env, it, msg = null) {
   const emojis = await loadEmojis(env);
   const e = (n) => etxt(emojis, n);
   const [d, job0, counts] = await Promise.all([getDraft(env), getJob(env),
-    redis(env, [['SCARD', 'ad:optout'], ['LLEN', 'ad:queue'], ['LLEN', 'ad:pending'], ['GET', 'ad:sent'], ['GET', 'ad:failed']])]);
-  const [optout, queued, pending, sentN, failedN] = (counts || [0, 0, 0, 0, 0]).map((n) => Number(n) || 0);
+    redis(env, [['SCARD', 'ad:optout'], ['LLEN', 'ad:queue'], ['LLEN', 'ad:pending'], ['GET', 'ad:sent'], ['GET', 'ad:failed'], ['LRANGE', 'ad:log', '0', '9']])]);
+  const [optout, queued, pending, sentN, failedN] = (counts || [0, 0, 0, 0, 0]).slice(0, 5).map((n) => Number(n) || 0);
+  // Journal d'envoi : les 10 derniers destinataires (envoyé, ou pourquoi pas).
+  const log = ((counts && counts[5]) || []).map((x) => { try { return JSON.parse(x); } catch { return null; } }).filter(Boolean);
+  const hhmm = (t) => new Date(t).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit', second: '2-digit', timeZone: 'Europe/Paris' });
   const job = job0 && { ...job0, sent: sentN, failed: failedN };
   const roles = d.roles || [];
   const blacklist = d.blacklist || [];
   const status = job && job.total
     ? `${e(job.state === 'running' ? 'fb_loading' : 'fb_done')} **Envoi ${job.state === 'running' ? 'en cours' : job.state === 'stopped' ? 'arrêté' : 'terminé'}** : ${job.sent}/${job.total} envoyés` +
-      `${job.failed ? `  ·  ${job.failed} impossibles (MP fermés)` : ''}${queued ? `  ·  ${queued} en attente` : ''}`
+      `${job.failed ? `  ·  ${job.failed} impossibles` : ''}${queued ? `  ·  ${queued} en attente` : ''}` +
+      `\n-# Mis à jour à ${hhmm(Date.now())}`
     : '-# Aucun envoi en cours.';
   return [container([
     msg ? text(msg) : null,
@@ -93,6 +97,7 @@ export async function pubView(env, it, msg = null) {
       `**Bouton « Se désinscrire »** : ${d.unsub !== false ? 'activé' : 'désactivé'}  ·  **Désinscrits** : ${optout}`),
     pending ? text(`${e('fb_mid')} **${pending} membres** vont recevoir ce message. Confirme pour lancer l'envoi.`) : null,
     text(status),
+    log.length ? text(`**Journal d'envoi**\n${log.map((l) => `${l.ok ? '✅' : '❌'} \`${hhmm(l.at)}\` <@${l.id}>${l.ok ? '' : ` · ${escape(l.why || 'erreur')}`}`).join('\n')}`) : null,
     sep(),
     { type: 1, components: [{ type: 3, custom_id: 'ad:preset', placeholder: 'Charger un modèle de message', min_values: 1, max_values: 1,
       options: Object.entries(PRESETS).map(([value, p]) => ({ value, label: p.label.slice(0, 100) })) }] },
@@ -109,6 +114,7 @@ export async function pubView(env, it, msg = null) {
       pending ? btn(`Confirmer l'envoi (${pending})`, 'ad:go', Style.SUCCESS) : btn('Préparer l\'envoi', 'ad:send', Style.SUCCESS, { disabled: !d.text || !roles.length || (job && job.state === 'running') }),
       pending ? btn('Annuler', 'ad:cancel', Style.SECONDARY) : null,
       job && job.state === 'running' ? btn('Arrêter l\'envoi', 'ad:stop', Style.DANGER) : null,
+      job && job.total ? btn('Rafraîchir', 'ad:refresh', Style.SECONDARY, { emoji: { name: '🔄' } }) : null,
       btn('Retour', 'sec:open', Style.SECONDARY),
     ),
   ], COLOR)];
@@ -136,8 +142,10 @@ async function recipients(env, guildId, roles, blacklist) {
 export async function handlePubComponent(it, env, ctx, b, values) {
   if (!isOwner(env, it)) return panel([container([text('Onglet réservé au propriétaire du bot.')])]);
   const d = await getDraft(env);
+  // Jeton de l'interaction (valable 15 min) : l'envoi met ce panneau à jour après chaque lot.
+  if (it.token && it.message) await kvSet(env, 'ad:panel', it.token, 840);
   switch (b) {
-    case 'open': return update(await pubView(env, it));
+    case 'open': case 'refresh': return update(await pubView(env, it));
     case 'edit': return openModal(modal('m:ad', 'Message de la pub', [
       { id: 'title', label: 'Titre (facultatif)', placeholder: 'ex : -20 % sur BBDBuy ce week-end', value: d.title, max: 100 },
       { id: 'text', label: 'Message', description: 'Mise en forme Discord, {user} = mention du membre, {fb_fire} = emoji du bot, --- = séparateur', long: true, value: d.text, max: 3000, required: true },
@@ -225,28 +233,57 @@ export async function runPubQueue(env) {
   if (!job || job.state !== 'running') return 0;
   const popped = (await redis(env, [['LPOP', 'ad:queue', String(PER_RUN)]]) || [null])[0] || [];
   if (!popped.length) {
-    await redis(env, [['DEL', 'ad:active']]);
-    await saveJob(env, { ...job, state: 'done' });
+    await finish(env, job);
     return 0;
   }
   const emojis = await loadEmojis(env);
   let sent = 0;
   let failed = 0;
+  const log = [];
   for (const [i, id] of popped.entries()) {
     try {
       const dm = await discordApi(env, 'POST', '/users/@me/channels', { recipient_id: id });
       await discordApi(env, 'POST', `/channels/${dm.id}/messages`, { flags: 32768, allowed_mentions: { users: [id] }, components: adMessage(emojis, job.draft || {}, id) });
       sent++;
+      log.push({ at: Date.now(), id, ok: true });
     } catch (err) {
       if (/429/.test(String(err))) {
         // Discord demande de ralentir : le reste repart en tête de file pour la minute suivante.
         await redis(env, [['LPUSH', 'ad:queue', ...popped.slice(i).reverse()]]);
         break;
       }
-      failed++; // MP fermés ou membre parti
+      failed++;
+      log.push({ at: Date.now(), id, ok: false, why: sendError(err) });
     }
   }
-  // Compteurs atomiques : deux exécutions envoient en même temps.
-  await redis(env, [['INCRBY', 'ad:sent', String(sent)], ['INCRBY', 'ad:failed', String(failed)]]);
+  // Compteurs atomiques (deux exécutions envoient en même temps) et journal des derniers destinataires.
+  const r = await redis(env, [['INCRBY', 'ad:sent', String(sent)], ['INCRBY', 'ad:failed', String(failed)],
+    ...(log.length ? [['LPUSH', 'ad:log', ...log.map((l) => JSON.stringify(l))], ['LTRIM', 'ad:log', '0', '49']] : []), ['LLEN', 'ad:queue']]);
+  await logEvent(env, 'pub', `${sent} MP envoyé${sent > 1 ? 's' : ''}${failed ? `, ${failed} impossible${failed > 1 ? 's' : ''}` : ''}`).catch(() => {});
+  if (r && !Number(r[r.length - 1])) await finish(env, job);
+  await refreshPanel(env);
   return sent;
+}
+
+// Plus personne dans la file : envoi terminé.
+async function finish(env, job) {
+  await redis(env, [['DEL', 'ad:active']]);
+  await saveJob(env, { ...job, state: 'done' });
+}
+
+// Raison lisible d'un MP qui n'a pas pu partir.
+function sendError(err) {
+  const s = String(err);
+  if (/50007/.test(s)) return 'MP fermés';
+  if (/10013|10007/.test(s)) return 'membre introuvable';
+  if (/403/.test(s)) return 'MP refusés';
+  return `erreur ${(s.match(/-> (\d{3})/) || [])[1] || ''}`.trim();
+}
+
+// Met à jour le panneau Pub ouvert (jeton gardé 14 min) : avancement et journal en direct.
+async function refreshPanel(env) {
+  const token = await kvGet(env, 'ad:panel');
+  if (!token) return;
+  await discordApi(env, 'PATCH', `/webhooks/${env.DISCORD_APP_ID}/${token}/messages/@original`,
+    { flags: 32768, allowed_mentions: { parse: [] }, components: await pubView(env, null) }).catch((err) => console.log('pub (panneau)', String(err).slice(0, 120)));
 }
