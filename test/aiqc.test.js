@@ -27,7 +27,7 @@ test('analyse IA des QC : résultat lisible, gardé en cache, limite du jour', a
   const first = await qcAnalysis(env, photos);
   assert.equal(first.result.verdict, 'a_verifier');
   assert.equal(first.result.article, 'Nike Tech Fleece Shorts');
-  assert.equal(calls, 3); // identification de l'article + une analyse pour toutes les photos + la fusion
+  assert.equal(calls, 3); // identification de l'article + une analyse pour les 2 photos + la fusion
   const again = await qcAnalysis(env, photos);
   assert.equal(again.cached, true);
   assert.equal(calls, 3); // en cache : aucun appel de plus
