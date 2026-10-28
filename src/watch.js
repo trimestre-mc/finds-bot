@@ -116,9 +116,13 @@ export async function handleLiveMessage(env, channelId, m) {
       `UPDATE ${table} SET last_message_id = ? WHERE channel_id = ?
          AND (last_message_id IS NULL OR CAST(last_message_id AS INTEGER) < CAST(? AS INTEGER)) RETURNING *`,
     ).bind(m.id, channelId, m.id).first();
-    if (!c) continue;
+    // Écriture refusée (quota du jour de la base) : le verrou ne renvoie rien ; on relit le salon et on traite le
+    // message s'il est plus récent que la dernière position enregistrée.
+    const row = c || await env.DB.prepare(`SELECT * FROM ${table} WHERE channel_id = ?`).bind(channelId).first()
+      .then((r) => (r && (!r.last_message_id || BigInt(r.last_message_id) < BigInt(m.id)) ? r : null)).catch(() => null);
+    if (!row) continue;
     const ctx = await postContext(env);
-    const ch = { ...c, kind, table, done: 0 };
+    const ch = { ...row, kind, table, done: 0 };
     const found = [];
     if (kind === 'convert') await convertMessage(env, ctx, ch, m);
     else if (kind === 'aiqc') await aiqcMessage(env, ctx, ch, m);
