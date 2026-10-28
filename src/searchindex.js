@@ -128,6 +128,13 @@ export function neonWhere(params, money) {
   const binds = [];
   const p = (v) => { binds.push(v); return `$${binds.length}`; };
   for (const g of params.groups || []) {
+    // Étiquettes de marque prêtes : la marque se cherche par étiquette (index) ou par la marque lue sur la photo, au
+    // lieu de relire chaque titre.
+    if (g.kind === 'brand' && params.tagged) {
+      const names = brandNames(g);
+      clauses.push(`(brands && ARRAY[${p(g.alt[0])}::text]${names.length ? ` OR brand IN (SELECT jsonb_array_elements_text(${p(JSON.stringify(names))}::jsonb))` : ''})`);
+      continue;
+    }
     const ors = [];
     const latin = [];
     for (const a of g.alt) {
@@ -147,11 +154,6 @@ export function neonWhere(params, money) {
     // Marque lue sur la photo (titre sans marque).
     const names = g.kind === 'brand' ? brandNames(g) : [];
     if (names.length) ors.push(`brand IN (SELECT jsonb_array_elements_text(${p(JSON.stringify(names))}::jsonb))`);
-    // Étiquettes de marque prêtes : la marque se cherche par étiquette (index), au lieu de relire chaque titre.
-    if (g.kind === 'brand' && params.tagged) {
-      clauses.push(`(brands && ARRAY[${p(g.alt[0])}]::text[]${names.length ? ` OR brand IN (SELECT jsonb_array_elements_text(${p(JSON.stringify(names))}::jsonb))` : ''})`);
-      continue;
-    }
     if (ors.length) clauses.push(`(${ors.join(' OR ')})`);
   }
   if (params.min != null) clauses.push(`price >= ${p(params.min / money.rate)}`);
