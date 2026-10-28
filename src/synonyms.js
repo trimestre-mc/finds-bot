@@ -157,8 +157,40 @@ const COLORS = [
   { words: ['orange'], alt: ['orange', '橙'] },
 ];
 
+// Modèles, logos et noms codés des vendeurs qui désignent une marque sans la nommer (« Tech Fleece », « Swoosh »,
+// « N家 » = la marque N, « 驴牌 » = LV) : une recherche de la marque les trouve aussi. Pour la recherche seulement
+// (pas pour le glossaire de traduction : certains codes sont trop vagues pour réécrire un titre).
+const LINES = {
+  nike: ['swoosh', 'tech fleece', 'techfleece', 'dunk', 'air force', 'af1', 'air max', 'airmax', 'vapormax', 'cortez', 'blazer',
+    'windrunner', 'acg', 'nocta', 'air jordan', 'aj1', 'aj4', 'aj11', 'shox', 'p-6000', 'N家', '勾子', '钩子', '空军一号', '科技羊毛'],
+  jordan: ['air jordan', 'aj1', 'aj3', 'aj4', 'aj11', 'jumpman', '飞人'],
+  adidas: ['samba', 'gazelle', 'adidas campus', 'spezial', 'superstar', 'stan smith', 'three stripes', '3 stripes', 'trefoil',
+    'ultraboost', 'handball spezial', '三叶草', '三道杠'],
+  yeezy: ['foam runner', 'boost 350', 'yeezy slide'],
+  'new balance': ['9060', '2002r', '1906r', '530', '550'],
+  'louis vuitton': ['damier', 'speedy', 'neverfull', 'keepall', 'pochette metis', 'L家', '驴牌'], // pas « monogram » / « 老花 » : Coach aussi
+  gucci: ['gg marmont', 'marmont', 'dionysus', 'horsebit', 'ophidia', 'G家', '双G'],
+  chanel: ['classic flap', 'boy bag', '2.55', 'C家', '小香风'],
+  dior: ['oblique', 'saddle bag', 'lady dior', 'b23', 'b22', 'b30', 'D家'],
+  hermes: ['birkin', 'kelly', 'constance', 'evelyne', 'oran', 'picotin', 'H家', '铂金包'],
+  balenciaga: ['triple s', 'speed trainer', 'cagole', '3xl', '10xl'],
+  prada: ['re-nylon', 'cloudbust', 'americas cup', 'P家'],
+  moncler: ['maya', 'montbeliard', 'M家'],
+  'canada goose': ['expedition parka', 'chilliwack', 'wyndham', 'langford'],
+  arcteryx: ['beta lt', 'beta ar', 'alpha sv', 'atom lt', 'atom hoody', '鸟家'],
+  'stone island': ['compass badge', 'ghost piece', 'shadow project', '石头'],
+  supreme: ['box logo', 'bogo'],
+  'ralph lauren': ['polo bear', 'big pony'],
+  bape: ['shark hoodie', 'ape head', 'a bathing ape', 'baby milo', '猿人', '鲨鱼'],
+  'off white': ['industrial belt'],
+  corteiz: ['alcatraz', 'rules the world'],
+  trapstar: ['its a secret', 'irongate'],
+  'denim tears': ['cotton wreath'],
+};
+
 const DICT = [
-  ...BRANDS.map((d) => ({ ...d, kind: 'brand' })),
+  // base : les noms de la marque seuls (pour les formes collées « jordan 4 » → « jordan4 », pas « aj14 »).
+  ...BRANDS.map((d) => ({ ...d, base: d.alt, alt: [...d.alt, ...(LINES[d.words[0]] || []).map((a) => a.toLowerCase())], kind: 'brand' })),
   ...TYPES.map((d) => ({ ...d, kind: 'type' })),
   ...COLORS.map((d) => ({ ...d, kind: 'color' })),
 ];
@@ -243,14 +275,14 @@ export function expandQuery(q) {
       if (found) { entry = found; i += n - 1; break; }
     }
     if (!entry && !STOP.has(words[i])) entry = lookup(words[i]);
-    if (entry) groups.push({ alt: entry.alt, cat: entry.cat || null, kind: entry.kind });
+    if (entry) groups.push({ alt: entry.alt, base: entry.base, cat: entry.cat || null, kind: entry.kind });
     else if (!STOP.has(words[i])) groups.push({ alt: [words[i]], cat: null, kind: /^\d+$/.test(words[i]) ? 'num' : 'word' });
   }
   for (let i = 1; i < groups.length; i++) {
     const brand = groups[i - 1];
     const num = groups[i];
     if (brand.kind !== 'brand' || num.kind !== 'num') continue;
-    const glued = brand.alt.filter((a) => !a.includes(' ')).map((a) => `${a}${num.alt[0]}`);
+    const glued = (brand.base || brand.alt).filter((a) => !a.includes(' ')).map((a) => `${a}${num.alt[0]}`);
     groups[i - 1] = { ...brand, alt: [...brand.alt, ...glued] };
     groups[i] = { ...num, alt: [...num.alt, ...glued] };
   }
@@ -290,6 +322,8 @@ export function relevance(groups, item) {
     const inCat = g.cat && item.category === g.cat;
     if (!inText && !inCat) return 0;
     score += (item.title_en && re.test(item.title_en) ? 2 : 1) + (inText && inCat ? 1 : 0);
+    // Le vrai nom de la marque (pas seulement un modèle ou un nom codé) : l'item passe devant.
+    if (g.base && g.base !== g.alt && groupRegex({ alt: g.base }).test(text)) score += 1;
   }
   return score;
 }

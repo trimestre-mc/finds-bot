@@ -102,7 +102,7 @@ export function neonWhere(params, money) {
         for (const form of new Set([a, `${a}s`, ...spaced])) latin.push(esc(form));
       } else {
         const like = p(`%${a}%`);
-        ors.push(`(title_zh LIKE ${like} OR shop_name LIKE ${like} OR lower(title_en) LIKE ${like})`);
+        ors.push(`(lower(title_zh) LIKE ${like} OR lower(shop_name) LIKE ${like} OR lower(title_en) LIKE ${like})`);
       }
     }
     // Mot entier (lettres et chiffres autour exclus), toutes les formes en une seule expression.
