@@ -187,3 +187,12 @@ export async function kvLock(env, key, ttl) {
 export async function kvDel(env, key) {
   await pipeline(env, [['DEL', key]]);
 }
+
+// FinderQC limite les requêtes du bot (429) : les membres passent avant la synchro du catalogue, mise en pause 10 min.
+export async function finderBusy(env) {
+  await kvSet(env, 'fqc:busy', Date.now() + 600000, 700);
+}
+
+export async function finderPaused(env) {
+  return Number(await kvGet(env, 'fqc:busy')) > Date.now();
+}

@@ -10,7 +10,7 @@ import { detectCategory, isDeadLink } from './categories.js';
 import { budget, rowsWritten } from './budget.js';
 import { itemDb, onDb, perDb, groupByDb, batchByDb } from './shard.js';
 import { emo, etxt } from './emojis.js';
-import { kvGet, kvSet, kvLock, kvDel, logEvent } from './kvstore.js';
+import { kvGet, kvSet, kvLock, kvDel, logEvent, finderBusy, finderPaused } from './kvstore.js';
 
 const UA = 'finds-bot/1.0 (+https://github.com/trimestre-mc/finds-bot)';
 const API = 'https://server.finderqc.com/api/spu/webSpuInfo';
@@ -241,6 +241,7 @@ export async function qcWindow(env, item, view = 0, opts = {}) {
   const knownEmpty = view === 0 && !(item.qc_count > 0) && !item.qc_running && item.qc_checked_at
     && Date.now() - item.qc_checked_at < RECHECK_MS && !(hint && hint.s === 'repfind');
   const qc = knownEmpty ? { count: 0, batches: [], similar: [] } : await fetchQc(item, apiPage);
+  if (qc.failed && env) await finderBusy(env); // FinderQC limite le bot : la synchro laisse la place aux membres
   const offset = first % BATCHES_PER_API_PAGE;
   const batches = qc.batches.slice(offset, offset + BATCHES_PER_VIEW);
   const totalBatchesSeen = (apiPage - 1) * BATCHES_PER_API_PAGE + qc.batches.length;
@@ -436,7 +437,8 @@ const SYNC_LIMIT = 10000; // résultats max par filtre côté FinderQC
 const SYNC_MAX_CENTS = 2000000; // au-delà de 20 000 ¥ : une dernière tranche ouverte
 const SYNC_PAGES_PER_RUN = 8; // temps CPU limité, et FinderQC doit rester disponible pour les fenêtres QC
 // Exécution dédiée (SELF, chaque minute) : plus de pages, toujours sous la limite de 50 requêtes par exécution.
-export const SYNC_PAGES_DEDICATED = 20;
+export const SYNC_PAGES_DEDICATED = 10;
+const SYNC_PAGE_GAP_MS = 400; // petite pause entre deux pages : FinderQC reste disponible pour les membres
 
 // Un produit du catalogue FinderQC (liste ou recherche) → enregistrement de l'item (titre, prix, ventes, nombre de
 // QC) ; un item déjà connu n'est réécrit que si quelque chose a changé. Item Weidian sans boutique connue : sa
@@ -507,6 +509,8 @@ export async function syncQcCatalog(env, lane = SYNC_LANES.all, pagesPerRun = SY
     state = { v: 2, cycle: day, plat: 0, lo: 0, w: 1000, page: 1, done: false, seen: 0 };
   }
   if (state.done || (state.pauseUntil && Date.now() < state.pauseUntil)) return 0;
+  // Un membre vient d'être limité par FinderQC : pas de synchro pendant 10 min.
+  if (await finderPaused(env)) return 0;
   // Un seul passage à la fois par parcours (il tourne chaque minute et toutes les 3 minutes).
   const lockKey = `${lane.key}:lock`;
   const fast = await kvLock(env, lockKey, 60);
@@ -561,9 +565,10 @@ async function syncLane(env, lane, state, pagesPerRun = SYNC_PAGES_PER_RUN) {
     } catch (err) {
       console.log('synchro QC', String(err).slice(0, 100));
       // FinderQC demande de ralentir : pause de 15 min (les fenêtres QC des membres passent avant la synchro).
-      if (/429/.test(String(err))) state.pauseUntil = Date.now() + 15 * 60000;
+      if (/429/.test(String(err))) { state.pauseUntil = Date.now() + 15 * 60000; await finderBusy(env); }
       break;
     }
+    if (SYNC_PAGE_GAP_MS) await new Promise((r) => setTimeout(r, SYNC_PAGE_GAP_MS));
     // Tranche trop large (plus de 10 000 produits) : on la coupe en deux et on recommence.
     if (state.page === 1 && page.total >= SYNC_LIMIT && state.w > 1 && state.lo < SYNC_MAX_CENTS) {
       state.w = Math.max(1, Math.floor(state.w / 2));

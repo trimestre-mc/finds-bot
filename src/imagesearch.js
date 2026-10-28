@@ -11,6 +11,7 @@ import { aiNeurons, AI_NEURONS_PER_DAY } from './translate.js';
 import { expandQuery, relevance } from './synonyms.js';
 import { finderSearch, liveQuery } from './livesearch.js';
 import { etxt, emo, AGENT_EMOJI, PLATFORM_EMOJI } from './emojis.js';
+import { finderBusy } from './kvstore.js';
 import { dayAdd } from './kvstore.js';
 
 const API = 'https://server.finderqc.com/api/searchImage';
@@ -35,7 +36,13 @@ export async function searchByImage(imageUrl, filename = 'image.jpg', limit = RE
   // les résultats d'une autre photo).
   const ext = (String(filename).match(/\.(jpe?g|png|webp|gif)$/i) || ['.jpg'])[0].toLowerCase();
   form.append('file', blob, `${crypto.randomUUID()}${ext}`);
-  const res = await fetch(`${API}/search`, { method: 'POST', body: form, headers: { 'User-Agent': UA } });
+  // Trop de requêtes (429) : deux nouveaux essais, après 2 puis 4 s.
+  let res = await fetch(`${API}/search`, { method: 'POST', body: form, headers: { 'User-Agent': UA } });
+  for (const wait of [2000, 4000]) {
+    if (res.status !== 429) break;
+    await new Promise((r) => setTimeout(r, wait));
+    res = await fetch(`${API}/search`, { method: 'POST', body: form, headers: { 'User-Agent': UA } });
+  }
   if (!res.ok) throw new Error(`FinderQC ${res.status}`);
   const data = await res.json();
   const sid = data && data.code === 0 && data.data && data.data.search_id;
@@ -88,7 +95,12 @@ export async function smartImageSearch(env, attachment, prefer = 'cloudflare', m
   const once = () => searchByImage(attachment.url, attachment.filename, 12);
   const [found, seen] = await Promise.all([
     once().catch(() => new Promise((r) => setTimeout(r, 1500)).then(once))
-      .catch((err) => { console.log('recherche image FinderQC', String(err).slice(0, 160)); return null; }),
+      .catch(async (err) => {
+        console.log('recherche image FinderQC', String(err).slice(0, 160));
+        // FinderQC limite le bot : la synchro du catalogue s'arrête 10 min pour laisser passer les membres.
+        if (/429/.test(String(err))) await finderBusy(env);
+        return null;
+      }),
     visionAllowed(env).then(async (ok) => {
       if (!ok) return null;
       const seen = await describeImage(env, [smallImageUrl(attachment), ...more], undefined, prefer);
@@ -111,7 +123,9 @@ export async function smartImageSearch(env, attachment, prefer = 'cloudflare', m
   if (items.length < RESULTS) {
     // Pas assez de résultats de la bonne marque : recherche par texte, les plus vendus d'abord.
     const query = liveQuery(expandQuery([seen.brand, seen.model, seen.item].filter(Boolean).join(' ')));
-    const extra = await finderSearch(query).then(toResults).catch(() => []);
+    let extra = await finderSearch(query).then(toResults).catch(() => []);
+    // FinderQC ne répond pas (limite) : notre propre index de recherche (Neon), qui ne dépend pas de lui.
+    if (!extra.length) extra = await indexResults(env, [seen.brand, seen.model, seen.item].filter(Boolean).join(' ')).catch(() => []);
     const ids = new Set(items.map((x) => `${x.platform}:${x.id}`));
     for (const x of extra) {
       if (items.length >= RESULTS) break;
@@ -123,6 +137,23 @@ export async function smartImageSearch(env, attachment, prefer = 'cloudflare', m
   // Toujours 4 propositions : on complète avec les formes les plus proches.
   for (const x of ranked) if (items.length < RESULTS && !items.includes(x)) items.push(x);
   return { items, seen };
+}
+
+// Articles de notre index de recherche (Neon) pour un texte (« Stussy hoodie »), avec leur photo : secours quand
+// FinderQC ne répond pas. [{ platform, id, title, price, image, sold, qc }]
+async function indexResults(env, q) {
+  const { searchIndexReady, indexSearch } = await import('./searchindex.js');
+  const { itemsWhereIds } = await import('./shard.js');
+  if (!(await searchIndexReady(env))) return [];
+  const groups = expandQuery(q);
+  const rows = (await indexSearch(env, { groups, includePosted: true }, { rate: 1 }) || [])
+    .filter((r) => relevance(groups.filter((g) => g.kind === 'brand'), r) > 0).slice(0, 12);
+  const full = new Map((await itemsWhereIds(env, rows.map((r) => r.id))).map((i) => [i.id, i]));
+  return rows.map((r) => {
+    const it = full.get(r.id) || {};
+    const [platform, id] = r.id.split(':');
+    return { platform, id, title: r.title_en || r.title_zh, price: r.price_cny, image: it.image, sold: r.popularity, qc: Number(it.qc_count) || 0 };
+  }).filter((x) => x.platform && x.id);
 }
 
 // Réponse du bot : les items qui ressemblent, chacun avec achat (1er agent, lien suivi) et QC dans Discord.
