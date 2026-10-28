@@ -23,13 +23,13 @@ const PHOTOS = 5; // analysées une par une (3 sans Groq, voir analyzeQc)
 
 // Titre de la carte selon la note (ou le verdict s'il n'y a pas de note).
 const TIERS = [
-  { min: 9, label: 'Top batch', emoji: 'fb_crown', color: 0x22c55e },
-  { min: 7, label: 'GL', emoji: 'fb_gl', color: 0x22c55e },
-  { min: 5, label: 'Mitigé', emoji: 'fb_mid', color: 0xf59e0b },
-  { min: 3, label: 'RL conseillé', emoji: 'fb_rl', color: 0xef4444 },
-  { min: 0, label: 'À fuir', emoji: 'fb_bad', color: 0xb91c1c },
+  { min: 9, label: 'Excellent batch', emoji: 'fb_crown', color: 0x22c55e },
+  { min: 7, label: 'Bon batch (GL)', emoji: 'fb_gl', color: 0x22c55e },
+  { min: 5, label: 'Batch mitigé', emoji: 'fb_mid', color: 0xf59e0b },
+  { min: 3, label: 'Retour conseillé (RL)', emoji: 'fb_rl', color: 0xef4444 },
+  { min: 0, label: 'Article à éviter', emoji: 'fb_bad', color: 0xb91c1c },
 ];
-const BY_VERDICT = { ok: TIERS[1], a_verifier: { ...TIERS[2], label: 'À vérifier' }, probleme: TIERS[3] };
+const BY_VERDICT = { ok: TIERS[1], a_verifier: { ...TIERS[2], label: 'Points à vérifier' }, probleme: TIERS[3] };
 const POINT = { ok: 'fb_ok', attention: 'fb_mid', probleme: 'fb_bad' };
 
 async function hashKey(parts) {
@@ -103,12 +103,12 @@ export async function qcAnalysis(env, photos, { ref = null, what = null, gold = 
 
 // Étapes affichées pendant l'analyse, avec leur part du temps total.
 const STEPS = {
-  match: { label: 'Je retrouve l\'article', weight: 0.08 },
-  photos: { label: 'Je passe tes photos au crible', weight: 0.42 },
-  zoom: { label: 'Zoom sur le logo et les étiquettes', weight: 0.12 },
+  match: { label: 'Identification de l\'article', weight: 0.08 },
+  photos: { label: 'Examen des photos', weight: 0.42 },
+  zoom: { label: 'Gros plan sur le logo et les étiquettes', weight: 0.12 },
   compare: { label: 'Comparaison avec un autre batch', weight: 0.12 },
-  merge: { label: 'Je rédige mon avis', weight: 0.12 },
-  verify: { label: 'Je revérifie les points douteux', weight: 0.14 },
+  merge: { label: 'Rédaction de l\'avis', weight: 0.12 },
+  verify: { label: 'Seconde vérification des points douteux', weight: 0.14 },
 };
 const DEFAULT_MS = 35000;
 
@@ -145,9 +145,9 @@ export function progressView(emojis, p, accent) {
     return `-# ${e('fb_todo')} ${STEPS[k].label}${k === 'verify' ? ' (si besoin)' : ''}`;
   }).filter(Boolean);
   const end = Math.round((p.start + p.eta) / 1000);
-  const left = end * 1000 - Date.now() > 3000 ? `prêt <t:${end}:R>` : 'encore quelques secondes';
+  const left = end * 1000 - Date.now() > 3000 ? `Résultat estimé <t:${end}:R>` : 'Finalisation en cours';
   return [container([
-    text(`## ${e('fb_aiscan')} Je check ton QC\n-# ${p.count} photo${p.count > 1 ? 's' : ''} · logo, matière, coutures, étiquettes, mesures`),
+    text(`## ${e('fb_aiscan')} Analyse des QC en cours\n-# ${p.count} photo${p.count > 1 ? 's' : ''} · logo, matière, coutures, étiquettes et mesures`),
     sep(),
     text(lines.join('\n')),
     sep(),
@@ -185,11 +185,11 @@ export function analysisView(emojis, res, { title = null, photos = [], who = nul
   const e = (n) => etxt(emojis, n);
   if (!res.result) {
     const why = {
-      occupe: `${e('fb_clock')} **Trop de monde en même temps.** Renvoie tes photos dans une minute, je m'en occupe.`,
-      limite: `${e('fb_clock')} **Plus d'analyses pour aujourd'hui sur le serveur.** Ça revient demain. En attendant, les membres peuvent voter GL / RL.`,
-      photos: `${e('fb_ask')} **Je ne vois aucune photo à checker.** Envoie tes QC en image (jpg, png ou webp).`,
-    }[res.reason] || `${e('fb_bad')} **Je n'ai pas réussi à lire tes photos.** Réessaie dans un moment, ou envoie-les en meilleure qualité.`;
-    return [container([text(`### ${e('fb_aiscan')} Check QC\n${why}`)], 0x64748b)];
+      occupe: `${e('fb_clock')} **Service très sollicité.** Merci de renvoyer les photos dans une minute.`,
+      limite: `${e('fb_clock')} **Limite quotidienne du serveur atteinte.** Les analyses reprennent demain ; les votes GL / RL des membres restent disponibles.`,
+      photos: `${e('fb_ask')} **Aucune photo détectée.** Formats acceptés : jpg, png et webp.`,
+    }[res.reason] || `${e('fb_bad')} **Les photos n'ont pas pu être analysées.** Merci de réessayer dans un moment, si possible avec des photos plus nettes.`;
+    return [container([text(`### ${e('fb_aiscan')} Analyse des QC\n${why}`)], 0x64748b)];
   }
   const r = res.result;
   const tier = r.note != null ? TIERS.find((t) => r.note >= t.min) : (BY_VERDICT[r.verdict] || BY_VERDICT.a_verifier);
@@ -204,8 +204,8 @@ export function analysisView(emojis, res, { title = null, photos = [], who = nul
   const bad = r.points.filter((p) => p.etat !== 'ok');
   const good = r.points.filter((p) => p.etat === 'ok');
   const body = [
-    bad.length ? `**Ce qui coince**\n${bad.map(line).join('\n')}` : null,
-    good.length ? `**Ce qui est propre**\n${good.map(line).join('\n')}` : null,
+    bad.length ? `**Points à surveiller**\n${bad.map(line).join('\n')}` : null,
+    good.length ? `**Points conformes**\n${good.map(line).join('\n')}` : null,
   ].filter(Boolean).join('\n\n');
   const done = [`${r.photos || Math.min(photos.length || PHOTOS, PHOTOS)} photo${(r.photos || 2) > 1 ? 's' : ''}`];
   if (r.extras && r.extras.zoom) done.push('gros plan');
@@ -215,12 +215,12 @@ export function analysisView(emojis, res, { title = null, photos = [], who = nul
     text(head),
     photos.length ? gallery(photos.slice(0, PHOTOS)) : null,
     sep(),
-    text(body || '-# Rien de particulier à signaler.'),
-    r.manque && r.manque.length ? text(`${e('fb_ask')} **Demande à ton agent :** ${r.manque.map((x) => escape(x)).join(' · ')}`) : null,
-    r.conseil ? text(`${e('fb_tip')} **Mon avis :** ${escape(r.conseil)}`) : null,
+    text(body || '-# Aucun point particulier à signaler.'),
+    r.manque && r.manque.length ? text(`${e('fb_ask')} **Photos à demander à l'agent :** ${r.manque.map((x) => escape(x)).join(' · ')}`) : null,
+    r.conseil ? text(`${e('fb_tip')} **Recommandation :** ${escape(r.conseil)}`) : null,
     sep(false),
-    text(`-# ${e('fb_brain')} ${done.join(' · ')}${who ? `  ·  pour <@${who}>` : ''}${res.cached ? '  ·  déjà analysé' : ''}\n` +
-      '-# Un avis, pas une garantie : regarde aussi les votes GL / RL des membres.'),
+    text(`-# ${e('fb_brain')} Analyse sur ${done.join(' · ')}${who ? `  ·  demandée par <@${who}>` : ''}${res.cached ? '  ·  résultat déjà disponible' : ''}\n` +
+      '-# Avis indicatif, sans garantie. Les votes GL / RL des membres complètent cette analyse.'),
     ...(match || []),
   ], tier.color)];
 }
@@ -287,7 +287,7 @@ function matchBlocks(ctx, x, channelId) {
   const e = (n) => etxt(ctx.emojis, n);
   const item = { id: `${x.platform}:${x.id}`, platform: x.platform, item_id: x.id, url: canonicalUrl(x.platform, x.id) };
   const meta = [formatPrice(x.price, ctx.money), x.sold ? `${e('fb_fire')} ${x.sold}` : null, x.qc ? `${e('fb_qc')} ${x.qc} QC` : null].filter(Boolean);
-  const head = `${e('fb_search')} **Je pense que c'est celui-là**\n${escape(String(x.title || '').slice(0, 80))}\n${meta.join('  ·  ')}\n-# Vérifie que c'est bien le même avant d'acheter.`;
+  const head = `${e('fb_search')} **Article correspondant probable**\n${escape(String(x.title || '').slice(0, 80))}\n${meta.join('  ·  ')}\n-# Correspondance à vérifier avant tout achat.`;
   const agent = ctx.agents && ctx.agents[0];
   return [
     sep(),

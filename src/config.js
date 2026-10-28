@@ -22,11 +22,11 @@ export const ACCENTS = {
 export const LANGS = {
   fr: {
     label: 'Français', buy: (a) => `Acheter sur ${a}`, view: (p) => `Voir l'annonce ${p}`,
-    sold: (n) => `${n} ventes`, noPrice: 'Prix sur l\'annonce', drop: (p) => `Baisse de prix : avant ${p}`,
+    sold: (n) => `${n} ventes`, noPrice: 'Prix sur l\'annonce', drop: (p) => `Prix en baisse, auparavant ${p}`,
   },
   en: {
     label: 'English', buy: (a) => `Buy on ${a}`, view: (p) => `View on ${p}`,
-    sold: (n) => `${n} sold`, noPrice: 'Price on listing', drop: (p) => `Price drop: was ${p}`,
+    sold: (n) => `${n} sold`, noPrice: 'Price on listing', drop: (p) => `Price lowered, previously ${p}`,
   },
 };
 

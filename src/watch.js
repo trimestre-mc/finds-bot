@@ -183,7 +183,7 @@ async function imageMessage(env, ctx, c, m, found, exec) {
   for (const a of images) {
     const pending = await discordApi(env, 'POST', `/channels/${c.channel_id}/messages`, {
       flags: COMPONENTS_V2, allowed_mentions: { parse: [] },
-      components: [container([text(`### ${etxt(ctx.emojis, 'fb_loading')} Je cherche ta pièce…\n-# Je lis la photo et je fouille plus de 500 000 items.`)], accent)],
+      components: [container([text(`### ${etxt(ctx.emojis, 'fb_loading')} Recherche en cours…\n-# Analyse de la photo et comparaison avec plus de 500 000 articles.`)], accent)],
       message_reference: { message_id: m.id, fail_if_not_exists: false },
     });
     calls++;

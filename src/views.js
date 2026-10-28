@@ -436,14 +436,17 @@ export async function convertView(env, ref, known, ctx = null) {
   ctx = ctx || await postContext(env);
   const item = known || { id: `${ref.platform}:${ref.itemId}`, item_id: ref.itemId, platform: ref.platform, url: ref.url };
   const platform = PLATFORM_NAMES[item.platform];
+  const e = (n) => etxt(ctx.emojis, n);
+  const qc = Number(known && known.qc_count) || 0;
   const head = known
-    ? `**${escape(cardTitle(known, 90))}**\n### ${formatPrice(known.price_cny, ctx.money)}\n-# 🏪 ${escape(known.shop_name || platform)}` +
-      (known.popularity ? `  ·  🔥 ${fmtInt(known.popularity)}` : '')
-    : `**Lien ${platform} converti** · \`${ref.itemId}\``;
+    ? `-# ${e('fb_link')} Lien ${platform} converti\n**${escape(cardTitle(known, 90))}**\n## ${e('fb_price')} ${formatPrice(known.price_cny, ctx.money)}\n` +
+      `-# ${[`${e('fb_shop')} ${escape(known.shop_name || platform)}`, known.popularity ? `${e('fb_fire')} ${fmtInt(known.popularity)} ventes` : null,
+        qc ? `${e('fb_qc')} ${fmtInt(qc)} photos QC` : null].filter(Boolean).join('  ·  ')}`
+    : `${e('fb_link')} **Lien ${platform} converti**  ·  \`${ref.itemId}\`\n-# Article absent du catalogue : les liens ci-dessous mènent directement à l'annonce.`;
   const rows = agentButtons(ctx, item, null, await communityQc(env, item.id));
   return [container([
     known && known.image ? section(head, thumb(known.image)) : text(head),
-    ...(ctx.agents.length ? [] : [text('-# Aucun agent configuré pour l\'instant.')]),
+    ...(ctx.agents.length ? [] : [text('-# Aucun agent configuré pour le moment.')]),
     ...rows,
   ], (ACCENTS[ctx.cfg.accent] || ACCENTS.orange).color)];
 }

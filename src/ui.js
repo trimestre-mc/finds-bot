@@ -11,6 +11,7 @@ import { CATEGORIES, CATEGORY_BY_KEY } from './categories.js';
 import { formatMoney, getConfig, getSignup, getCoupon, SIGNUP_COLORS } from './config.js';
 import { communityQc, qcSummary } from './qc.js';
 import { countAll, allRows } from './shard.js';
+import { loadEmojis, etxt, emo } from './emojis.js';
 
 export const QUEUE_PER_MINUTE = POSTS_PER_MINUTE;
 const SHOPS_PER_PAGE = 6;
@@ -57,56 +58,61 @@ async function quickCounts(env, ctx) {
 }
 
 export async function homeView(env, it, msg, ctx = null) {
-  const [counts, shops, agents, queue, schedules] = await Promise.all([
+  const [counts, shops, agents, queue, schedules, emojis] = await Promise.all([
     quickCounts(env, ctx),
     env.DB.prepare('SELECT COUNT(*) AS n FROM shops').first(),
     env.DB.prepare('SELECT COUNT(*) AS n FROM agents').first(),
     env.DB.prepare('SELECT COUNT(*) AS n FROM post_queue').first(),
     env.DB.prepare('SELECT COUNT(*) AS n FROM schedules WHERE enabled = 1').first(),
+    loadEmojis(env),
   ]);
-  const items = { n: counts.visible };
-  const pending = { n: counts.untranslated };
-  const drops = { n: counts.drops };
+  const e = (n) => etxt(emojis, n);
+  // Bouton avec un emoji du bot (Unicode de secours).
+  const b = (name, label, id, style = Style.SECONDARY) => btn(label, id, style, { emoji: emo(emojis, name) });
   const money = await getRate(env);
 
   const tips = [];
-  if (!shops.n) tips.push('👉 Commence par ajouter des boutiques dans **📚 Catalogues**.');
-  if (!agents.n) tips.push('👉 Ajoute ton code d\'affiliation dans **🏷️ Agents** pour que les boutons « Acheter » apparaissent.');
+  if (!shops.n) tips.push(`${e('fb_tip')} Première étape : ajouter des boutiques dans **Catalogues**.`);
+  if (!agents.n) tips.push(`${e('fb_tip')} Ajouter un code d'affiliation dans **Agents** pour afficher les boutons « Acheter ».`);
 
   const sub = [];
-  if (pending.n) sub.push(`🌐 ${fmtInt(pending.n)} titres en traduction`);
-  if (queue.n) sub.push(`📨 ${fmtInt(queue.n)} posts en file (~${Math.ceil(queue.n / QUEUE_PER_MINUTE)} min)`);
-  if (schedules.n) sub.push(`⏰ ${schedules.n} drop${schedules.n > 1 ? 's' : ''} actif${schedules.n > 1 ? 's' : ''}`);
+  if (counts.untranslated) sub.push(`🌐 ${fmtInt(counts.untranslated)} titres en cours de traduction`);
+  if (queue.n) sub.push(`${e('fb_clock')} ${fmtInt(queue.n)} publications en attente (~${Math.ceil(queue.n / QUEUE_PER_MINUTE)} min)`);
+  if (schedules.n) sub.push(`${e('fb_live')} ${schedules.n} drop${schedules.n > 1 ? 's' : ''} automatique${schedules.n > 1 ? 's' : ''}`);
   sub.push(`💱 ¥100 = ${formatMoney(100, money)}`);
 
   return [container([
     notice(msg),
-    text('# 🛍️ Finds\n-# Ton catalogue de finds, prêt à poster en un clic.'),
+    text(`# ${e('fb_bot')} Finds\n-# Panneau de gestion du catalogue : recherche, publication et réglages.`),
     sep(),
-    text(`**${fmtInt(items.n)}** items  ·  **${fmtInt(shops.n)}** boutiques  ·  **${fmtInt(agents.n)}** agent${agents.n > 1 ? 's' : ''}\n-# ${sub.join('  ·  ')}`),
+    text(`${e('fb_box')} **${fmtInt(counts.visible)}** articles  ·  ${e('fb_shop')} **${fmtInt(shops.n)}** boutiques  ·  ${e('fb_cart')} **${fmtInt(agents.n)}** agent${agents.n > 1 ? 's' : ''}` +
+      `${counts.drops ? `  ·  ${e('fb_drop')} **${fmtInt(counts.drops)}** baisses de prix` : ''}\n-# ${sub.join('  ·  ')}`),
     tips.length ? text(tips.join('\n')) : null,
     sep(),
+    text('**Rechercher**'),
     row(
-      emojiBtn('🔎', 'Rechercher', 'search:new', Style.PRIMARY),
-      emojiBtn('🔥', 'Tendances', 'search:trending'),
-      emojiBtn('✨', 'Nouveautés', 'search:latest'),
-      emojiBtn('📉', `Baisses de prix${drops.n ? ` (${fmtInt(drops.n)})` : ''}`, 'search:drops'),
+      b('fb_search', 'Rechercher', 'search:new', Style.PRIMARY),
+      b('fb_fire', 'Tendances', 'search:trending'),
+      b('fb_new', 'Nouveautés', 'search:latest'),
+      b('fb_drop', `Baisses de prix${counts.drops ? ` (${fmtInt(counts.drops)})` : ''}`, 'search:drops'),
     ),
+    text('**Publier**'),
     row(
-      emojiBtn('📚', 'Catalogues', 'cat:list:0'),
-      emojiBtn('⏰', 'Drops auto', 'sch:list'),
-      emojiBtn('🗂️', 'Salons catégories', 'cch:open'),
-      emojiBtn('🏷️', 'Agents', 'ag:list'),
-      emojiBtn('➕', 'Ajouter un item', 'item:add'),
+      b('fb_box', 'Catalogues', 'cat:list:0'),
+      b('fb_clock', 'Drops automatiques', 'sch:list'),
+      b('fb_tag', 'Salons par catégorie', 'cch:open'),
+      b('fb_cart', 'Agents', 'ag:list'),
+      b('fb_signup', 'Ajouter un article', 'item:add'),
     ),
+    text('**Suivre et régler**'),
     row(
-      emojiBtn('📊', 'Stats', 'stats:7'),
-      emojiBtn('🧾', 'Historique', 'hist:0'),
+      b('fb_stats', 'Statistiques', 'stats:7'),
+      b('fb_trend', 'Historique', 'hist:0'),
       emojiBtn('⚙️', 'Réglages', 'set'),
       emojiBtn('👥', 'Accès', 'acc'),
-      emojiBtn('🩺', 'Santé', 'health'),
+      b('fb_live', 'État du bot', 'health'),
     ),
-    row(emojiBtn('📌', 'Poster le guide ici', 'guide:post'), emojiBtn('🎁', 'Poster /coupon ici', 'coupon:post')),
+    row(b('fb_bot', 'Publier le guide ici', 'guide:post'), b('fb_coupon', 'Publier /coupon ici', 'coupon:post')),
   ])];
 }
 

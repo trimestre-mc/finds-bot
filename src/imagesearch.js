@@ -127,10 +127,10 @@ export async function smartImageSearch(env, attachment) {
 // Réponse du bot : les items qui ressemblent, chacun avec achat (1er agent, lien suivi) et QC dans Discord.
 export function imageResultsView(ctx, found, channelId, seen = null) {
   const e = (n) => etxt(ctx.emojis, n);
-  const what = seen && seen.brand ? `\n${e('fb_verified')} On dirait du **${escape(seen.brand)}**${seen.model ? ` ${escape(seen.model)}` : ''}${seen.item ? ` · ${escape(seen.item)}` : ''}` : '';
+  const what = seen && seen.brand ? `\n${e('fb_verified')} Marque détectée : **${escape(seen.brand)}**${seen.model ? ` ${escape(seen.model)}` : ''}${seen.item ? ` · ${escape(seen.item)}` : ''}` : '';
   const blocks = [text(found.length
-    ? `## ${e('fb_search')} Trouvé !${what}\n-# Les ${found.length} items les plus proches de ta photo, les plus vendus d'abord.`
-    : `## ${e('fb_search')} Rien de proche\n-# Essaie une photo plus nette, de face, avec l'article bien visible.`)];
+    ? `## ${e('fb_search')} Résultats de la recherche par image${what}\n-# Les ${found.length} articles les plus proches, classés par nombre de ventes.`
+    : `## ${e('fb_search')} Aucun résultat proche\n-# Une photo nette, de face, avec l'article bien visible donne de meilleurs résultats.`)];
   for (const x of found) {
     const item = { id: `${x.platform}:${x.id}`, platform: x.platform, item_id: x.id, url: canonicalUrl(x.platform, x.id), title_en: x.title };
     const meta = [formatPrice(x.price, ctx.money)];

@@ -130,16 +130,16 @@ export function buildItemMessage(item, ctx, images = [], channelId = null, commu
   const platform = PLATFORM_NAMES[item.platform] || item.platform;
   const dropped = item.prev_price && item.price_cny && item.prev_price > item.price_cny;
   const price = item.price_cny != null
-    ? `## ${formatMoney(item.price_cny, ctx.money)}  ·  ${formatCny(item.price_cny)}` +
+    ? `## ${etxt(ctx.emojis, 'fb_price')} ${formatMoney(item.price_cny, ctx.money)}  ·  ${formatCny(item.price_cny)}` +
       (dropped ? `\n${etxt(ctx.emojis, 'fb_drop')} ${t.drop(`~~${formatMoney(item.prev_price, ctx.money)}~~`)}` : '')
-    : `## ${t.noPrice}`;
+    : `## ${etxt(ctx.emojis, 'fb_price')} ${t.noPrice}`;
   const pics = images.length ? images : item.image ? [item.image] : [];
   const cat = CATEGORY_BY_KEY[item.category];
   const qc = (item.qc_count || 0) + (community ? community.images : 0);
   const e = (n) => etxt(ctx.emojis, n);
   const meta = [
     item.popularity ? `${e('fb_fire')} ${t.sold(nf(item.popularity))}` : null,
-    qc ? `${e('fb_qc')} ${nf(qc)} QC` : null,
+    qc ? `${e('fb_qc')} ${nf(qc)} ${en ? 'QC photos' : 'photos QC'}` : null,
     // Avis des membres sur les QC (à partir de 3 votes).
     (item.gl_votes || 0) + (item.rl_votes || 0) >= 3
       ? `${e('fb_gl')} ${Math.round((100 * item.gl_votes) / (item.gl_votes + item.rl_votes))} % GL` : null,

@@ -144,6 +144,6 @@ export function limitText(lim, what, icon = '⏱️') {
   const per = lim.rule.s >= 86400 ? 'par jour' : lim.rule.s >= 3600 ? 'par heure' : null;
   const next = `<t:${Math.ceil(lim.until / 1000)}:R>`;
   return per
-    ? `${icon} **Tu enchaînes !** C'est ${lim.rule.max} ${what} ${per} max. Tu pourras recommencer ${next}.`
-    : `${icon} **Une seconde !** Laisse-moi finir la précédente, tu pourras relancer ${next}.`;
+    ? `${icon} **Limite atteinte** : ${lim.rule.max} ${what} ${per} et par membre. Prochaine demande possible ${next}.`
+    : `${icon} **Demande précédente en cours de traitement.** Nouvelle demande possible ${next}.`;
 }
