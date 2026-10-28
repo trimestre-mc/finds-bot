@@ -437,7 +437,7 @@ const SYNC_LIMIT = 10000; // résultats max par filtre côté FinderQC
 const SYNC_MAX_CENTS = 2000000; // au-delà de 20 000 ¥ : une dernière tranche ouverte
 const SYNC_PAGES_PER_RUN = 8; // temps CPU limité, et FinderQC doit rester disponible pour les fenêtres QC
 // Exécution dédiée (SELF, chaque minute) : plus de pages, toujours sous la limite de 50 requêtes par exécution.
-export const SYNC_PAGES_DEDICATED = 10;
+export const SYNC_PAGES_DEDICATED = 6; // 10 faisait encore limiter le bot par FinderQC (28/10)
 const SYNC_PAGE_GAP_MS = 400; // petite pause entre deux pages : FinderQC reste disponible pour les membres
 
 // Un produit du catalogue FinderQC (liste ou recherche) → enregistrement de l'item (titre, prix, ventes, nombre de

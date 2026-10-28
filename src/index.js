@@ -810,6 +810,12 @@ async function handleApi(request, env, url) {
       return json({ ok: false, error: String(err.message || err).slice(0, 300) });
     }
   }
+  // Position des nouveaux items à copier dans l'index (dernier rowid déjà copié), par base.
+  if (path === '/api/searchindex/tail' && request.method === 'POST') {
+    const { tag, rowid } = await request.json();
+    const { kvSet } = await import('./kvstore.js');
+    return json({ ok: await kvSet(env, `sidx:tail:${tag}`, Number(rowid) || 0) });
+  }
   if (path === '/api/searchindex' && request.method === 'GET') {
     const { neon, kvGet } = await import('./kvstore.js');
     const { searchIndexReady } = await import('./searchindex.js');

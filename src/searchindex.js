@@ -49,30 +49,21 @@ export async function syncSearchIndex(env) {
   let copied = 0;
   for (const e of perDb(env)) {
     const tag = dbTag(e, env);
+    // D'abord les nouveaux items (après le dernier déjà copié) : ils arrivent dans la recherche en 15 min, sans
+    // attendre que le tour complet de la base les atteigne.
+    const tail = Number(await kvGet(env, `sidx:tail:${tag}`)) || 0;
+    if (tail) {
+      const fresh = await copyRows(env, e, tail);
+      copied += fresh.n;
+      if (fresh.last) await kvSet(env, `sidx:tail:${tag}`, fresh.last);
+    }
     let cursor = Number(await kvGet(env, `sidx:cursor:${tag}`)) || 0;
-    for (let i = 0; i < PER_RUN; i++) {
-      const { results } = await e.DB.prepare(
-        `SELECT rowid AS rid, id, title_en, title_zh, shop_name, shop_id, category, popularity, first_seen, price_cny,
-                hidden, posted_count, qc_count, prev_price, price_changed_at
-         FROM items WHERE rowid > ? ORDER BY rowid LIMIT ?`,
-      ).bind(cursor, CHUNK).all();
-      if (results.length) {
-        await neon(env, `INSERT INTO items_search (id, title_en, title_zh, shop_name, shop_id, category, popularity, first_seen, price,
-             hidden, posted, qc, prev_price, price_changed_at)
-           SELECT id, title_en, title_zh, shop_name, shop_id, category, coalesce(popularity, 0), first_seen, price_cny,
-             coalesce(hidden, 0), coalesce(posted_count, 0), coalesce(qc_count, 0), prev_price, price_changed_at
-           FROM jsonb_to_recordset($1::jsonb) AS x(id TEXT, title_en TEXT, title_zh TEXT, shop_name TEXT, shop_id TEXT, category TEXT,
-             popularity INTEGER, first_seen BIGINT, price_cny REAL, hidden SMALLINT, posted_count INTEGER, qc_count INTEGER,
-             prev_price REAL, price_changed_at BIGINT)
-           ON CONFLICT (id) DO UPDATE SET title_en = EXCLUDED.title_en, title_zh = EXCLUDED.title_zh, shop_name = EXCLUDED.shop_name,
-             shop_id = EXCLUDED.shop_id, category = EXCLUDED.category, popularity = EXCLUDED.popularity, first_seen = EXCLUDED.first_seen,
-             price = EXCLUDED.price, hidden = EXCLUDED.hidden, posted = EXCLUDED.posted, qc = EXCLUDED.qc,
-             prev_price = EXCLUDED.prev_price, price_changed_at = EXCLUDED.price_changed_at`,
-        [JSON.stringify(results.map(({ rid, ...x }) => x))]);
-        copied += results.length;
-        cursor = results[results.length - 1].rid;
-      }
-      if (results.length < CHUNK) {
+    for (let i = 0; i < PER_RUN - 1; i++) {
+      const r = await copyRows(env, e, cursor);
+      copied += r.n;
+      if (r.last) cursor = r.last;
+      if (r.last && r.last > tail) await kvSet(env, `sidx:tail:${tag}`, r.last);
+      if (r.n < CHUNK) {
         // Fin de la base : un tour complet est fait, on recommence au début au prochain passage.
         await kvSet(env, `sidx:done:${tag}`, Date.now());
         cursor = 0;
@@ -82,6 +73,29 @@ export async function syncSearchIndex(env) {
     await kvSet(env, `sidx:cursor:${tag}`, cursor);
   }
   return copied;
+}
+
+// Une tranche d'items (rowid > after) copiée dans l'index. { n, last }
+async function copyRows(env, e, after) {
+  const { results } = await e.DB.prepare(
+    `SELECT rowid AS rid, id, title_en, title_zh, shop_name, shop_id, category, popularity, first_seen, price_cny,
+            hidden, posted_count, qc_count, prev_price, price_changed_at
+     FROM items WHERE rowid > ? ORDER BY rowid LIMIT ?`,
+  ).bind(after, CHUNK).all();
+  if (!results.length) return { n: 0, last: null };
+  await neon(env, `INSERT INTO items_search (id, title_en, title_zh, shop_name, shop_id, category, popularity, first_seen, price,
+       hidden, posted, qc, prev_price, price_changed_at)
+     SELECT id, title_en, title_zh, shop_name, shop_id, category, coalesce(popularity, 0), first_seen, price_cny,
+       coalesce(hidden, 0), coalesce(posted_count, 0), coalesce(qc_count, 0), prev_price, price_changed_at
+     FROM jsonb_to_recordset($1::jsonb) AS x(id TEXT, title_en TEXT, title_zh TEXT, shop_name TEXT, shop_id TEXT, category TEXT,
+       popularity INTEGER, first_seen BIGINT, price_cny REAL, hidden SMALLINT, posted_count INTEGER, qc_count INTEGER,
+       prev_price REAL, price_changed_at BIGINT)
+     ON CONFLICT (id) DO UPDATE SET title_en = EXCLUDED.title_en, title_zh = EXCLUDED.title_zh, shop_name = EXCLUDED.shop_name,
+       shop_id = EXCLUDED.shop_id, category = EXCLUDED.category, popularity = EXCLUDED.popularity, first_seen = EXCLUDED.first_seen,
+       price = EXCLUDED.price, hidden = EXCLUDED.hidden, posted = EXCLUDED.posted, qc = EXCLUDED.qc,
+       prev_price = EXCLUDED.prev_price, price_changed_at = EXCLUDED.price_changed_at`,
+  [JSON.stringify(results.map(({ rid, ...x }) => x))]);
+  return { n: results.length, last: results[results.length - 1].rid };
 }
 
 // L'index est utilisable quand chaque base du catalogue a été copiée en entier au moins une fois.
