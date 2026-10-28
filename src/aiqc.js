@@ -42,7 +42,11 @@ async function allowed(env) {
      ON CONFLICT(key) DO UPDATE SET value = json_object('day', ?1, 'used',
        CASE WHEN json_extract(settings.value, '$.day') = ?1 THEN json_extract(settings.value, '$.used') + 1 ELSE 1 END)
      RETURNING json_extract(value, '$.used') AS used`,
-  ).bind(day).first();
+  ).bind(day).first().catch((err) => {
+    // Base sans écriture possible (quota du jour) : le compteur ne bloque pas le service.
+    console.log('compteur IA', String(err).slice(0, 100));
+    return { used: 0 };
+  });
   return row && row.used <= (env.GROQ_API_KEY ? AIQC_PER_DAY_GROQ : AIQC_PER_DAY);
 }
 
@@ -56,7 +60,7 @@ async function uncount(env) {
 }
 
 // Analyse (ou résultat déjà gardé) d'un lot de photos. { result, cached } ; result null si limite du jour ou échec.
-export async function qcAnalysis(env, photos, { ref = null, what = null, gold = null } = {}) {
+export async function qcAnalysis(env, photos, { ref = null, what = null, gold = null, progress = null } = {}) {
   const shots = photos.filter((u) => /^https:\/\//.test(u || '')).slice(0, PHOTOS);
   if (!shots.length) return { result: null, reason: 'photos' };
   const key = `aiqc:${await hashKey([ref || '', ...shots])}`;
@@ -65,7 +69,7 @@ export async function qcAnalysis(env, photos, { ref = null, what = null, gold = 
   if (!(await allowed(env))) return { result: null, reason: 'limite' };
   let quota = false;
   let busy = false;
-  const result = await analyzeQc(env, shots, { ref, what, gold }).catch((err) => {
+  const result = await analyzeQc(env, shots, { ref, what, gold, progress }).catch((err) => {
     console.log('analyse QC', String(err).slice(0, 160));
     quota = /4006/.test(String(err));
     busy = /occupe/.test(String(err));
@@ -85,6 +89,78 @@ export async function qcAnalysis(env, photos, { ref = null, what = null, gold = 
   if (result.neurons) await aiNeurons(env).then((b) => b.add(Math.round(result.neurons))).catch(() => {});
   await env.DB.prepare('INSERT OR REPLACE INTO search_cache (key, ids, at) VALUES (?, ?, ?)').bind(key, JSON.stringify(result), Date.now()).run().catch(() => {});
   return { result, cached: false };
+}
+
+// ---------------------------------------------------------------- Progression (message d'attente)
+
+// Étapes affichées pendant l'analyse, avec leur part du temps total.
+const STEPS = {
+  match: { label: 'Recherche de l\'article', icon: '🔎', weight: 0.08 },
+  photos: { label: 'Lecture des photos', icon: '📸', weight: 0.42 },
+  zoom: { label: 'Gros plan du logo et des étiquettes', icon: '🔬', weight: 0.12 },
+  compare: { label: 'Comparaison avec un autre batch', icon: '⚖️', weight: 0.12 },
+  merge: { label: 'Avis de l\'expert', icon: '🧠', weight: 0.12 },
+  verify: { label: '2e lecture des points douteux', icon: '🔁', weight: 0.14 },
+};
+const DEFAULT_MS = 35000;
+
+// Durée moyenne d'une analyse (gardée dans les réglages), pour l'estimation du temps.
+async function averageMs(env) {
+  const row = await env.DB.prepare("SELECT value FROM settings WHERE key = 'aiqc:avg'").first().catch(() => null);
+  const v = row && Number(row.value);
+  return v > 5000 && v < 300000 ? v : DEFAULT_MS;
+}
+
+async function recordMs(env, ms) {
+  const avg = await averageMs(env);
+  await env.DB.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('aiqc:avg', ?)").bind(String(Math.round(avg * 0.7 + ms * 0.3))).run().catch(() => {});
+}
+
+// Carte « analyse en cours » : étapes (faite, en cours, à venir), barre de progression et temps restant (compte à
+// rebours Discord, qui défile tout seul).
+export function progressView(emojis, p, accent) {
+  const e = (n) => etxt(emojis, n);
+  const keys = p.keys;
+  const at = keys.indexOf(p.current);
+  const done = keys.slice(0, Math.max(0, at)).filter((k) => p.started.has(k));
+  const frac = Math.min(0.97, done.reduce((n, k) => n + STEPS[k].weight, 0) / keys.reduce((n, k) => n + STEPS[k].weight, 0) + 0.02);
+  const cells = 14;
+  const full = Math.round(frac * cells);
+  const bar = `${'▰'.repeat(full)}${'▱'.repeat(cells - full)}  **${Math.round(frac * 100)} %**`;
+  const lines = keys.map((k, i) => {
+    const st = STEPS[k];
+    if (i < at && !p.started.has(k)) return null; // étape sautée (pas de batch de référence, pas de doute…)
+    if (i < at) return `✅ ${st.label}`;
+    if (i === at) return `${e('fb_loading')} **${st.label}…**`;
+    return `-# ${st.icon} ${st.label}${k === 'verify' ? ' (si besoin)' : ''}`;
+  }).filter(Boolean);
+  const end = Math.round((p.start + p.eta) / 1000);
+  const left = end * 1000 - Date.now() > 3000 ? `Résultat estimé <t:${end}:R>` : 'Encore quelques secondes…';
+  return [container([
+    text(`### ${e('fb_aiscan')} Analyse de tes QC en cours\n-# L'IA examine ${p.count} photo(s) comme un contrôleur : matière, logo, coutures, étiquettes, mesures.`),
+    sep(),
+    text(lines.join('\n')),
+    sep(),
+    text(`${bar}\n⏱️ ${left}`),
+  ], accent)];
+}
+
+// Suivi de progression : renvoie step(clé) qui met à jour le message (au plus une modification par seconde, sauf
+// changement d'étape) ; send(components) publie la carte.
+export async function tracker(env, emojis, { keys, count, accent, send }) {
+  const p = { keys, count, current: keys[0], started: new Set([keys[0]]), start: Date.now(), eta: await averageMs(env) };
+  let chain = Promise.resolve();
+  const push = () => { chain = chain.then(() => send(progressView(emojis, p, accent))).catch((err) => console.log('progression', String(err).slice(0, 120))); return chain; };
+  const step = (key) => {
+    if (!keys.includes(key) || key === p.current) return chain;
+    if (keys.indexOf(key) < keys.indexOf(p.current)) return chain;
+    p.current = key;
+    p.started.add(key);
+    return push();
+  };
+  step.first = () => push();
+  step.finish = async (counted) => { await chain; if (counted) await recordMs(env, Date.now() - p.start); };
+  return step;
 }
 
 // Ce que l'IA a fait en plus de lire les photos.
@@ -133,11 +209,17 @@ export async function aiqcMessage(env, ctx, c, m) {
   const shots = (m.attachments || []).filter(isImg).slice(0, PHOTOS);
   if (!shots.length) return 0;
   const accent = (ACCENTS[ctx.cfg.accent] || ACCENTS.orange).color;
-  const pending = await discordApi(env, 'POST', `/channels/${c.channel_id}/messages`, {
-    flags: COMPONENTS_V2, allowed_mentions: { parse: [] },
-    components: [container([text(`### ${etxt(ctx.emojis, 'fb_loading')} Analyse de tes QC en cours…\n-# L'IA regarde tes ${shots.length} photo(s) : défauts, coutures, logo, taille, mesures.`)], accent)],
-    message_reference: { message_id: m.id, fail_if_not_exists: false },
+  // Message d'attente tout de suite, mis à jour à chaque étape (barre de progression, temps restant).
+  let pending = null;
+  const step = await tracker(env, ctx.emojis, {
+    keys: ['match', 'photos', 'zoom', 'compare', 'merge', 'verify'], count: shots.length, accent,
+    send: async (components) => {
+      const body = { flags: COMPONENTS_V2, allowed_mentions: { parse: [] }, components };
+      if (pending) return discordApi(env, 'PATCH', `/channels/${c.channel_id}/messages/${pending.id}`, body);
+      pending = await discordApi(env, 'POST', `/channels/${c.channel_id}/messages`, { ...body, message_reference: { message_id: m.id, fail_if_not_exists: false } });
+    },
   });
+  await step.first();
   // Lien de l'item dans le message : photo du vendeur comme référence, et un autre batch de l'article.
   let ref = null;
   let title = null;
@@ -158,12 +240,13 @@ export async function aiqcMessage(env, ctx, c, m) {
   if (!gold && found[0] && found[0].qc) {
     gold = goldPhoto(await fetchQcPage(found[0].id, 1).catch(() => null), urls, {}, false);
   }
-  const res = await qcAnalysis(env, urls, { ref, what: title, gold });
+  step('photos');
+  const res = await qcAnalysis(env, urls, { ref, what: title, gold, progress: step });
+  await step.finish(res.result && !res.cached);
   c.done++;
-  await discordApi(env, 'PATCH', `/channels/${c.channel_id}/messages/${pending.id}`, {
-    flags: COMPONENTS_V2, allowed_mentions: { parse: [] },
-    components: analysisView(ctx.emojis, res, { title, who: m.author && m.author.id, match: found[0] ? matchBlocks(ctx, found[0], c.channel_id) : null }),
-  });
+  const body = { flags: COMPONENTS_V2, allowed_mentions: { parse: [] }, components: analysisView(ctx.emojis, res, { title, who: m.author && m.author.id, match: found[0] ? matchBlocks(ctx, found[0], c.channel_id) : null }) };
+  if (pending) await discordApi(env, 'PATCH', `/channels/${c.channel_id}/messages/${pending.id}`, body);
+  else await discordApi(env, 'POST', `/channels/${c.channel_id}/messages`, { ...body, message_reference: { message_id: m.id, fail_if_not_exists: false } });
   return 8;
 }
 

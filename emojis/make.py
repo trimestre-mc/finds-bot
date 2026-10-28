@@ -112,6 +112,21 @@ def spin(t):
                  f'<path d="M64 32a32 32 0 0 1 32 32" fill="none" stroke="#fff" stroke-width="12" stroke-linecap="round" transform="rotate({a:.1f} 64 64)"/>')
 save_gif('fb_loading', frames(spin, 12), 60)
 
+# Analyse IA des QC : une photo balayée par un faisceau de scan, avec une étincelle qui pulse.
+def aiscan(t):
+    y = 34 + 58 * (0.5 - 0.5 * math.cos(2 * math.pi * t))  # va-et-vient doux
+    glow = 0.5 + 0.5 * math.sin(2 * math.pi * t * 2)
+    return badge('#8b5cf6', '#4f46e5',
+        '<defs><linearGradient id="beam" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#67e8f9" stop-opacity="0"/>'
+        '<stop offset="1" stop-color="#67e8f9" stop-opacity=".75"/></linearGradient><clipPath id="ph"><rect x="22" y="30" width="72" height="66" rx="10"/></clipPath></defs>'
+        '<rect x="22" y="30" width="72" height="66" rx="10" fill="#fff"/>'
+        '<path d="M28 90l20-24 14 16 10-10 16 18z" fill="#c4b5fd"/><circle cx="76" cy="46" r="7" fill="#a78bfa"/>'
+        f'<g clip-path="url(#ph)"><rect x="22" y="{y - 22:.1f}" width="72" height="22" fill="url(#beam)"/>'
+        f'<rect x="22" y="{y - 2:.1f}" width="72" height="4" fill="#22d3ee"/></g>'
+        f'<path d="M104 18l4 10 10 4-10 4-4 10-4-10-10-4 10-4z" fill="#fde047" fill-opacity="{0.45 + 0.55 * glow:.2f}" '
+        f'transform="translate({104 * (1 - (0.8 + 0.2 * glow)):.1f} {32 * (1 - (0.8 + 0.2 * glow)):.1f}) scale({0.8 + 0.2 * glow:.2f})"/>')
+save_gif('fb_aiscan', frames(aiscan, 20), 60)
+
 # Planche de contrôle.
 names = sorted(f for f in os.listdir(OUT) if f.endswith(('.png', '.gif')))
 cols = 8

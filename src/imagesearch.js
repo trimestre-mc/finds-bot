@@ -67,7 +67,11 @@ async function visionAllowed(env) {
      ON CONFLICT(key) DO UPDATE SET value = json_object('day', ?1, 'used',
        CASE WHEN json_extract(settings.value, '$.day') = ?1 THEN json_extract(settings.value, '$.used') + 1 ELSE 1 END)
      RETURNING json_extract(value, '$.used') AS used`,
-  ).bind(day).first();
+  ).bind(day).first().catch((err) => {
+    // Base sans écriture possible (quota du jour) : le compteur ne bloque pas le service.
+    console.log('compteur IA', String(err).slice(0, 100));
+    return { used: 0 };
+  });
   return row && row.used <= VISION_PER_DAY;
 }
 

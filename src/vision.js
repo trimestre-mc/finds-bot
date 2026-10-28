@@ -342,7 +342,8 @@ const MERGE_SYSTEM = 'Tu es un expert QC de reps (vêtements, chaussures, sacs, 
 const noteOf = (m) => (m && Number.isFinite(Number(m.note)) && m.note !== null && m.note !== '' ? Math.max(0, Math.min(10, Math.round(Number(m.note)))) : null);
 
 // gold : { url, same, gl } = QC d'un autre acheteur prise comme référence (même article, ou article qui ressemble).
-export async function analyzeQc(env, photos, { ref = null, what = null, model = VISION_MODEL, gold = null, trace = null } = {}) {
+export async function analyzeQc(env, photos, { ref = null, what = null, model = VISION_MODEL, gold = null, trace = null, progress = null } = {}) {
+  const step = (k) => (progress ? progress(k) : null);
   const note = (step, x) => { if (trace) trace.push(`${step} : ${String(x).slice(0, 700)}`); };
   if (!env.AI && !env.GROQ_API_KEY) return null;
   const shots = photos.filter(Boolean).slice(0, 3); // 3 photos : rapide, et dans les limites gratuites
@@ -391,6 +392,7 @@ export async function analyzeQc(env, photos, { ref = null, what = null, model = 
     groups.push({ from: i, urls: shots.slice(i, i + size) });
     i += size;
   }
+  step('photos');
   const per = await inTurn(groups.map((g) => () => runVision(env, model,
     QC_PROMPT({ ref: !!(ref && g.from === 0), what, from: g.from + 1, count: g.urls.length }),
     [...(ref && g.from === 0 ? [ref] : []), ...g.urls], view).catch(failure)));
@@ -421,6 +423,7 @@ export async function analyzeQc(env, photos, { ref = null, what = null, model = 
   const zone = z && (Array.isArray(z) ? z : z.zone);
   if (zoomOf >= 0 && zone) {
     extra.push(async () => {
+      step('zoom');
       const size = (await image(shots[zoomOf]).catch(() => ({}))).size;
       const crop = cropUrl(shots[zoomOf], zone, size);
       note('gros plan', crop || `pas de zone (taille ${JSON.stringify(size || null)})`);
@@ -431,6 +434,7 @@ export async function analyzeQc(env, photos, { ref = null, what = null, model = 
   }
   if (gold && gold.url && !shots.includes(gold.url)) {
     extra.push(async () => {
+      step('compare');
       note('comparaison', gold.url);
       const r = await runVision(env, model, GOLD_PROMPT({ same: gold.same, gl: gold.gl, what: known }), [gold.url, shots[0]], view, 250).catch(failure);
       return r.raw && (gold.same || r.raw.meme !== false) && Array.isArray(r.raw.points) && r.raw.points.length
@@ -461,6 +465,7 @@ export async function analyzeQc(env, photos, { ref = null, what = null, model = 
     const m = parseFirstObject(res.text);
     return m && Array.isArray(m.points) ? m : null;
   };
+  step('merge');
   let merged = await merge(observations).catch((err) => { console.log('analyse QC (fusion)', String(err).slice(0, 160)); return null; });
 
   // Note entre 5 et 7 : les doutes sont revus sur les photos concernées, puis l'analyse est refaite.
@@ -469,6 +474,7 @@ export async function analyzeQc(env, photos, { ref = null, what = null, model = 
   if (merged && noteOf(merged) >= 5 && noteOf(merged) <= 7 && doubts.length) {
     const cited = [...new Set(doubts.flatMap((d) => [...d.matchAll(/photo (\d)/gi)].map((m) => Number(m[1]) - 1)))].filter((i) => shots[i]);
     const look = (cited.length ? cited : [0, 1]).filter((i) => shots[i]).slice(0, 2).map((i) => shots[i]);
+    step('verify');
     note('2e lecture', doubts.join(' | '));
     const r = await runVision(env, model, VERIFY_PROMPT({ doubts, what: known }), look, view, 300).catch(failure);
     neurons += r.neurons || 0;

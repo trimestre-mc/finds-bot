@@ -21,7 +21,7 @@ const answer = '{"article":"Nike Tech Fleece Shorts","verdict":"a_verifier","poi
 
 test('analyse IA des QC : résultat lisible, gardé en cache, limite du jour', async () => {
   let calls = 0;
-  const env = { DB: memoryDb(), AI: { run: async () => { calls++; return { response: answer, usage: { neurons: 150 } }; } } };
+  const env = { DB: memoryDb(), OVH_OFF: '1', AI: { run: async () => { calls++; return { response: answer, usage: { neurons: 150 } }; } } };
   globalThis.fetch = async () => new Response(new Uint8Array(3000), { headers: { 'content-type': 'image/jpeg' } });
   const photos = ['https://img.finderqc.com/1.jpg', 'https://img.finderqc.com/2.jpg'];
   const first = await qcAnalysis(env, photos);
@@ -43,7 +43,7 @@ test('analyse IA des QC : résultat lisible, gardé en cache, limite du jour', a
 });
 
 test('salon d\'analyse IA : photos postées → « analyse en cours » puis le résultat', async () => {
-  const env = { DB: memoryDb(), DISCORD_API: 'https://discord.test', AI: { run: async () => ({ response: answer }) } };
+  const env = { DB: memoryDb(), DISCORD_API: 'https://discord.test', OVH_OFF: '1', AI: { run: async () => ({ response: answer }) } };
   const sent = [];
   globalThis.fetch = async (url, opts = {}) => {
     const u = String(url);
@@ -56,15 +56,18 @@ test('salon d\'analyse IA : photos postées → « analyse en cours » puis le r
   await aiqcMessage(env, ctx, c, m);
   assert.equal(c.done, 1);
   assert.match(sent[0].body, /Analyse de tes QC en cours/);
-  assert.equal(sent[1].method, 'PATCH');
-  assert.match(sent[1].body, /Étiquette : taille M/);
-  assert.match(sent[1].body, /Demandé par <@42>/);
+  assert.match(sent[0].body, /Résultat estimé <t:\d+:R>/); // compte à rebours
+  assert.ok(sent.some((x) => x.method === 'PATCH' && /✅ Recherche de l'article/.test(x.body))); // étapes qui avancent
+  const last = sent[sent.length - 1];
+  assert.equal(last.method, 'PATCH');
+  assert.match(last.body, /Étiquette : taille M/);
+  assert.match(last.body, /Demandé par <@42>/);
   assert.equal(await aiqcMessage(env, ctx, c, { ...m, attachments: [] }), 0); // pas de photo : rien
 });
 
 test('quota d\'IA épuisé chez Cloudflare : message « limite du jour », plus d\'essai', async () => {
   let calls = 0;
-  const env = { DB: memoryDb(), AI: { run: async () => { calls++; throw new Error('4006: you have used up your daily free allocation of 10,000 neurons'); } } };
+  const env = { DB: memoryDb(), OVH_OFF: '1', AI: { run: async () => { calls++; throw new Error('4006: you have used up your daily free allocation of 10,000 neurons'); } } };
   globalThis.fetch = async () => new Response(new Uint8Array(3000), { headers: { 'content-type': 'image/jpeg' } });
   const res = await qcAnalysis(env, ['https://img.finderqc.com/9.jpg']);
   assert.equal(res.reason, 'limite');

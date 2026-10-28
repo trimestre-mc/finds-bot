@@ -11,6 +11,7 @@ export const FALLBACK = {
   fb_crown: '👑', fb_star: '⭐', fb_new: '🆕', fb_search: '🔎', fb_compare: '⚖️', fb_coupon: '🎟️', fb_gift: '🎁',
   fb_signup: '✍️', fb_stats: '📊', fb_bell: '🔔', fb_box: '📦', fb_trend: '📈', fb_bot: '🤖', fb_warn: '⚠️', fb_live: '🟢',
   fb_loading: '⏳',
+  fb_aiscan: '🤖',
 };
 
 // Emoji d'un agent ou d'une plateforme (badge dédié s'il existe, sinon le chariot).

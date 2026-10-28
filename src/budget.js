@@ -5,7 +5,9 @@
 // types de travail. On indexe ainsi tous les jours au lieu de tout dépenser en quelques jours puis s'arrêter.
 
 // Valeurs pour D1 gratuit ; plus grandes avec Turso (variables BUDGET_ITEMS, BUDGET_PAGES, BUDGET_CATEGORIZE, BUDGET_QCSYNC).
-const CAPS = { items: 5000, pages: 3000, categorize: 12000, qcsync: 2000 };
+// Total ≈ 46 000 lignes/jour (ROWS) : la moitié du quota gratuit de D1 (100 000), l'autre moitié reste au bot
+// (réglages, caches, posts, analyses). Le 28/10/2026 les anciennes valeurs (≈ 104 000) ont vidé le quota.
+const CAPS = { items: 2500, pages: 1500, categorize: 4000, qcsync: 1000 };
 const ROWS = { items: 8, pages: 4, categorize: 3, qcsync: 8 };
 // Part de la journée pour chaque type de travail (le reste non utilisé passe au lendemain).
 const SHARE = { items: 0.4, qcsync: 0.3, pages: 0.2, categorize: 0.1 };

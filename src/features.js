@@ -1,12 +1,12 @@
 // Fonctions ajoutées au panneau et au bot : suivi des clics, /find et /convert publics, drops automatiques,
 // conversion automatique des liens, filtres, liste noire, historique, réglages, santé.
 
-import { discordApi, followup } from './discord.js';
+import { discordApi, followup, editOriginal } from './discord.js';
 import { COMPONENTS_V2, container, text, escape, section, thumb } from './components.js';
 import { panel, update, openModal, later, userId } from './respond.js';
 import { buildAgentLink, canonicalUrl, extractItemRefs } from './links.js';
 import { communityQc, refreshQc, communityPhotos, qcWindow, qcShareMessage, qcPagePhotos, goldPhoto } from './qc.js';
-import { qcAnalysis, analysisView } from './aiqc.js';
+import { qcAnalysis, analysisView, tracker } from './aiqc.js';
 import { cachedIds, withoutCache } from './search.js';
 import { postContext, processQueue, logError, FORUM } from './post.js';
 import { getConfig, setConfig, getSignup, CURRENCIES, LANGS, ACCENTS } from './config.js';
@@ -201,8 +201,15 @@ export async function handlePublicComponent(it, env, ctx) {
       const shots = photos.slice(0, 3);
       // Référence : un autre batch du même article (déjà téléchargé avec la page, aucune requête de plus).
       const gold = goldPhoto(qc, [...shots, ...batches.flatMap((b) => b.photos)], item);
-      const res = await qcAnalysis(env, shots, { ref: /^https:\/\//.test(item.image || '') ? item.image : null, what: item.title_en || item.title_zh || null, gold });
       const emojis = await loadEmojis(env);
+      // Progression dans la réponse (en attente) : étapes, barre, temps restant.
+      const step = await tracker(env, emojis, {
+        keys: ['photos', 'zoom', 'compare', 'merge', 'verify'], count: shots.length, accent: 0x8b5cf6,
+        send: (components) => editOriginal(env, it.token, { flags: COMPONENTS_V2, components, allowed_mentions: { parse: [] } }),
+      });
+      await step.first();
+      const res = await qcAnalysis(env, shots, { ref: /^https:\/\//.test(item.image || '') ? item.image : null, what: item.title_en || item.title_zh || null, gold, progress: step });
+      await step.finish(res.result && !res.cached);
       const title = item.title_en || item.title_zh || null;
       if (kind === 'aiqcshare') {
         await followup(env, it.token, { flags: COMPONENTS_V2, allowed_mentions: { parse: [] }, components: analysisView(emojis, res, { title, photos: shots, who: userId(it) }) });
