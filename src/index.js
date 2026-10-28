@@ -752,11 +752,12 @@ async function handleApi(request, env, url) {
 
   // Diagnostic : analyse IA de photos QC (urls séparées par des virgules ; ref = photo du vendeur).
   if (path === '/api/aiqc' && request.method === 'GET') {
+    const trace = [];
     try {
       const photos = (url.searchParams.get('urls') || '').split(',').filter(Boolean);
-      return json({ ok: true, result: await analyzeQc(env, photos, { ref: url.searchParams.get('ref') || null, what: url.searchParams.get('what') || null, model: url.searchParams.get('model') || undefined, gold: url.searchParams.get('gold') ? { url: url.searchParams.get('gold'), same: true, gl: false } : null }) });
+      return json({ ok: true, trace, result: await analyzeQc(env, photos, { trace, ref: url.searchParams.get('ref') || null, what: url.searchParams.get('what') || null, model: url.searchParams.get('model') || undefined, gold: url.searchParams.get('gold') ? { url: url.searchParams.get('gold'), same: true, gl: false } : null }) });
     } catch (err) {
-      return json({ ok: false, error: String(err.message || err).slice(0, 300) });
+      return json({ ok: false, trace, error: String(err.message || err).slice(0, 300) });
     }
   }
 

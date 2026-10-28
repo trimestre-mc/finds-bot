@@ -132,6 +132,9 @@ function groqBody(model, messages, maxTokens) {
   return body;
 }
 
+// Dernière erreur de Groq (diagnostic de /api/aiqc).
+let lastGroqError = null;
+
 // messages au format OpenAI ; kind : 'vision' ou 'text'. Renvoie { text, neurons, provider }.
 // prefer : 'groq' (analyses QC, gros quota) ou 'cloudflare' (lecture de marque, très peu coûteuse : Groq reste libre).
 export async function chat(env, { messages, kind = 'vision', cfModel, maxTokens = 600, cfExtra = {}, prefer = 'groq' }) {
@@ -165,10 +168,12 @@ export async function chat(env, { messages, kind = 'vision', cfModel, maxTokens 
       }
       const err = await res.text();
       console.log('groq', res.status, err.slice(0, 300));
+      lastGroqError = `${res.status} ${err.slice(0, 500)}`;
       // Quota du jour de Groq atteint (« per day ») : on ne lui demande plus rien jusqu'à l'heure qu'il indique.
       if (res.status === 429 && /per day/i.test(err)) await groqRest(env, err);
     } catch (err) {
       console.log('groq', String(err).slice(0, 160));
+      lastGroqError = String(err).slice(0, 200);
     }
   }
   if (!env.AI || prefer === 'cloudflare') throw new Error('aucune IA disponible (Groq saturé)');
@@ -204,7 +209,7 @@ export async function describeImage(env, imageUrl, model = VISION_MODEL) {
 // ---------------------------------------------------------------- Analyse des QC par l'IA
 
 const QC_PROMPT = (ctx) => `Tu es un expert en contrôle qualité (QC) de vêtements, chaussures et accessoires achetés via un agent en Chine.
-${ctx.ref ? `La PREMIÈRE image est la photo du vendeur (le produit attendu). La seconde est la photo QC n°${ctx.n || 1} (ce que l'agent a reçu).` : `L'image est la photo QC n°${ctx.n || 1} (ce que l'agent a reçu).`}
+${ctx.ref ? 'La PREMIÈRE image est la photo du vendeur (le produit attendu). Les suivantes sont' : 'Les images sont'} les photos QC n°1 à n°${ctx.count} (ce que l'agent a reçu), dans l'ordre : le même article, en vue d'ensemble et en gros plans.
 ${ctx.what ? `Article : ${ctx.what}.` : ''}
 Pour reconnaître la marque, lis les logos avec soin (écriture gothique, logo en relief ou ton sur ton). Repères : ${BRAND_CUES}
 Ce sont des reps : sois un contrôleur SÉVÈRE. Compare à ce que tu sais du VRAI produit de la marque (forme et police exactes du logo, matière, méthode d'impression, quincaillerie, proportions) et cherche activement les signes d'un mauvais batch :
@@ -226,9 +231,9 @@ ${knownType(ctx.what) ? '' : `Points d'expert selon le type d'article :
 `}Étiquettes : lis-les entièrement. Chaussures : pointures US / UK / EUR / cm, code produit (ex : FQ8138-001), dates ; vérifie que les pointures sont cohérentes entre elles (ex : US 11 = UK 10 = EUR 45 = 29 cm) et que les étiquettes gauche et droite concordent. Vêtements : taille (S, M, L…) et composition.
 Si une règle graduée est visible, estime une mesure utile (ex : « Longueur ≈ 70 cm ») et dis si elle paraît cohérente avec la taille de l'étiquette.
 ${ctx.ref ? 'Si la photo du vendeur montre plusieurs coloris (collage), ne compare pas la couleur avec elle.' : ''}
-Indique le numéro de la photo QC (photo ${ctx.n || 1}). Ne te contredis pas. Évite les phrases vagues (« belle finition ») : dis ce que tu vois. Sois bref : des faits, pas de longues phrases.
+Indique le numéro de la photo QC concernée (« photo 2 : … »). Ne te contredis pas. Évite les phrases vagues (« belle finition ») : dis ce que tu vois. Sois bref : des faits, pas de longues phrases.
 Ne juge PAS si c'est authentique. Ne invente rien : si un détail n'est pas visible, dis-le. Sois concret (« photo 2 : fil qui dépasse sur la manche gauche »).
-Réponds UNIQUEMENT avec un objet JSON compact : {"vu": "une phrase : ce que montre la photo", "article": "marque et type d'article si reconnaissables, sinon null", "verdict": "ok" ou "a_verifier" ou "probleme", "points": [{"etat": "ok" ou "attention" ou "probleme", "texte": "phrase courte en français"}], "zoom": [x1, y1, x2, y2] = zone (en % de la photo QC, de 0 à 100) du détail le plus utile à voir de près (logo, police, étiquette, broderie), ou null}. 2 à 4 points.`;
+Réponds UNIQUEMENT avec un objet JSON compact : {"vu": "une phrase : ce que montrent les photos", "article": "marque et type d'article si reconnaissables, sinon null", "verdict": "ok" ou "a_verifier" ou "probleme", "points": [{"etat": "ok" ou "attention" ou "probleme", "texte": "phrase courte en français"}], "zoom": {"photo": numéro de la photo QC, "zone": [x1, y1, x2, y2] en % de cette photo (0 à 100)} = le détail le plus utile à voir de près (logo, police, étiquette, broderie), ou null}. 3 à 6 points.`;
 
 // Gros plan (zoom) d'une photo QC : juger l'exécution du logo ou de l'étiquette.
 const ZOOM_PROMPT = (ctx) => `Tu es un expert en contrôle qualité (QC) de reps achetés via un agent en Chine. L'image est un GROS PLAN (zoom) de la photo QC n°${ctx.n}${ctx.what ? ` (article : ${ctx.what})` : ''}.
@@ -294,7 +299,8 @@ const MERGE_SYSTEM = 'Tu es un expert QC de reps (vêtements, chaussures, sacs, 
 const noteOf = (m) => (m && Number.isFinite(Number(m.note)) && m.note !== null && m.note !== '' ? Math.max(0, Math.min(10, Math.round(Number(m.note)))) : null);
 
 // gold : { url, same, gl } = QC d'un autre acheteur prise comme référence (même article, ou article qui ressemble).
-export async function analyzeQc(env, photos, { ref = null, what = null, model = VISION_MODEL, gold = null } = {}) {
+export async function analyzeQc(env, photos, { ref = null, what = null, model = VISION_MODEL, gold = null, trace = null } = {}) {
+  const note = (step, x) => { if (trace) trace.push(`${step} : ${String(x).slice(0, 700)}`); };
   if (!env.AI && !env.GROQ_API_KEY) return null;
   const shots = photos.filter(Boolean).slice(0, 3); // 3 photos : rapide, et dans les limites gratuites
   if (!shots.length) return null;
@@ -321,44 +327,50 @@ export async function analyzeQc(env, photos, { ref = null, what = null, model = 
   }
   const failure = (err) => {
     console.log('analyse QC (photo)', String(err).slice(0, 160));
+    note('erreur', `${err} · Groq : ${lastGroqError}`);
     // Cloudflare sans quota (4006) : si Groq est aussi au repos pour la journée, c'est la limite du jour ; sinon Groq est
     // juste saturé pour la minute.
     const cfOut = /4006|daily free allocation/.test(String(err));
     return { raw: null, neurons: 0, quota: cfOut && !env.GROQ_API_KEY, busy: cfOut || /saturé|429/.test(String(err)), cfOut };
   };
-  const one = (u, i) => runVision(env, model, QC_PROMPT({ ref: !!(ref && i === 0), what, n: i + 1 }), [...(ref && i === 0 ? [ref] : []), u], view).catch(failure);
-  // Avec Groq : une photo après l'autre (limite de jetons par minute de l'offre gratuite) ; sinon en parallèle.
+  // Toutes les photos dans une seule requête : les consignes (l'essentiel des jetons) ne sont envoyées qu'une fois.
+  const per = [await runVision(env, model, QC_PROMPT({ ref: !!ref, what, count: shots.length }), [...(ref ? [ref] : []), ...shots], view).catch(failure)];
+  // Avec Groq : les étapes l'une après l'autre (limite de jetons par minute de l'offre gratuite) ; sinon en parallèle.
   const inTurn = async (tasks) => {
     if (!env.GROQ_API_KEY) return Promise.all(tasks.map((t) => t()));
     const out = [];
     for (const t of tasks) out.push(await t());
     return out;
   };
-  const per = await inTurn(shots.map((u, i) => () => one(u, i)));
+  note('photos', per[0].raw ? `ok, zoom ${JSON.stringify(per[0].raw.zoom || null)}` : `illisible : ${per[0].out || ''}`);
   const ok = per.filter((p) => p.raw && Array.isArray(p.raw.points));
   if (!ok.length && per.some((p) => p.quota)) throw new Error('4006 : quota d\'IA du jour épuisé');
   if (!ok.length && per.some((p) => p.cfOut) && await groqResting(env)) throw new Error('4006 : quotas d\'IA du jour épuisés (Cloudflare et Groq)');
   if (!ok.length && per.some((p) => p.busy)) throw new Error('occupe : IA très demandée');
-  const photosSeen = ok.length;
+  const photosSeen = ok.length ? shots.length : 0;
   let neurons = per.reduce((n, p) => n + p.neurons, 0);
   if (!ok.length) {
     console.log('analyse QC : réponses illisibles', String((per[0] && per[0].out) || '').slice(0, 200));
     return null;
   }
-  const observations = per.map((p, i) => (p.raw && Array.isArray(p.raw.points) ? {
-    photo: i + 1, vu: String(p.raw.vu || (Array.isArray(p.raw.photos) ? p.raw.photos.join(' ') : '')).slice(0, 300), article: p.raw.article || null, verdict: p.raw.verdict,
+  const observations = ok.map((p) => ({
+    photo: `photos 1 à ${shots.length}`, vu: String(p.raw.vu || '').slice(0, 300), article: p.raw.article || null, verdict: p.raw.verdict,
     points: p.raw.points.map((x) => `${etat(x.etat)} : ${x.texte}`),
-  } : null)).filter(Boolean);
+  }));
   const article = clean(ok.map((p) => p.raw.article).find(Boolean));
   const known = [what, article].filter(Boolean).join(' · ') || null;
 
   // En plus : gros plan du logo ou de l'étiquette (zone choisie par le modèle) et comparaison avec un autre batch.
   const extra = [];
-  const zoomOf = per.findIndex((p) => p.raw && Array.isArray(p.raw.zoom));
-  if (zoomOf >= 0) {
+  // Zone à agrandir : { photo, zone } (ou directement [x1, y1, x2, y2] pour la photo 1).
+  const z = ok[0].raw.zoom;
+  const zoomOf = z ? Math.max(0, Math.min(shots.length - 1, (Number(Array.isArray(z) ? 1 : z.photo) || 1) - 1)) : -1;
+  const zone = z && (Array.isArray(z) ? z : z.zone);
+  if (zoomOf >= 0 && zone) {
     extra.push(async () => {
       const size = (await image(shots[zoomOf]).catch(() => ({}))).size;
-      const crop = cropUrl(shots[zoomOf], per[zoomOf].raw.zoom, size);
+      const crop = cropUrl(shots[zoomOf], zone, size);
+      note('gros plan', crop || `pas de zone (taille ${JSON.stringify(size || null)})`);
       if (!crop) return null;
       const r = await runVision(env, model, ZOOM_PROMPT({ n: zoomOf + 1, what: known }), [crop], load).catch(failure);
       return r.raw && Array.isArray(r.raw.points) ? { r, obs: { photo: `gros plan de la photo ${zoomOf + 1}`, vu: String(r.raw.vu || '').slice(0, 200), points: r.raw.points.map((x) => `${etat(x.etat)} : ${x.texte}`) } } : { r };
@@ -366,6 +378,7 @@ export async function analyzeQc(env, photos, { ref = null, what = null, model = 
   }
   if (gold && gold.url && !shots.includes(gold.url)) {
     extra.push(async () => {
+      note('comparaison', gold.url);
       const r = await runVision(env, model, GOLD_PROMPT({ same: gold.same, gl: gold.gl, what: known }), [gold.url, shots[0]], view).catch(failure);
       return r.raw && r.raw.meme !== false && Array.isArray(r.raw.points) && r.raw.points.length
         ? { r, obs: { photo: `comparaison avec la QC d'un autre acheteur${gold.gl ? ' (batch jugé GL)' : ''}`, points: r.raw.points.map((x) => `${etat(x.etat)} : ${x.texte}`) } } : { r };
@@ -373,8 +386,9 @@ export async function analyzeQc(env, photos, { ref = null, what = null, model = 
   }
   let compared = false;
   let zoomed = false;
-  for (const x of await inTurn(extra.map((t) => () => t().catch(() => null)))) {
+  for (const x of await inTurn(extra.map((t) => () => t().catch((err) => { note('étape en plus', err); return null; })))) {
     if (!x) continue;
+    note('résultat en plus', x.obs ? JSON.stringify(x.obs.points) : `rien : ${x.r.out || ''}`);
     neurons += x.r.neurons || 0;
     if (!x.obs) continue;
     observations.push(x.obs);
@@ -402,6 +416,7 @@ export async function analyzeQc(env, photos, { ref = null, what = null, model = 
   if (merged && noteOf(merged) >= 5 && noteOf(merged) <= 7 && doubts.length) {
     const cited = [...new Set(doubts.flatMap((d) => [...d.matchAll(/photo (\d)/gi)].map((m) => Number(m[1]) - 1)))].filter((i) => shots[i]);
     const look = (cited.length ? cited : [0, 1]).filter((i) => shots[i]).slice(0, 2).map((i) => shots[i]);
+    note('2e lecture', doubts.join(' | '));
     const r = await runVision(env, model, VERIFY_PROMPT({ doubts, what: known }), look, view).catch(failure);
     neurons += r.neurons || 0;
     if (r.raw && Array.isArray(r.raw.points) && r.raw.points.length) {
