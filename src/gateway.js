@@ -150,6 +150,12 @@ export class Gateway extends DurableObject {
       await this.ctx.storage.put({ session: this.session, resumeUrl: this.resumeUrl, seq: this.seq });
       return;
     }
+    // Bot ajouté à un serveur à l'instant (et pas une simple reconnexion) : MP d'approbation au propriétaire tout de suite.
+    if (type === 'GUILD_CREATE' && d && !d.unavailable && d.joined_at && Date.now() - Date.parse(d.joined_at) < 10 * 60000) {
+      this.env.SELF.fetch('https://finds-bot/api/guilds/check', { method: 'POST', headers: { Authorization: `Bearer ${this.env.INDEXER_SECRET}` } })
+        .catch((err) => console.log('gateway : approbation', String(err).slice(0, 120)));
+      return;
+    }
     if (type === 'MESSAGE_CREATE') this.seen++;
     if (type !== 'MESSAGE_CREATE' || !d || (d.author && d.author.bot)) return;
     if (this.seq != null && this.seq % 20 === 0) this.ctx.storage.put('seq', this.seq).catch(() => {});
