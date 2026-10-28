@@ -132,18 +132,57 @@ function groqBody(model, messages, maxTokens) {
   return body;
 }
 
+// OVHcloud AI Endpoints (gratuit et sans compte : 2 requêtes par minute et par modèle) : relais quand Groq est
+// saturé, avant Cloudflare. Plusieurs modèles de vision à tour de rôle ; Qwen3.8 (le même que chez Groq), souvent
+// surchargé, en dernier. OVH_OFF = 1 pour le couper.
+const OVH_URL = 'https://oai.endpoints.kepler.ai.cloud.ovh.net/v1/chat/completions';
+const OVH_MODELS = {
+  vision: ['Qwen2.5-VL-72B-Instruct', 'Mistral-Small-3.2-24B-Instruct-2506', 'Qwen3.8-27B'],
+  text: ['gpt-oss-120b', 'Qwen3.5-397B-A17B', 'Meta-Llama-3_3-70B-Instruct'],
+};
+
+async function ovhChat(env, kind, messages, maxTokens, again = true) {
+  const tried = [];
+  let limited = 0;
+  for (const model of OVH_MODELS[kind] || OVH_MODELS.vision) {
+    try {
+      const res = await fetch(OVH_URL, {
+        method: 'POST', signal: AbortSignal.timeout(30000),
+        headers: { 'Content-Type': 'application/json', ...(env.OVH_API_KEY ? { Authorization: `Bearer ${env.OVH_API_KEY}` } : {}) },
+        body: JSON.stringify({ model, messages, max_tokens: /gpt-oss/.test(model) ? maxTokens + 400 : maxTokens, temperature: 0.1 }),
+      });
+      if (res.ok) {
+        const d = await res.json();
+        const text = String((d.choices && d.choices[0] && d.choices[0].message && d.choices[0].message.content) || '');
+        if (text) return { text, neurons: 0, provider: `ovh:${model}` };
+      }
+      if (res.status === 429) limited++;
+      tried.push(`${model} ${res.status}`);
+    } catch (err) {
+      tried.push(`${model} ${String(err).slice(0, 60)}`);
+    }
+  }
+  // Limite par minute atteinte : une pause, puis un dernier essai.
+  if (again && limited) {
+    await new Promise((r) => setTimeout(r, 25000));
+    return ovhChat(env, kind, messages, maxTokens, false);
+  }
+  throw new Error(`OVH indisponible (${tried.join(', ')})`);
+}
+
 // Dernière erreur de Groq (diagnostic de /api/aiqc).
 let lastGroqError = null;
 
 // messages au format OpenAI ; kind : 'vision' ou 'text'. Renvoie { text, neurons, provider }.
 // prefer : 'groq' (analyses QC, gros quota) ou 'cloudflare' (lecture de marque, très peu coûteuse : Groq reste libre).
 export async function chat(env, { messages, kind = 'vision', cfModel, maxTokens = 600, cfExtra = {}, prefer = 'groq' }) {
+  const ovh = () => (env.OVH_OFF ? Promise.reject(new Error('OVH coupé')) : ovhChat(env, kind, messages, maxTokens));
   if (prefer === 'cloudflare' && env.AI) {
     try {
       return await cloudflareChat(env, cfModel, messages, maxTokens, cfExtra);
     } catch (err) {
-      if (!env.GROQ_API_KEY) throw err;
-      console.log('cloudflare (relais vers Groq)', String(err).slice(0, 120));
+      console.log('cloudflare (relais vers OVH)', String(err).slice(0, 120));
+      try { return await ovh(); } catch (e) { if (!env.GROQ_API_KEY) throw e; console.log(String(e).slice(0, 200)); }
     }
   }
   if (env.GROQ_API_KEY && !(await groqResting(env))) {
@@ -176,7 +215,10 @@ export async function chat(env, { messages, kind = 'vision', cfModel, maxTokens 
       lastGroqError = String(err).slice(0, 200);
     }
   }
-  if (!env.AI || prefer === 'cloudflare') throw new Error('aucune IA disponible (Groq saturé)');
+  if (prefer !== 'cloudflare') {
+    try { return await ovh(); } catch (err) { console.log(String(err).slice(0, 200)); lastGroqError = `${lastGroqError} · ${String(err).slice(0, 200)}`; }
+  }
+  if (!env.AI || prefer === 'cloudflare') throw new Error('aucune IA disponible (Groq et OVH saturés)');
   return cloudflareChat(env, cfModel, messages, maxTokens, cfExtra);
 }
 
@@ -211,7 +253,7 @@ export async function describeImage(env, imageUrl, model = VISION_MODEL) {
 const QC_PROMPT = (ctx) => `Tu es un expert en contrôle qualité (QC) de vêtements, chaussures et accessoires achetés via un agent en Chine.
 ${ctx.ref ? 'La PREMIÈRE image est la photo du vendeur (le produit attendu). La suivante est' : ctx.count > 1 ? 'Les images sont' : 'L\'image est'} ${ctx.count > 1 ? `les photos QC n°${ctx.from} et n°${ctx.from + 1}` : `la photo QC n°${ctx.from}`} (ce que l'agent a reçu) : un article vu en entier ou en gros plan.
 ${ctx.what ? `Article : ${ctx.what}.` : ''}
-Pour reconnaître la marque, lis les logos avec soin (écriture gothique, logo en relief ou ton sur ton). Repères : ${BRAND_CUES}
+${ctx.what ? '' : `Pour reconnaître la marque, lis les logos avec soin (écriture gothique, logo en relief ou ton sur ton). Repères : ${BRAND_CUES}`}
 Ce sont des reps : sois un contrôleur SÉVÈRE. Compare à ce que tu sais du VRAI produit de la marque (forme et police exactes du logo, matière, méthode d'impression, quincaillerie, proportions) et cherche activement les signes d'un mauvais batch :
 - matière bon marché (polyester brillant ou tissu fin au lieu de coton épais, aspect plastique) ;
 - impression floue, pixelisée, sublimée sur tout le vêtement, couleurs baveuses ;
@@ -264,7 +306,7 @@ Réponds UNIQUEMENT avec un objet JSON compact : {"points": [{"etat": "ok" ou "a
 const MERGE_MODEL = '@cf/google/gemma-4-26b-a4b-it';
 const etat = (x) => (['ok', 'attention', 'probleme'].includes(x) ? x : 'attention');
 
-async function runVision(env, model, prompt, urls, load = asDataUrl) {
+async function runVision(env, model, prompt, urls, load = asDataUrl, maxTokens = 450) {
   // Llama 3.2 Vision (Cloudflare, demandé explicitement) : une seule image par requête, dans le champ « image ».
   if (/llama-3\.2-\d+b-vision/.test(model)) {
     const res = await env.AI.run(model, { messages: [{ role: 'user', content: prompt }], image: await asDataUrl(urls[urls.length - 1]), max_tokens: 600, temperature: 0.1 });
@@ -273,7 +315,7 @@ async function runVision(env, model, prompt, urls, load = asDataUrl) {
   const images = await Promise.all(urls.map((u) => load(u)));
   const res = await chat(env, {
     messages: [{ role: 'user', content: [{ type: 'text', text: prompt }, ...images.map((url) => ({ type: 'image_url', image_url: { url } }))] }],
-    cfModel: model, maxTokens: 550,
+    cfModel: model, maxTokens,
   });
   return { raw: parseFirstObject(res.text), neurons: res.neurons, out: res.text, provider: res.provider };
 }
@@ -383,15 +425,15 @@ export async function analyzeQc(env, photos, { ref = null, what = null, model = 
       const crop = cropUrl(shots[zoomOf], zone, size);
       note('gros plan', crop || `pas de zone (taille ${JSON.stringify(size || null)})`);
       if (!crop) return null;
-      const r = await runVision(env, model, ZOOM_PROMPT({ n: zoomOf + 1, what: known }), [crop], load).catch(failure);
+      const r = await runVision(env, model, ZOOM_PROMPT({ n: zoomOf + 1, what: known }), [crop], load, 250).catch(failure);
       return r.raw && r.raw.utile !== false && Array.isArray(r.raw.points) && r.raw.points.length ? { r, obs: { photo: `gros plan de la photo ${zoomOf + 1}`, vu: String(r.raw.vu || '').slice(0, 200), points: r.raw.points.map((x) => `${etat(x.etat)} : ${x.texte}`) } } : { r };
     });
   }
   if (gold && gold.url && !shots.includes(gold.url)) {
     extra.push(async () => {
       note('comparaison', gold.url);
-      const r = await runVision(env, model, GOLD_PROMPT({ same: gold.same, gl: gold.gl, what: known }), [gold.url, shots[0]], view).catch(failure);
-      return r.raw && r.raw.meme !== false && Array.isArray(r.raw.points) && r.raw.points.length
+      const r = await runVision(env, model, GOLD_PROMPT({ same: gold.same, gl: gold.gl, what: known }), [gold.url, shots[0]], view, 250).catch(failure);
+      return r.raw && (gold.same || r.raw.meme !== false) && Array.isArray(r.raw.points) && r.raw.points.length
         ? { r, obs: { photo: `comparaison avec la QC d'un autre acheteur${gold.gl ? ' (batch jugé GL)' : ''}`, points: r.raw.points.map((x) => `${etat(x.etat)} : ${x.texte}`) } } : { r };
     });
   }
@@ -428,7 +470,7 @@ export async function analyzeQc(env, photos, { ref = null, what = null, model = 
     const cited = [...new Set(doubts.flatMap((d) => [...d.matchAll(/photo (\d)/gi)].map((m) => Number(m[1]) - 1)))].filter((i) => shots[i]);
     const look = (cited.length ? cited : [0, 1]).filter((i) => shots[i]).slice(0, 2).map((i) => shots[i]);
     note('2e lecture', doubts.join(' | '));
-    const r = await runVision(env, model, VERIFY_PROMPT({ doubts, what: known }), look, view).catch(failure);
+    const r = await runVision(env, model, VERIFY_PROMPT({ doubts, what: known }), look, view, 300).catch(failure);
     neurons += r.neurons || 0;
     if (r.raw && Array.isArray(r.raw.points) && r.raw.points.length) {
       const again = await merge([...observations, { photo: '2e lecture des doutes', points: r.raw.points.map((x) => `${etat(x.etat)} : ${x.texte}`) }]).catch(() => null);
