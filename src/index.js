@@ -840,7 +840,7 @@ async function handleApi(request, env, url) {
   // Diagnostic : ce que le modèle de vision lit sur une photo (URL), avec un autre modèle au choix.
   if (path === '/api/vision' && request.method === 'GET') {
     try {
-      return json({ ok: true, seen: await describeImage(env, url.searchParams.get('url') || '', url.searchParams.get('model') || undefined) });
+      return json({ ok: true, seen: await describeImage(env, url.searchParams.get('url') || '', url.searchParams.get('model') || undefined, url.searchParams.get('prefer') || undefined) });
     } catch (err) {
       return json({ ok: false, error: String(err.message || err).slice(0, 300) });
     }

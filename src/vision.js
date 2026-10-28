@@ -3,6 +3,7 @@
 
 import { qcGuide, knownType } from './qcguide.js';
 import { kvGet, kvSet } from './kvstore.js';
+import { brandIn } from './synonyms.js';
 
 export const VISION_MODEL = '@cf/meta/llama-4-scout-17b-16e-instruct';
 
@@ -12,12 +13,25 @@ const BRAND_CUES = 'Iconic designs: Chrome Hearts = gothic/fleur crosses, dagger
   'Trapstar = "IT\'S A SECRET" or T logo; Gallery Dept = paint splatter, "GALLERY DEPT."; Denim Tears = cotton wreath; Corteiz = Alcatraz ' +
   'logo; Sp5der = spider web; Hellstar = flames and star; Moncler = round badge with rooster; Canada Goose = round arctic patch; ' +
   'Louis Vuitton = LV monogram; Gucci = GG, green-red stripe; Dior = oblique pattern; Balenciaga = distressed logo; Ralph Lauren = ' +
-  'polo pony; Lacoste = crocodile; Arc\'teryx = bird fossil logo; The North Face = half dome logo; Off-White = diagonal stripes, arrows.';
+  'polo pony; Lacoste = crocodile; Arc\'teryx = bird fossil logo; The North Face = half dome logo; Off-White = diagonal stripes, arrows; ' +
+  'Stüssy = handwritten graffiti-style "Stüssy" signature, 8-ball, crown, "World Tour", "International Stüssy Tribe"; Carhartt = square C logo; ' +
+  'Palace = triangle "Tri-Ferg"; Kith = "KITH" serif text; Represent = "REPRESENT" text, owners club; Rhude = "RHUDE" text; ' +
+  'Amiri = "AMIRI" text, bandana; Broken Planet = "Broken Planet Market"; Syna World = "Syna" text; Eric Emanuel = EE basketball shorts; ' +
+  'Prada = triangle plaque; Burberry = check pattern, horse knight; Celine = triomphe arcs; Miu Miu = "MIU MIU" text; Vale = "VALE" text.';
 
-const PROMPT = 'You identify fashion items in photos for a resale search engine. Look at logos, tags, prints and design. ' +
-  'Reply with ONLY a JSON object, no other text: {"brand": "brand name or null", "model": "model or line name if recognizable ' +
-  '(e.g. Tech Fleece, Air Jordan 4, Box Logo) or null", "item": "short English item type (e.g. hoodie, sneakers, bag)", ' +
-  '"color": "main color in English"}. Use null when unsure; never guess a brand without a visible logo or iconic design. ' + BRAND_CUES;
+// Texte du logo → marque connue (synonyms.js) : la marque écrite sur l'article l'emporte sur l'avis du modèle.
+// Marques reconnaissables seulement à leur nom écrit (pas à un symbole seul) : acceptées seulement si le nom est lu.
+const TEXT_BRANDS = new Set(['supreme', 'stussy', 'essentials', 'trapstar', 'gallery dept', 'corteiz', 'kith', 'represent', 'rhude',
+  'amiri', 'hellstar', 'sp5der', 'broken planet', 'syna', 'palace', 'diesel', 'balenciaga', 'celine', 'miu miu', 'prada',
+  'givenchy', 'valentino', 'versace', 'carhartt', 'vetements', 'acne studios', 'ami paris', 'denim tears', 'nocta', 'hugo boss']);
+
+const PROMPT = 'You identify fashion items in photos for a resale search engine. FIRST read every word printed, embroidered or ' +
+  'written on the item, its logo and its tags, exactly as written (logos are often stylized: script, graffiti, gothic letters). ' +
+  'The brand MUST be the brand written on the item when text is visible. Use the list of iconic designs below only for logos ' +
+  'without readable text; never answer a brand just because it is in the list. ' +
+  'Reply with ONLY a JSON object, no other text: {"text": "words visible on the logo or tags, or null", "brand": "brand name or null", ' +
+  '"model": "model or line name if recognizable (e.g. Tech Fleece, Air Jordan 4, Box Logo) or null", "item": "short English item type ' +
+  '(e.g. hoodie, sneakers, bag)", "color": "main color in English"}. Use null when unsure. ' + BRAND_CUES;
 
 // Image d'une pièce jointe Discord. L'adresse d'origine (cdn.discordapp.com) : le proxy de redimensionnement
 // (media.discordapp.net) refuse les requêtes venant de Cloudflare (403).
@@ -187,6 +201,10 @@ let lastGroqError = null;
 export async function chat(env, { messages, kind = 'vision', cfModel, maxTokens = 600, cfExtra = {}, prefer = 'groq' }) {
   // Travail de fond : OVH seulement (gratuit, sans quota du jour), Groq et Cloudflare restent aux membres.
   if (prefer === 'ovh-only') return ovhChat(env, kind, messages, maxTokens);
+  // Lecture de marque pour le QC checker : OVH d'abord (Qwen2.5-VL, le meilleur pour lire un logo), puis Groq, Cloudflare.
+  if (prefer === 'ovh' && !env.OVH_OFF) {
+    try { return await ovhChat(env, kind, messages, maxTokens); } catch (err) { console.log(String(err).slice(0, 160)); }
+  }
   const ovh = () => (env.OVH_OFF ? Promise.reject(new Error('OVH coupé')) : ovhChat(env, kind, messages, maxTokens));
   if (prefer === 'cloudflare' && env.AI) {
     try {
@@ -245,7 +263,8 @@ const clean = (v) => (typeof v === 'string' && v.trim() && !/^(null|none|unknown
 // { brand, model, item, color } (champs null si inconnus), ou null si le modèle n'a pas répondu.
 export async function describeImage(env, imageUrl, model = VISION_MODEL, prefer = 'cloudflare') {
   if (!env.AI && !env.GROQ_API_KEY) return null;
-  const image = await asDataUrl(imageUrl);
+  // En JPEG 768 px (wsrv.nl) : accepté par tous les modèles (le WebP ne l'est pas toujours), moins de jetons.
+  const image = await asDataUrl(smaller(imageUrl)).catch(() => asDataUrl(imageUrl));
   const res = await chat(env, {
     messages: [{ role: 'user', content: [{ type: 'text', text: PROMPT }, { type: 'image_url', image_url: { url: image } }] }],
     cfModel: model, maxTokens: 120, prefer,
@@ -256,14 +275,20 @@ export async function describeImage(env, imageUrl, model = VISION_MODEL, prefer 
     console.log('vision : réponse illisible', String(out).slice(0, 200));
     return null;
   }
-  return { brand: clean(raw.brand), model: clean(raw.model), item: clean(raw.item), color: clean(raw.color), neurons: res.neurons };
+  // Marque écrite sur l'article (texte lu) : elle l'emporte si le modèle a répondu une autre marque.
+  const written = brandIn(`${raw.text || ''} ${raw.model || ''}`);
+  let brand = written && (!clean(raw.brand) || brandIn(raw.brand) !== written) ? written : clean(raw.brand);
+  // Marque qui s'écrit toujours sur l'article (Supreme, Stüssy…) mais dont le nom n'a pas été lu : deviné, pas lu → rien.
+  const claimed = brandIn(brand);
+  if (!written && claimed && TEXT_BRANDS.has(claimed.toLowerCase())) brand = null;
+  return { brand, model: clean(raw.model), item: clean(raw.item), color: clean(raw.color), text: clean(raw.text), neurons: res.neurons, provider: res.provider };
 }
 
 // ---------------------------------------------------------------- Analyse des QC par l'IA
 
 const QC_PROMPT = (ctx) => `Tu es un expert en contrôle qualité (QC) de vêtements, chaussures et accessoires achetés via un agent en Chine.
 ${ctx.ref ? 'La PREMIÈRE image est la photo du vendeur (le produit attendu). La suivante est' : ctx.count > 1 ? 'Les images sont' : 'L\'image est'} ${ctx.count > 1 ? `les photos QC n°${ctx.from} et n°${ctx.from + 1}` : `la photo QC n°${ctx.from}`} (ce que l'agent a reçu) : un article vu en entier ou en gros plan.
-${ctx.what ? `Article : ${ctx.what}.` : ''}
+${ctx.what ? `Article annoncé : ${ctx.what}. Si le logo ou les étiquettes visibles indiquent une autre marque, c'est la marque visible qui compte (corrige « article »).` : ''}
 ${ctx.what ? '' : `Pour reconnaître la marque, lis les logos avec soin (écriture gothique, logo en relief ou ton sur ton). Repères : ${BRAND_CUES}`}
 Ce sont des reps : sois un contrôleur SÉVÈRE. Compare à ce que tu sais du VRAI produit de la marque (forme et police exactes du logo, matière, méthode d'impression, quincaillerie, proportions) et cherche activement les signes d'un mauvais batch :
 - matière bon marché (polyester brillant ou tissu fin au lieu de coton épais, aspect plastique) ;

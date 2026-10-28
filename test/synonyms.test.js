@@ -51,3 +51,11 @@ test('autocomplétion de /find : modèles connus, marque + type, surnoms', async
   assert.ok(suggestQueries('').length > 0 && suggestQueries('x'.repeat(5)).includes('xxxxx'));
   assert.ok(suggestQueries('a').length <= 25);
 });
+
+test('marque lue dans le texte d\'un logo ou d\'une étiquette', async () => {
+  const { brandIn } = await import('../src/synonyms.js');
+  assert.equal(brandIn('STÜSSY size M'), 'Stussy');
+  assert.equal(brandIn('A BATHING APE'), 'Bape');
+  assert.equal(brandIn('S'), null);
+  assert.equal(brandIn(null), null);
+});

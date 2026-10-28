@@ -372,3 +372,15 @@ export function mentionsBrand(text) {
 
 // Noms d'une marque cherchée (sans ses modèles), en minuscules : pour la comparer à la marque lue sur une photo.
 export const brandNames = (group) => (group.base || []).filter((a) => /^[a-z0-9 '&.-]+$/.test(a)).map((a) => a.toLowerCase());
+
+// Marque citée dans un texte (nom, modèle ou nom codé) : son nom lisible (« Stussy », « Louis Vuitton »), ou null.
+export function brandIn(text) {
+  const t = deaccent(String(text || ''));
+  if (!t.trim()) return null;
+  for (const d of DICT) {
+    if (d.kind !== 'brand' || !groupRegex(d).test(t)) continue;
+    const name = d.alt.find((a) => /^[a-z0-9 '&.-]+$/.test(a) && a.length > 2) || d.alt[0];
+    return name.replace(/\b([a-z])/g, (c) => c.toUpperCase());
+  }
+  return null;
+}
