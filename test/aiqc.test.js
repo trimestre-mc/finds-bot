@@ -139,3 +139,11 @@ test('analyse QC : taille d\'image, gros plan, batch de référence', async () =
   assert.deepEqual(goldPhoto(qc, ['a2'], { gl_votes: 3, rl_votes: 1 }), { url: 'b1', same: true, gl: true });
   assert.equal(goldPhoto(qc, [], { gl_votes: 0, rl_votes: 2 }), null);
 });
+
+test('article correspondant : seulement s\'il a la même marque ou la même catégorie', async () => {
+  const { sameArticle } = await import('../src/aiqc.js');
+  assert.equal(sameArticle('Maillot de football PSG domicile', 'Patagonia Boxer Underwear 3-Pack'), false);
+  assert.equal(sameArticle('BAPE hoodie', 'Supreme Box Logo Hoodie'), false);
+  assert.equal(sameArticle('Air Jordan 1 Chicago', 'AJ1 Chicago High OG'), true);
+  assert.equal(sameArticle('Supreme sweat gris', 'Supreme Box Logo Crewneck'), true);
+});

@@ -15,6 +15,8 @@ import { trackedLink, formatPrice } from './post.js';
 import { buildAgentLink, canonicalUrl } from './links.js';
 import { fetchQc, fetchQcPage, goldPhoto } from './qc.js';
 import { cacheGet, cacheSet, dayAdd, kvGet, kvSet, rateLimit, LIMITS, limitText, logEvent } from './kvstore.js';
+import { expandQuery } from './synonyms.js';
+import { detectCategory } from './categories.js';
 
 export const AIQC_PER_DAY = 40; // plafond de sécurité sans Groq ; la vraie limite est le quota d'IA du jour (neurons)
 const AIQC_PER_DAY_GROQ = 150; // avec Groq (~1 000 requêtes/jour gratuites, ~6 par analyse)
@@ -292,10 +294,24 @@ export async function aiqcMessage(env, ctx, c, m) {
   const res = await qcAnalysis(env, urls, { ref, what: title, gold, progress: step });
   await step.finish(res.result && !res.cached);
   c.done++;
-  const body = { flags: COMPONENTS_V2, allowed_mentions: { parse: [] }, components: analysisView(ctx.emojis, res, { title, who: m.author && m.author.id, match: found[0] ? matchBlocks(ctx, found[0], c.channel_id) : null }) };
+  const body = { flags: COMPONENTS_V2, allowed_mentions: { parse: [] }, components: analysisView(ctx.emojis, res, { title, who: m.author && m.author.id, match: (() => { const x = res.result && found.find((f) => sameArticle(res.result.article || title, f.title)); return x ? matchBlocks(ctx, x, c.channel_id) : null; })() }) };
   if (pending) await discordApi(env, 'PATCH', `/channels/${c.channel_id}/messages/${pending.id}`, body);
   else await discordApi(env, 'POST', `/channels/${c.channel_id}/messages`, { ...body, message_reference: { message_id: m.id, fail_if_not_exists: false } });
   return 8;
+}
+
+// Le résultat de la recherche par image correspond-il à l'article analysé ? Même marque (si les deux en ont une),
+// sinon même catégorie (si les deux sont connues). Dans le doute, non : mieux vaut ne rien proposer qu'un article
+// sans rapport (ex. un caleçon pour un maillot de foot).
+export function sameArticle(analysed, candidate) {
+  const brands = (t) => new Set(expandQuery(String(t || '')).filter((g) => g.kind === 'brand').map((g) => g.alt[0]));
+  const a = brands(analysed);
+  const b = brands(candidate);
+  if (a.size && b.size) return [...a].some((x) => b.has(x));
+  if (a.size || b.size) return false;
+  const ca = detectCategory(String(analysed || ''));
+  const cb = detectCategory(String(candidate || ''));
+  return ca !== 'other' && ca === cb;
 }
 
 // « L'article qui ressemble le plus » sous l'analyse : photo, prix, ventes, QC, et les boutons acheter / QC / comparer.
