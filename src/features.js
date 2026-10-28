@@ -130,6 +130,11 @@ export async function handlePublicCommand(it, env, ctx) {
 export async function handlePublicComponent(it, env, ctx) {
   const parts = it.data.custom_id.split(':');
   const [, kind, sid, page] = parts;
+  if (kind === 'adoff') {
+    // « Se désinscrire » sous un MP de pub (pub.js).
+    const { pubUnsubscribe } = await import('./pub.js');
+    return pubUnsubscribe(it, env);
+  }
   if (kind === 'pg') return update(await findView(env, sid, Number(page) || 0));
   if (kind === 'su') {
     // Bouton « S'inscrire » coloré : petite fenêtre privée avec le vrai lien.

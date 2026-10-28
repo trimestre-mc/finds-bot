@@ -167,6 +167,11 @@ async function handleScheduled(event, env, ctx) {
     }
     if (!open.length) return;
     // Catalogue Taobao + 1688 (2e base) : aussi chaque minute, en plus du passage toutes les 3 minutes.
+    // Pub (MP aux rôles choisis) : deux exécutions à part chaque minute, 13 MP chacune.
+    if (env.SELF && event.cron === '* * * * *') {
+      ctx.waitUntil(kvGet(env, 'ad:active').then((on) => on && Promise.all([0, 1].map(() => env.SELF.fetch('https://finds-bot/api/pub/run',
+        { method: 'POST', headers: { Authorization: `Bearer ${env.INDEXER_SECRET}` } })))).catch((e) => console.log('pub', String(e).slice(0, 120))));
+    }
     // Taobao + 1688 : chaque minute, dans une exécution à part (20 pages, son propre quota de requêtes).
     if (env.DB2 && event.cron === '* * * * *') {
       ctx.waitUntil((env.SELF
@@ -270,6 +275,12 @@ async function isAdmin(env, it) {
 async function onComponent(it, env, ctx) {
   const [a, b, c, d] = it.data.custom_id.split(':');
   const values = it.data.values || [];
+  if (a === 'ad') {
+    // Onglet « Pub » (bêta, propriétaire seulement), voir pub.js.
+    const { handlePubComponent } = await import('./pub.js');
+    const out = await handlePubComponent(it, env, ctx, b, values);
+    if (out) return out;
+  }
   const handled = await handleFeatureComponent(it, env, ctx, a, b, c, d, values);
   if (handled) return handled;
 
@@ -483,6 +494,10 @@ function parseNumber(v) {
 async function onModal(it, env, ctx) {
   const v = modalValues(it.data);
   const [, kind, sid] = it.data.custom_id.split(':');
+  if (kind === 'ad') {
+    const { handlePubModal } = await import('./pub.js');
+    return handlePubModal(it, env, v);
+  }
   const handled = await handleFeatureModal(it, env, kind, it.data.custom_id.split(':').slice(2), v);
   if (handled) return handled;
   const count = () => env.DB.prepare('SELECT COUNT(*) AS n FROM agents').first();
@@ -931,6 +946,22 @@ async function handleApi(request, env, url) {
   }
 
   // Recherche d'une photo d'un salon de recherche par image, lancée par watch.js dans une exécution à part.
+  // Diagnostic : le bot peut-il lire la liste des membres (Server Members Intent) dans chacun de ses serveurs ?
+  if (path === '/api/members-check' && request.method === 'GET') {
+    const guilds = await discordApi(env, 'GET', '/users/@me/guilds');
+    const out = [];
+    for (const g of guilds.slice(0, 10)) {
+      out.push({ name: g.name, ok: await discordApi(env, 'GET', `/guilds/${g.id}/members?limit=5`).then((l) => l.length).catch((e) => String(e).slice(0, 80)) });
+    }
+    return json({ ok: true, guilds: out });
+  }
+
+  // Pub : les MP suivants de la file (lancé chaque minute par le cron, deux fois en parallèle).
+  if (path === '/api/pub/run' && request.method === 'POST') {
+    const { runPubQueue } = await import('./pub.js');
+    return json({ ok: true, sent: await runPubQueue(env) });
+  }
+
   // Synchro du catalogue FinderQC d'un parcours, dans une exécution à part (lancée chaque minute par le cron).
   if (path === '/api/qcsync' && request.method === 'POST') {
     const lane = SYNC_LANES[url.searchParams.get('lane')] || SYNC_LANES.others;

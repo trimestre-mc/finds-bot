@@ -112,7 +112,10 @@ export async function homeView(env, it, msg, ctx = null) {
       emojiBtn('👥', 'Accès', 'acc'),
       b('fb_live', 'État du bot', 'health'),
     ),
-    row(b('fb_bot', 'Publier le guide ici', 'guide:post'), b('fb_coupon', 'Publier /coupon ici', 'coupon:post')),
+    row(b('fb_bot', 'Publier le guide ici', 'guide:post'), b('fb_coupon', 'Publier /coupon ici', 'coupon:post'),
+      // Onglet « Pub » (MP aux rôles choisis) : visible seulement par le propriétaire du bot.
+      env.AGENTS_OWNER_ID && it && ((it.member && it.member.user && it.member.user.id) || (it.user && it.user.id)) === env.AGENTS_OWNER_ID
+        ? b('fb_bell', 'Pub (bêta)', 'ad:open') : null),
   ])];
 }
 

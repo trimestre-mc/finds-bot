@@ -196,3 +196,6 @@ export async function finderBusy(env) {
 export async function finderPaused(env) {
   return Number(await kvGet(env, 'fqc:busy')) > Date.now();
 }
+
+// Plusieurs commandes Redis en un aller-retour (pour les modules qui en ont besoin, ex. pub.js). undefined si échec.
+export const redis = (env, cmds) => pipeline(env, cmds);
