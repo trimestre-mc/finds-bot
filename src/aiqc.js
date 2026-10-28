@@ -167,12 +167,20 @@ export async function tracker(env, emojis, { keys, count, accent, send }) {
   const p = { keys, count, current: keys[0], started: new Set([keys[0]]), start: Date.now(), eta: await averageMs(env), logs: [] };
   let chain = Promise.resolve();
   // Une modification du message à la fois ; plusieurs lignes de journal arrivées entre-temps partent ensemble.
+  // Au plus une modification toutes les 3 s (limite de requêtes par exécution) : les lignes arrivées entre-temps
+  // partent avec la suivante.
   let queued = false;
+  let last = 0;
   const push = () => {
     if (queued) return chain;
     queued = true;
-    chain = chain.then(() => { queued = false; return send(progressView(emojis, p, accent)); })
-      .catch((err) => console.log('progression', String(err).slice(0, 120)));
+    chain = chain.then(async () => {
+      const wait = last + 3000 - Date.now();
+      if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+      queued = false;
+      last = Date.now();
+      return send(progressView(emojis, p, accent));
+    }).catch((err) => console.log('progression', String(err).slice(0, 120)));
     return chain;
   };
   const step = (key) => {

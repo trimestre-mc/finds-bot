@@ -112,8 +112,12 @@ const GROQ_VISION = 'qwen/qwen3.8-27b';
 const GROQ_TEXT = 'openai/gpt-oss-120b';
 
 // Groq au repos (quota du jour atteint) jusqu'à l'heure gardée dans les réglages.
+// Gardé 30 s en mémoire : une analyse fait plusieurs appels, une seule lecture suffit (limite de requêtes par exécution).
+let restMemo = null;
 async function groqResting(env) {
+  if (restMemo && Date.now() - restMemo.at < 30000) return restMemo.until > Date.now();
   const kept = await kvGet(env, 'groq:rest');
+  if (kept !== undefined) { restMemo = { at: Date.now(), until: Number(kept || 0) }; return restMemo.until > Date.now(); }
   if (kept !== undefined) return Number(kept || 0) > Date.now();
   if (!env.DB) return false;
   const row = await env.DB.prepare("SELECT value FROM settings WHERE key = 'groq:rest'").first().catch(() => null);
@@ -123,6 +127,7 @@ async function groqResting(env) {
 async function groqRest(env, err) {
   const m = String(err).match(/try again in (?:(\d+)h)?(?:(\d+)m)?([\d.]+)s/);
   const ms = m ? ((Number(m[1] || 0) * 60 + Number(m[2] || 0)) * 60 + Number(m[3] || 0)) * 1000 : 3600000;
+  restMemo = { at: Date.now(), until: Date.now() + ms };
   if (await kvSet(env, 'groq:rest', Date.now() + ms, Math.ceil(ms / 1000) + 60)) return;
   await env.DB.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('groq:rest', ?)").bind(String(Date.now() + ms)).run().catch(() => {});
 }

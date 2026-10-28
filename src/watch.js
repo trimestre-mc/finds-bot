@@ -91,7 +91,7 @@ export async function watchChannels(env, ms = 55000, exec = null, force = false)
         if (!ctx) ctx = await postContext(env);
         try {
           if (c.kind === 'convert') external += await convertMessage(env, ctx, c, m);
-          else if (c.kind === 'aiqc') external += await aiqcMessage(env, ctx, c, m);
+          else if (c.kind === 'aiqc') external += await runAiqc(env, ctx, c, m, exec);
           else external += await imageMessage(env, ctx, c, m, found, exec);
         } catch (err) {
           console.log('salon', c.channel_id, String(err).slice(0, 200));
@@ -131,7 +131,7 @@ export async function handleLiveMessage(env, channelId, m) {
     const ch = { ...row, kind, table, done: 0 };
     const found = [];
     if (kind === 'convert') await convertMessage(env, ctx, ch, m);
-    else if (kind === 'aiqc') await aiqcMessage(env, ctx, ch, m);
+    else if (kind === 'aiqc') await runAiqc(env, ctx, ch, m, null);
     else await imageMessage(env, ctx, ch, m, found, null);
     if (found.length) await saveFound(env, found);
     if (ch.done) {
@@ -161,6 +161,20 @@ async function convertMessage(env, ctx, c, m) {
   });
   c.done++;
   return calls + 1;
+}
+
+// Analyse IA d'un message : dans une exécution à part du bot (elle fait jusqu'à ~50 requêtes externes, la limite d'une
+// exécution sur l'offre gratuite) ; sans env.SELF, ici même.
+async function runAiqc(env, ctx, c, m, exec) {
+  if (!env.SELF) return aiqcMessage(env, ctx, c, m);
+  const job = env.SELF.fetch('https://finds-bot/api/watch/aiqc', {
+    method: 'POST', headers: { Authorization: `Bearer ${env.INDEXER_SECRET}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ c: { channel_id: c.channel_id, guild_id: c.guild_id }, m }),
+  }).then((res) => { if (!res.ok) throw new Error(`HTTP ${res.status}`); })
+    .catch((err) => console.log('analyse IA (autre exécution)', String(err).slice(0, 120)));
+  c.done++;
+  if (exec) exec.waitUntil(job); else await job;
+  return 1;
 }
 
 // Membre au-dessus de sa limite : petite réponse qui dit quand recommencer.

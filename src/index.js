@@ -626,6 +626,7 @@ async function claimRange(env, key, table, size) {
     `INSERT INTO settings (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = CAST(settings.value AS INTEGER) + ?2
      RETURNING CAST(value AS INTEGER) AS hi`,
   ).bind(key, size).first();
+  if (!row) return null; // écriture refusée (quota du jour de la base) : rien à prendre pour l'instant
   const hi = row.hi;
   const max = (await env.DB.prepare(`SELECT MAX(rowid) AS m FROM ${table}`).first()).m || 0;
   if (hi - size >= max) {
@@ -925,6 +926,27 @@ async function handleApi(request, env, url) {
   }
 
   // Recherche d'une photo d'un salon de recherche par image, lancée par watch.js dans une exécution à part.
+  // Analyse IA d'un message de salon, lancée par watch.js dans une exécution à part.
+  if (path === '/api/watch/aiqc' && request.method === 'POST') {
+    const { c, m } = await request.json();
+    const { aiqcMessage } = await import('./aiqc.js');
+    const { postContext } = await import('./post.js');
+    const done = { ...c, done: 0 };
+    await aiqcMessage(env, await postContext(env), done, m);
+    return json({ ok: true });
+  }
+
+  // Relance d'une analyse restée bloquée : supprime le message d'attente figé et refait l'analyse du message.
+  if (path === '/api/aiqc/retry' && request.method === 'POST') {
+    const { channel_id, message_id, stale_id } = await request.json();
+    const m = await discordApi(env, 'GET', `/channels/${channel_id}/messages/${message_id}`);
+    if (stale_id) await discordApi(env, 'DELETE', `/channels/${channel_id}/messages/${stale_id}`).catch(() => {});
+    const { aiqcMessage } = await import('./aiqc.js');
+    const { postContext } = await import('./post.js');
+    await aiqcMessage(env, await postContext(env), { channel_id, done: 0 }, m);
+    return json({ ok: true });
+  }
+
   if (path === '/api/watch/image' && request.method === 'POST') {
     const job = await request.json();
     const found = await imageJob(env, job);
