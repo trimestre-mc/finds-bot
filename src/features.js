@@ -29,7 +29,12 @@ import { cacheGet, cacheSet, cacheClear, rateLimit, LIMITS, limitText } from './
 // Lance l'indexeur tout de suite si un token GitHub est configuré.
 export async function triggerIndexer(env) {
   if (!env.GITHUB_TOKEN || !env.GITHUB_REPO) return;
-  await env.DB.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('last_dispatch', ?)").bind(String(Date.now())).run();
+  // Heure du lancement dans Upstash (la base peut refuser les écritures : sans elle, l'indexeur était relancé chaque
+  // minute et chaque lancement annulait le précédent, 59 sur 60 le 28/10).
+  const { kvSet } = await import('./kvstore.js');
+  if (!(await kvSet(env, 'last_dispatch', Date.now(), 86400))) {
+    await env.DB.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('last_dispatch', ?)").bind(String(Date.now())).run().catch(() => {});
+  }
   const res = await fetch(`https://api.github.com/repos/${env.GITHUB_REPO}/actions/workflows/indexer.yml/dispatches`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${env.GITHUB_TOKEN}`, Accept: 'application/vnd.github+json', 'User-Agent': 'finds-bot' },

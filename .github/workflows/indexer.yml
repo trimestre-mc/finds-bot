@@ -9,12 +9,12 @@ jobs:
   index:
     runs-on: ubuntu-latest
     timeout-minutes: 50
-    # 12 jobs en parallèle (dépôt public : GitHub Actions gratuit et illimité, 20 jobs simultanés max),
+    # 20 jobs en parallèle (dépôt public : GitHub Actions gratuit et illimité, 20 jobs simultanés max),
     # chacun avec sa part des boutiques et des items, et sa propre adresse IP.
     strategy:
       fail-fast: false
       matrix:
-        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
     concurrency:
       group: indexer-${{ matrix.shard }}
       cancel-in-progress: false
@@ -24,7 +24,7 @@ jobs:
       - name: Vérifier s'il y a du travail
         id: jobs
         run: |
-          n=$(curl -sf -H "Authorization: Bearer ${{ secrets.INDEXER_SECRET }}" "${{ secrets.WORKER_URL }}/api/indexer/jobs?shard=${{ matrix.shard }}&shards=12" | python3 -c "import sys,json; d=json.load(sys.stdin); print(len(d['shops']) + d.get('missingImages', 0) + d.get('linkQueue', 0) + (1 if d.get('jadeship') else 0))")
+          n=$(curl -sf -H "Authorization: Bearer ${{ secrets.INDEXER_SECRET }}" "${{ secrets.WORKER_URL }}/api/indexer/jobs?shard=${{ matrix.shard }}&shards=20" | python3 -c "import sys,json; d=json.load(sys.stdin); print(len(d['shops']) + d.get('missingImages', 0) + d.get('linkQueue', 0) + (1 if d.get('jadeship') else 0))")
           echo "count=$n" >> "$GITHUB_OUTPUT"
           echo "$n catalogue(s) ou photos à traiter"
 
@@ -47,5 +47,5 @@ jobs:
           WORKER_URL: ${{ secrets.WORKER_URL }}
           INDEXER_SECRET: ${{ secrets.INDEXER_SECRET }}
           SHARD: ${{ matrix.shard }}
-          SHARDS: 12
+          SHARDS: 20
         run: node index.mjs

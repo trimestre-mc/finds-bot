@@ -737,7 +737,8 @@ function englishTitle(t) {
 // Appelé chaque minute : le planificateur de GitHub étant peu fiable, le bot lance l'indexeur lui-même.
 async function autoIndex(env) {
   if (!env.GITHUB_TOKEN || !env.GITHUB_REPO) return;
-  const last = await env.DB.prepare("SELECT value FROM settings WHERE key = 'last_dispatch'").first();
+  const kept = await kvGet(env, 'last_dispatch');
+  const last = kept != null ? { value: kept } : await env.DB.prepare("SELECT value FROM settings WHERE key = 'last_dispatch'").first().catch(() => null);
   if (last && Date.now() - Number(last.value) < 8 * 60 * 1000) return;
   if ((await dueShops(env, 1)).length || await jadeshipDue(env)) await triggerIndexer(env);
 }
@@ -1155,6 +1156,10 @@ async function handleApi(request, env, url) {
     // Juste « y a-t-il du travail ? » : LIMIT 1, jamais de COUNT sur toute la table (quota de lectures Turso :
     // un COUNT par job et par lancement lisait ~470 000 lignes à chaque fois).
     const sh = shardOf(url);
+    // Base illisible (quota du jour) : rien à faire pour l'instant, sans faire échouer l'indexeur.
+    if (await env.DB.prepare('SELECT 1 FROM settings LIMIT 1').first().then(() => false).catch(() => true)) {
+      return json({ shops: [], missingImages: 0, linkQueue: 0, jadeship: false, paused: 'base illisible' });
+    }
     // Boutiques, photos et liens sont du Weidian : seul le budget de la base Weidian compte (voir shard.js).
     const weidian = itemEnv(env, 'weidian:0');
     const [items, pages] = await Promise.all([budget(weidian, 'items'), budget(weidian, 'pages')]);
