@@ -5,7 +5,9 @@
 // Neon ne répond pas, la recherche se fait comme avant dans les bases.
 
 import { neon, kvGet, kvSet } from './kvstore.js';
-import { perDb } from './shard.js';
+import { perDb, itemsWhereIds } from './shard.js';
+import { mentionsBrand, brandNames } from './synonyms.js';
+import { describeImage } from './vision.js';
 import { DROP_WINDOW_DAYS } from './search.js';
 
 // Texte indexé : titre anglais + la partie latine du titre chinois et de la boutique (« BAPE 卫衣 » → « bape »). Les
@@ -23,6 +25,10 @@ const SCHEMA = [
   'DROP INDEX IF EXISTS items_search_txt',
   `CREATE INDEX IF NOT EXISTS items_search_latin ON items_search USING gin ((${TXT}) gin_trgm_ops)`,
   'CREATE INDEX IF NOT EXISTS items_search_pop ON items_search (popularity DESC, first_seen DESC)',
+  // Marque lue sur la photo (scanBrands), pour les items dont le titre ne la donne pas ; brand_checked : déjà regardé.
+  'ALTER TABLE items_search ADD COLUMN IF NOT EXISTS brand TEXT',
+  'ALTER TABLE items_search ADD COLUMN IF NOT EXISTS brand_checked BIGINT',
+  'CREATE INDEX IF NOT EXISTS items_search_brand ON items_search (brand) WHERE brand IS NOT NULL',
 ];
 
 let schemaReady = null;
@@ -108,6 +114,9 @@ export function neonWhere(params, money) {
     // Mot entier (lettres et chiffres autour exclus), toutes les formes en une seule expression.
     if (latin.length) ors.push(`${TXT} ~ ${p(`(^|[^a-z0-9])(${latin.join('|')})([^a-z0-9]|$)`)}`);
     if (g.cat) ors.push(`category = ${p(g.cat)}`);
+    // Marque lue sur la photo (titre sans marque).
+    const names = g.kind === 'brand' ? brandNames(g) : [];
+    if (names.length) ors.push(`brand IN (SELECT jsonb_array_elements_text(${p(JSON.stringify(names))}::jsonb))`);
     if (ors.length) clauses.push(`(${ors.join(' OR ')})`);
   }
   if (params.min != null) clauses.push(`price >= ${p(params.min / money.rate)}`);
@@ -122,7 +131,7 @@ export function neonWhere(params, money) {
   return { sql: `WHERE ${clauses.join(' AND ')}`, binds };
 }
 
-const COLS = 'id, title_en, title_zh, shop_name, category, popularity, first_seen, price AS price_cny';
+const COLS = 'id, title_en, title_zh, shop_name, category, popularity, first_seen, price AS price_cny, brand';
 const num = (r) => ({ ...r, popularity: Number(r.popularity) || 0, first_seen: Number(r.first_seen) || 0, price_cny: r.price_cny == null ? null : Number(r.price_cny) });
 
 // Recherche par mots dans l'index (les 5 000 plus vendus qui correspondent). null si Neon ne répond pas.
@@ -152,4 +161,37 @@ export async function fuzzySearch(env, words, params, money) {
     console.log('recherche approchante', String(err).slice(0, 160));
     return [];
   }
+}
+
+// Toutes les 3 min : la marque des items populaires dont le titre ne cite aucune marque, lue sur leur photo (modèle de
+// vision chez OVH, gratuit : les quotas d'IA du jour restent aux membres). Des plus vendus aux moins vendus.
+// Renvoie le nombre d'items regardés.
+const SCAN_PER_RUN = 6;
+export async function scanBrands(env) {
+  if (!env.NEON_URL || env.BRAND_SCAN === '0') return 0;
+  await ensureSchema(env);
+  const rows = await neon(env, `SELECT id, title_en, title_zh, shop_name FROM items_search
+    WHERE brand_checked IS NULL AND hidden = 0 AND popularity >= 20 ORDER BY popularity DESC LIMIT 60`);
+  if (!rows.length) return 0;
+  // Titre qui cite déjà une marque (nom, modèle ou nom codé) : rien à lire.
+  const named = rows.filter((r) => mentionsBrand(`${r.title_en || ''} ${r.title_zh || ''} ${r.shop_name || ''}`)).map((r) => r.id);
+  const todo = rows.filter((r) => !named.includes(r.id)).slice(0, SCAN_PER_RUN);
+  const items = new Map((await itemsWhereIds(env, todo.map((r) => r.id))).map((i) => [i.id, i]));
+  const found = [];
+  for (const r of todo) {
+    const image = (items.get(r.id) || {}).image;
+    let brand = '';
+    if (/^https:\/\//.test(image || '')) {
+      const seen = await describeImage(env, image, undefined, 'ovh-only').catch((err) => { console.log('marque (photo)', String(err).slice(0, 120)); return undefined; });
+      if (seen === undefined) break; // OVH saturé : on reprendra au prochain passage
+      brand = seen && seen.brand ? seen.brand.toLowerCase().slice(0, 40) : '';
+    }
+    found.push({ id: r.id, brand });
+  }
+  const marks = [...named.map((id) => ({ id, brand: null })), ...found];
+  if (marks.length) {
+    await neon(env, `UPDATE items_search s SET brand = coalesce(nullif(x.brand, ''), s.brand), brand_checked = $2
+      FROM jsonb_to_recordset($1::jsonb) AS x(id TEXT, brand TEXT) WHERE s.id = x.id`, [JSON.stringify(marks), Date.now()]);
+  }
+  return found.length;
 }

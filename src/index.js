@@ -138,6 +138,11 @@ async function handleScheduled(event, env, ctx) {
     })());
     // Toutes les 15 min : copie d'une tranche du catalogue dans l'index de recherche (Neon), dans une exécution à part
     // (son propre quota de requêtes).
+    // Toutes les 3 min : marque lue sur la photo de quelques items populaires sans marque dans le titre.
+    if (env.NEON_URL && env.SELF) {
+      ctx.waitUntil(env.SELF.fetch('https://finds-bot/api/brandscan', { method: 'POST', headers: { Authorization: `Bearer ${env.INDEXER_SECRET}` } })
+        .catch((e) => console.log('marques (photo)', String(e).slice(0, 120))));
+    }
     if (env.NEON_URL && env.SELF && new Date().getUTCMinutes() % 15 === 0) {
       ctx.waitUntil(env.SELF.fetch('https://finds-bot/api/searchindex/sync', { method: 'POST', headers: { Authorization: `Bearer ${env.INDEXER_SECRET}` } })
         .catch((e) => console.log('index de recherche', String(e).slice(0, 120))));
@@ -754,6 +759,21 @@ async function handleApi(request, env, url) {
     const { neon } = await import('./kvstore.js');
     return json(await neon(env, `SELECT c.relname, pg_size_pretty(pg_total_relation_size(c.oid)) AS size FROM pg_class c
       WHERE c.relname LIKE 'items_search%' OR c.relname = 'cache' ORDER BY pg_total_relation_size(c.oid) DESC`).catch((e) => String(e)));
+  }
+  // Diagnostic : requête en lecture seule sur l'index Neon (SELECT uniquement).
+  if (path === '/api/neon-query' && request.method === 'GET') {
+    const q = url.searchParams.get('q') || '';
+    if (!/^\s*select\b/i.test(q) || /;/.test(q)) return json({ ok: false, error: 'SELECT seulement' });
+    const { neon } = await import('./kvstore.js');
+    return json(await neon(env, q).then((rows) => ({ ok: true, rows })).catch((e) => ({ ok: false, error: String(e).slice(0, 300) })));
+  }
+  if (path === '/api/brandscan' && request.method === 'POST') {
+    const { scanBrands } = await import('./searchindex.js');
+    try {
+      return json({ ok: true, scanned: await scanBrands(env) });
+    } catch (err) {
+      return json({ ok: false, error: String(err.message || err).slice(0, 300) });
+    }
   }
   if (path === '/api/searchindex' && request.method === 'GET') {
     const { neon, kvGet } = await import('./kvstore.js');

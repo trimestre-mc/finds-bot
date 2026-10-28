@@ -180,6 +180,8 @@ let lastGroqError = null;
 // messages au format OpenAI ; kind : 'vision' ou 'text'. Renvoie { text, neurons, provider }.
 // prefer : 'groq' (analyses QC, gros quota) ou 'cloudflare' (lecture de marque, très peu coûteuse : Groq reste libre).
 export async function chat(env, { messages, kind = 'vision', cfModel, maxTokens = 600, cfExtra = {}, prefer = 'groq' }) {
+  // Travail de fond : OVH seulement (gratuit, sans quota du jour), Groq et Cloudflare restent aux membres.
+  if (prefer === 'ovh-only') return ovhChat(env, kind, messages, maxTokens);
   const ovh = () => (env.OVH_OFF ? Promise.reject(new Error('OVH coupé')) : ovhChat(env, kind, messages, maxTokens));
   if (prefer === 'cloudflare' && env.AI) {
     try {
@@ -236,12 +238,12 @@ async function cloudflareChat(env, cfModel, messages, maxTokens, cfExtra) {
 const clean = (v) => (typeof v === 'string' && v.trim() && !/^(null|none|unknown|n\/a)$/i.test(v.trim()) ? v.trim().slice(0, 40) : null);
 
 // { brand, model, item, color } (champs null si inconnus), ou null si le modèle n'a pas répondu.
-export async function describeImage(env, imageUrl, model = VISION_MODEL) {
+export async function describeImage(env, imageUrl, model = VISION_MODEL, prefer = 'cloudflare') {
   if (!env.AI && !env.GROQ_API_KEY) return null;
   const image = await asDataUrl(imageUrl);
   const res = await chat(env, {
     messages: [{ role: 'user', content: [{ type: 'text', text: PROMPT }, { type: 'image_url', image_url: { url: image } }] }],
-    cfModel: model, maxTokens: 120, prefer: 'cloudflare',
+    cfModel: model, maxTokens: 120, prefer,
   });
   const out = res.text;
   const raw = parseFirstObject(out);

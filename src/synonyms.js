@@ -314,7 +314,8 @@ export function groupRegex(group) {
 // Pertinence d'un item pour une recherche : 0 = ne correspond pas. Plus le titre anglais (le plus propre) contient
 // de mots cherchés, plus l'item remonte ; un item déjà classé dans le bon type compte aussi.
 export function relevance(groups, item) {
-  const text = `${item.title_en || ''} ${item.title_zh || ''} ${item.shop_name || ''}`;
+  // brand : marque lue sur la photo de l'item (index de recherche), quand le titre ne la donne pas.
+  const text = `${item.title_en || ''} ${item.title_zh || ''} ${item.shop_name || ''} ${item.brand || ''}`;
   let score = 0;
   for (const g of groups) {
     const re = groupRegex(g);
@@ -360,3 +361,14 @@ export function suggestQueries(input) {
   add(q); // toujours ce qui a été tapé
   return out.slice(0, 25);
 }
+
+// Le texte cite-t-il une marque connue (nom, modèle ou nom codé) ? Pour choisir les items dont la marque est à lire
+// sur la photo.
+let anyBrand = null;
+export function mentionsBrand(text) {
+  anyBrand = anyBrand || DICT.filter((d) => d.kind === 'brand').map((d) => groupRegex(d));
+  return anyBrand.some((re) => re.test(String(text || '')));
+}
+
+// Noms d'une marque cherchée (sans ses modèles), en minuscules : pour la comparer à la marque lue sur une photo.
+export const brandNames = (group) => (group.base || []).filter((a) => /^[a-z0-9 '&.-]+$/.test(a)).map((a) => a.toLowerCase());
