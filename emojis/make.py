@@ -68,7 +68,46 @@ E = {
   'fb_trend': badge('#22c55e', '#16a34a', f'<polyline points="22,90 50,62 68,74 100,40" {W} stroke-width="10"/><path d="M78 40h22v22" {W} stroke-width="10"/>'),
   'fb_bot': badge('#8b5cf6', '#ec4899', '<path d="M64 16l38 24v48L64 112 26 88V40z" fill="#fff" fill-opacity=".95"/>' + label('F', 54, 84).replace('#fff', '#8b5cf6')),
   'fb_warn': badge('#f59e0b', '#d97706', '<path d="M64 20l46 82H18z" fill="#fff"/><rect x="59" y="48" width="10" height="30" rx="4" fill="#d97706"/><circle cx="64" cy="90" r="6" fill="#d97706"/>'),
+  # Analyse IA : verdicts des points, étapes, détails contrôlés.
+  'fb_ok': badge('#22c55e', '#15803d', f'<path d="M36 66l18 18 38-40" {W} stroke-width="14"/>'),
+  'fb_mid': badge('#fbbf24', '#d97706', '<rect x="56" y="26" width="16" height="50" rx="8" fill="#fff"/><circle cx="64" cy="96" r="9" fill="#fff"/>'),
+  'fb_bad': badge('#f43f5e', '#be123c', f'<path d="M42 42l44 44M86 42l-44 44" {W} stroke-width="14"/>'),
+  'fb_tag': badge('#38bdf8', '#2563eb', '<path d="M24 30h44l38 38-36 36-46-46z" fill="#fff"/><circle cx="44" cy="50" r="8" fill="#2563eb"/>'
+         '<rect x="58" y="70" width="26" height="6" rx="3" fill="#2563eb" transform="rotate(45 71 73)"/>'),
+  'fb_ruler': badge('#14b8a6', '#0f766e', '<rect x="14" y="46" width="100" height="36" rx="7" fill="#fff"/>'
+         + ''.join(f'<rect x="{24 + i * 12}" y="46" width="4" height="{18 if i % 2 == 0 else 11}" rx="2" fill="#0f766e"/>' for i in range(8))),
+  'fb_thread': badge('#f472b6', '#be185d', f'<path d="M30 98L94 34" {W} stroke-width="9"/><ellipse cx="96" cy="32" rx="9" ry="5" fill="none" stroke="#fff" stroke-width="4" transform="rotate(-45 96 32)"/>'
+         f'<path d="M100 30c18 14-8 34-26 26s-30 10-40 34" fill="none" stroke="#fde68a" stroke-width="5" stroke-linecap="round"/>'),
+  'fb_zoom': badge('#6366f1', '#4338ca', f'<circle cx="56" cy="56" r="28" {W} stroke-width="11"/><path d="M78 78l24 24" {W} stroke-width="14"/>'
+         f'<path d="M56 42v28M42 56h28" {W} stroke-width="8"/>'),
+  'fb_brain': badge('#a855f7', '#db2777', '<path d="M54 18l9 27 27 9-27 9-9 27-9-27-27-9 27-9z" fill="#fff"/>'
+         '<path d="M94 64l5 14 14 5-14 5-5 14-5-14-14-5 14-5z" fill="#fde68a"/><circle cx="92" cy="30" r="6" fill="#fff" fill-opacity=".85"/>'),
+  'fb_redo': badge('#22d3ee', '#0891b2', f'<path d="M96 56a34 34 0 0 0-62-12" {W} stroke-width="11"/><path d="M28 28v20h20" {W} stroke-width="11"/>'
+         f'<path d="M32 72a34 34 0 0 0 62 12" {W} stroke-width="11"/><path d="M100 100V80H80" {W} stroke-width="11"/>'),
+  'fb_clock': badge('#64748b', '#334155', f'<circle cx="64" cy="66" r="38" fill="#fff"/><path d="M64 42v26l16 10" fill="none" stroke="#334155" stroke-width="9" stroke-linecap="round" stroke-linejoin="round"/>'),
+  'fb_tip': badge('#fde047', '#f59e0b', '<path d="M64 18a30 30 0 0 0-18 54c4 4 6 8 6 14h24c0-6 2-10 6-14a30 30 0 0 0-18-54z" fill="#fff"/>'
+         '<rect x="52" y="92" width="24" height="8" rx="3" fill="#fff"/><rect x="55" y="103" width="18" height="7" rx="3" fill="#fff"/>'),
+  'fb_ask': badge('#fb923c', '#ea580c', '<rect x="16" y="40" width="74" height="56" rx="12" fill="#fff"/><rect x="34" y="30" width="30" height="14" rx="5" fill="#fff"/>'
+         '<circle cx="53" cy="68" r="15" fill="#ea580c"/><circle cx="53" cy="68" r="8" fill="#fff"/>'
+         '<circle cx="98" cy="94" r="20" fill="#22c55e" stroke="#fff" stroke-width="5"/><path d="M98 84v20M88 94h20" stroke="#fff" stroke-width="7" stroke-linecap="round"/>'),
 }
+
+# Sans badge : étoiles de la note et puces d'étapes.
+STAR = 'M64 10l15.5 33 36 4.5-26.5 25 7 35.5L64 90 32 108l7-35.5-26.5-25 36-4.5z'
+PLAIN = {
+  'fb_s1': '<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128"><defs><linearGradient id="g" x1="0" y1="0" x2="0" y2="1">'
+           '<stop offset="0" stop-color="#fde68a"/><stop offset=".5" stop-color="#fbbf24"/><stop offset="1" stop-color="#d97706"/></linearGradient></defs>'
+           f'<path d="{STAR}" fill="url(#g)" stroke="#fff" stroke-opacity=".5" stroke-width="3" stroke-linejoin="round"/>'
+           '<path d="M64 22l10 22 22 3" fill="none" stroke="#fff" stroke-opacity=".7" stroke-width="5" stroke-linecap="round"/></svg>',
+  'fb_s0': '<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">'
+           f'<path d="{STAR}" fill="#94a3b8" fill-opacity=".22" stroke="#94a3b8" stroke-opacity=".75" stroke-width="7" stroke-linejoin="round"/></svg>',
+  'fb_done': '<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1">'
+           '<stop offset="0" stop-color="#4ade80"/><stop offset="1" stop-color="#16a34a"/></linearGradient></defs>'
+           f'<circle cx="64" cy="64" r="52" fill="url(#g)"/><path d="M40 66l16 16 32-34" {W} stroke-width="13"/></svg>',
+  'fb_todo': '<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">'
+           '<circle cx="64" cy="64" r="46" fill="none" stroke="#94a3b8" stroke-opacity=".7" stroke-width="10" stroke-dasharray="14 12"/></svg>',
+}
+E.update(PLAIN)
 
 def render(name, svg, size=128):
     p = os.path.join(SRC, f'{name}.svg'); open(p, 'w').write(svg)
@@ -126,6 +165,29 @@ def aiscan(t):
         f'<path d="M104 18l4 10 10 4-10 4-4 10-4-10-10-4 10-4z" fill="#fde047" fill-opacity="{0.45 + 0.55 * glow:.2f}" '
         f'transform="translate({104 * (1 - (0.8 + 0.2 * glow)):.1f} {32 * (1 - (0.8 + 0.2 * glow)):.1f}) scale({0.8 + 0.2 * glow:.2f})"/>')
 save_gif('fb_aiscan', frames(aiscan, 20), 60)
+
+# Barre de progression en emojis : début, milieu, fin ; pleine (violet, avec un reflet qui glisse) ou
+# vide (rail gris). Dégradé vertical : les morceaux se raccordent sans couture. Les morceaux se mettent bout à bout dans le texte.
+def bar(part, full, t=0.0):
+    y, h = 42, 44
+    r = h / 2
+    if part == 'l': shape = f'<path d="M{8 + r} {y}H128V{y + h}H{8 + r}a{r} {r} 0 0 1 0-{h}z"/>'
+    elif part == 'r': shape = f'<path d="M0 {y}H{120 - r}a{r} {r} 0 0 1 0 {h}H0z"/>'
+    else: shape = f'<rect x="0" y="{y}" width="128" height="{h}"/>'
+    if not full:
+        return (f'<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">'
+                f'<g fill="#94a3b8" fill-opacity=".28">{shape}</g></svg>')
+    x = -80 + 300 * t
+    return ('<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128"><defs>'
+            '<linearGradient id="g" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#a78bfa"/><stop offset=".55" stop-color="#7c3aed"/><stop offset="1" stop-color="#5b21b6"/></linearGradient>'
+            '<linearGradient id="v" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#fff" stop-opacity=".35"/><stop offset=".5" stop-color="#fff" stop-opacity="0"/></linearGradient>'
+            f'<clipPath id="c">{shape}</clipPath></defs>'
+            f'<g clip-path="url(#c)"><rect width="128" height="128" fill="url(#g)"/><rect width="128" height="128" fill="url(#v)"/>'
+            f'<path d="M{x:.1f} 30h26l-20 70h-26z" fill="#fff" fill-opacity=".45"/></g></svg>')
+
+for part in 'lmr':
+    save_gif(f'fb_bar{part}1', frames(lambda t, p=part: bar(p, True, t), 14), 70)
+    render(f'fb_bar{part}0', bar(part, False))
 
 # Planche de contrôle.
 names = sorted(f for f in os.listdir(OUT) if f.endswith(('.png', '.gif')))

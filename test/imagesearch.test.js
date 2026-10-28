@@ -63,13 +63,13 @@ test('recherche par image : chaque photo d\'un membre reçoit les items qui ress
 
   const pending = calls.find((c) => c.method === 'POST' && c.url.endsWith('/channels/777/messages'));
   assert.ok(pending, 'réponse postée tout de suite dans le salon');
-  assert.match(pending.body, /Recherche en cours/);
+  assert.match(pending.body, /Je cherche ta pièce/);
   assert.equal(JSON.parse(pending.body).message_reference.message_id, snowflake(NOW - 1000));
   const reply = calls.find((c) => c.method === 'PATCH' && c.url.endsWith('/channels/777/messages/999'));
   assert.ok(reply, 'la réponse est remplacée par les résultats');
   const body = JSON.parse(reply.body);
   const s = JSON.stringify(body);
-  assert.match(s, /Items qui ressemblent/);
+  assert.match(s, /Trouvé !/);
   assert.match(s, /pub:qc:weidian:7561755071/);
   assert.match(s, /QC · 293/);
   assert.match(s, /finds-bot\.test\/go\/taobao%3A868034409365\/BBDBuy/);

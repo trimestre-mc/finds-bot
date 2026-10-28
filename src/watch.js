@@ -177,13 +177,13 @@ async function imageMessage(env, ctx, c, m, found, exec) {
   let calls = 0;
   if (images.length) {
     const lim = await rateLimit(env, 'image', m.author && m.author.id, LIMITS.image);
-    if (!lim.ok) return calls + await limitNotice(env, c, m, limitText(lim, 'recherches par image'));
+    if (!lim.ok) return calls + await limitNotice(env, c, m, limitText(lim, 'recherches par image', etxt(ctx.emojis, 'fb_clock')));
   }
   const accent = (ACCENTS[ctx.cfg.accent] || ACCENTS.orange).color;
   for (const a of images) {
     const pending = await discordApi(env, 'POST', `/channels/${c.channel_id}/messages`, {
       flags: COMPONENTS_V2, allowed_mentions: { parse: [] },
-      components: [container([text(`### ${etxt(ctx.emojis, 'fb_loading')} Recherche en cours…\n-# Je lis ta photo et je cherche les items qui ressemblent.`)], accent)],
+      components: [container([text(`### ${etxt(ctx.emojis, 'fb_loading')} Je cherche ta pièce…\n-# Je lis la photo et je fouille plus de 500 000 items.`)], accent)],
       message_reference: { message_id: m.id, fail_if_not_exists: false },
     });
     calls++;

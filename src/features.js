@@ -20,7 +20,7 @@ import {
 } from './views.js';
 import { itemDb, itemById, batchByDb, deleteShopItems } from './shard.js';
 import { compareView } from './compare.js';
-import { loadEmojis, emo } from './emojis.js';
+import { loadEmojis, emo, etxt } from './emojis.js';
 import { toggleWatch, watchesView, toggleSearchAlert, deleteSearchAlert } from './alerts.js';
 import { cacheGet, cacheSet, cacheClear, rateLimit, LIMITS, limitText } from './kvstore.js';
 
@@ -199,7 +199,7 @@ export async function handlePublicComponent(it, env, ctx) {
     // Limite par membre (le partage d'une analyse déjà faite ne compte pas).
     if (kind === 'aiqc') {
       const lim = await rateLimit(env, 'aiqc', userId(it), LIMITS.aiqc);
-      if (!lim.ok) return panel([container([text(limitText(lim, 'analyses IA'))])]);
+      if (!lim.ok) return panel([container([text(limitText(lim, 'analyses IA', etxt(await loadEmojis(env), 'fb_clock')))])]);
     }
     return later(it, env, ctx, async () => {
       const item = (await itemById(env, key)) || { id: key, item_id: itemId, platform, url: canonicalUrl(platform, itemId) };

@@ -21,12 +21,16 @@ const AIQC_PER_DAY_GROQ = 150; // avec Groq (~1 000 requêtes/jour gratuites, ~6
 const CACHE_MS = 30 * 86400000;
 const PHOTOS = 5; // analysées une par une (3 sans Groq, voir analyzeQc)
 
-const VERDICT = {
-  ok: { icon: '✅', label: 'Rien d\'anormal repéré', color: 0x22c55e },
-  a_verifier: { icon: '⚠️', label: 'Quelques points à vérifier', color: 0xf59e0b },
-  probleme: { icon: '❌', label: 'Problème visible', color: 0xef4444 },
-};
-const ICON = { ok: '✅', attention: '⚠️', probleme: '❌' };
+// Titre de la carte selon la note (ou le verdict s'il n'y a pas de note).
+const TIERS = [
+  { min: 9, label: 'Top batch', emoji: 'fb_crown', color: 0x22c55e },
+  { min: 7, label: 'GL', emoji: 'fb_gl', color: 0x22c55e },
+  { min: 5, label: 'Mitigé', emoji: 'fb_mid', color: 0xf59e0b },
+  { min: 3, label: 'RL conseillé', emoji: 'fb_rl', color: 0xef4444 },
+  { min: 0, label: 'À fuir', emoji: 'fb_bad', color: 0xb91c1c },
+];
+const BY_VERDICT = { ok: TIERS[1], a_verifier: { ...TIERS[2], label: 'À vérifier' }, probleme: TIERS[3] };
+const POINT = { ok: 'fb_ok', attention: 'fb_mid', probleme: 'fb_bad' };
 
 async function hashKey(parts) {
   const buf = await crypto.subtle.digest('SHA-1', new TextEncoder().encode(parts.join('|')));
@@ -99,12 +103,12 @@ export async function qcAnalysis(env, photos, { ref = null, what = null, gold = 
 
 // Étapes affichées pendant l'analyse, avec leur part du temps total.
 const STEPS = {
-  match: { label: 'Recherche de l\'article', icon: '🔎', weight: 0.08 },
-  photos: { label: 'Lecture des photos', icon: '📸', weight: 0.42 },
-  zoom: { label: 'Gros plan du logo et des étiquettes', icon: '🔬', weight: 0.12 },
-  compare: { label: 'Comparaison avec un autre batch', icon: '⚖️', weight: 0.12 },
-  merge: { label: 'Avis de l\'expert', icon: '🧠', weight: 0.12 },
-  verify: { label: '2e lecture des points douteux', icon: '🔁', weight: 0.14 },
+  match: { label: 'Je retrouve l\'article', weight: 0.08 },
+  photos: { label: 'Je passe tes photos au crible', weight: 0.42 },
+  zoom: { label: 'Zoom sur le logo et les étiquettes', weight: 0.12 },
+  compare: { label: 'Comparaison avec un autre batch', weight: 0.12 },
+  merge: { label: 'Je rédige mon avis', weight: 0.12 },
+  verify: { label: 'Je revérifie les points douteux', weight: 0.14 },
 };
 const DEFAULT_MS = 35000;
 
@@ -129,25 +133,25 @@ export function progressView(emojis, p, accent) {
   const keys = p.keys;
   const at = keys.indexOf(p.current);
   const done = keys.slice(0, Math.max(0, at)).filter((k) => p.started.has(k));
-  const frac = Math.min(0.97, done.reduce((n, k) => n + STEPS[k].weight, 0) / keys.reduce((n, k) => n + STEPS[k].weight, 0) + 0.02);
-  const cells = 14;
-  const full = Math.round(frac * cells);
-  const bar = `${'▰'.repeat(full)}${'▱'.repeat(cells - full)}  **${Math.round(frac * 100)} %**`;
+  const frac = Math.min(0.97, done.reduce((n, k) => n + STEPS[k].weight, 0) / keys.reduce((n, k) => n + STEPS[k].weight, 0) + 0.03);
+  // Barre en emojis : début, 8 morceaux, fin (pleins = violet animé).
+  const cells = 10;
+  const full = Math.max(1, Math.round(frac * cells));
+  const bar = Array.from({ length: cells }, (_, i) => e(`fb_bar${i === 0 ? 'l' : i === cells - 1 ? 'r' : 'm'}${i < full ? 1 : 0}`)).join('');
   const lines = keys.map((k, i) => {
-    const st = STEPS[k];
     if (i < at && !p.started.has(k)) return null; // étape sautée (pas de batch de référence, pas de doute…)
-    if (i < at) return `✅ ${st.label}`;
-    if (i === at) return `${e('fb_loading')} **${st.label}…**`;
-    return `-# ${st.icon} ${st.label}${k === 'verify' ? ' (si besoin)' : ''}`;
+    if (i < at) return `${e('fb_done')} ${STEPS[k].label}`;
+    if (i === at) return `${e('fb_loading')} **${STEPS[k].label}…**`;
+    return `-# ${e('fb_todo')} ${STEPS[k].label}${k === 'verify' ? ' (si besoin)' : ''}`;
   }).filter(Boolean);
   const end = Math.round((p.start + p.eta) / 1000);
-  const left = end * 1000 - Date.now() > 3000 ? `Résultat estimé <t:${end}:R>` : 'Encore quelques secondes…';
+  const left = end * 1000 - Date.now() > 3000 ? `prêt <t:${end}:R>` : 'encore quelques secondes';
   return [container([
-    text(`### ${e('fb_aiscan')} Analyse de tes QC en cours\n-# L'IA examine ${p.count} photo(s) comme un contrôleur : matière, logo, coutures, étiquettes, mesures.`),
+    text(`## ${e('fb_aiscan')} Je check ton QC\n-# ${p.count} photo${p.count > 1 ? 's' : ''} · logo, matière, coutures, étiquettes, mesures`),
     sep(),
     text(lines.join('\n')),
     sep(),
-    text(`${bar}\n⏱️ ${left}`),
+    text(`${bar}  **${Math.round(frac * 100)} %**\n${e('fb_clock')} ${left}`),
   ], accent)];
 }
 
@@ -180,30 +184,45 @@ function extrasText(x) {
 export function analysisView(emojis, res, { title = null, photos = [], who = null, match = null } = {}) {
   const e = (n) => etxt(emojis, n);
   if (!res.result) {
-    const why = res.reason === 'occupe'
-      ? 'L\'IA est très demandée en ce moment. Reposte tes photos (ou re-clique) dans une minute.'
-      : res.reason === 'limite'
-      ? 'L\'analyse IA a atteint sa limite du jour (quota d\'IA gratuit). Réessaie demain, ou demande l\'avis des membres (votes GL / RL).'
-      : res.reason === 'photos' ? 'Je n\'ai pas trouvé de photos à analyser.' : 'L\'IA n\'a pas pu analyser ces photos. Réessaie dans un moment.';
-    return [container([text(`### ${e('fb_bot')} Analyse IA des QC\n${why}`)], 0x64748b)];
+    const why = {
+      occupe: `${e('fb_clock')} **Trop de monde en même temps.** Renvoie tes photos dans une minute, je m'en occupe.`,
+      limite: `${e('fb_clock')} **Plus d'analyses pour aujourd'hui sur le serveur.** Ça revient demain. En attendant, les membres peuvent voter GL / RL.`,
+      photos: `${e('fb_ask')} **Je ne vois aucune photo à checker.** Envoie tes QC en image (jpg, png ou webp).`,
+    }[res.reason] || `${e('fb_bad')} **Je n'ai pas réussi à lire tes photos.** Réessaie dans un moment, ou envoie-les en meilleure qualité.`;
+    return [container([text(`### ${e('fb_aiscan')} Check QC\n${why}`)], 0x64748b)];
   }
   const r = res.result;
-  const v = VERDICT[r.verdict] || VERDICT.a_verifier;
-  const score = r.note != null ? `  ·  Note QC : **${r.note}/10** ${'★'.repeat(Math.round(r.note / 2))}${'☆'.repeat(5 - Math.round(r.note / 2))}` : '';
-  const head = `## ${e('fb_bot')} Analyse IA des QC\n` +
-    (title || r.article ? `**${escape(String(title || r.article).slice(0, 90))}**\n` : '') +
-    `### ${v.icon} ${v.label}${score}`;
+  const tier = r.note != null ? TIERS.find((t) => r.note >= t.min) : (BY_VERDICT[r.verdict] || BY_VERDICT.a_verifier);
+  const full = r.note != null ? Math.round(r.note / 2) : 0;
+  const stars = r.note != null ? `${e('fb_s1').repeat(full)}${e('fb_s0').repeat(5 - full)}` : '';
+  const name = title || r.article;
+  const head = `## ${e(tier.emoji)} ${tier.label}${r.note != null ? `  ·  ${r.note}/10` : ''}\n` +
+    (stars ? `${stars}\n` : '') +
+    (name ? `${e('fb_qc')} **${escape(String(name).slice(0, 90))}**` : '');
+  // Ce qui coince d'abord, puis ce qui est propre.
+  const line = (p) => `${e(POINT[p.etat] || 'fb_mid')} ${escape(p.texte)}`;
+  const bad = r.points.filter((p) => p.etat !== 'ok');
+  const good = r.points.filter((p) => p.etat === 'ok');
+  const body = [
+    bad.length ? `**Ce qui coince**\n${bad.map(line).join('\n')}` : null,
+    good.length ? `**Ce qui est propre**\n${good.map(line).join('\n')}` : null,
+  ].filter(Boolean).join('\n\n');
+  const done = [`${r.photos || Math.min(photos.length || PHOTOS, PHOTOS)} photo${(r.photos || 2) > 1 ? 's' : ''}`];
+  if (r.extras && r.extras.zoom) done.push('gros plan');
+  if (r.extras && r.extras.compared) done.push('comparé à un autre batch');
+  if (r.extras && r.extras.verified) done.push('revérifié');
   return [container([
     text(head),
     photos.length ? gallery(photos.slice(0, PHOTOS)) : null,
     sep(),
-    text(r.points.map((p) => `${ICON[p.etat] || '•'} ${escape(p.texte)}`).join('\n') || '-# Pas de détail.'),
-    r.manque && r.manque.length ? text(`📸 **À demander à ton agent :** ${r.manque.map((x) => escape(x)).join(' · ')}`) : null,
-    r.conseil ? text(`💡 ${escape(r.conseil)}`) : null,
-    text(`-# Avis automatique de l'IA sur ${r.photos || Math.min(photos.length || PHOTOS, PHOTOS)} photo(s)${extrasText(r.extras)}, pas une garantie : zoome sur les photos et compare avec les votes GL / RL des membres.` +
-      (who ? `  ·  Demandé par <@${who}>` : '') + (res.cached ? '  ·  analyse déjà faite' : '')),
+    text(body || '-# Rien de particulier à signaler.'),
+    r.manque && r.manque.length ? text(`${e('fb_ask')} **Demande à ton agent :** ${r.manque.map((x) => escape(x)).join(' · ')}`) : null,
+    r.conseil ? text(`${e('fb_tip')} **Mon avis :** ${escape(r.conseil)}`) : null,
+    sep(false),
+    text(`-# ${e('fb_brain')} ${done.join(' · ')}${who ? `  ·  pour <@${who}>` : ''}${res.cached ? '  ·  déjà analysé' : ''}\n` +
+      '-# Un avis, pas une garantie : regarde aussi les votes GL / RL des membres.'),
     ...(match || []),
-  ], v.color)];
+  ], tier.color)];
 }
 
 // ---------------------------------------------------------------- Salons d'analyse
@@ -217,7 +236,7 @@ export async function aiqcMessage(env, ctx, c, m) {
   const lim = await rateLimit(env, 'aiqc', m.author && m.author.id, LIMITS.aiqc);
   if (!lim.ok) {
     await discordApi(env, 'POST', `/channels/${c.channel_id}/messages`, {
-      content: limitText(lim, 'analyses IA'), allowed_mentions: { parse: [] }, message_reference: { message_id: m.id, fail_if_not_exists: false },
+      content: limitText(lim, 'analyses IA', etxt(ctx.emojis, 'fb_clock')), allowed_mentions: { parse: [] }, message_reference: { message_id: m.id, fail_if_not_exists: false },
     }).catch(() => {});
     return 1;
   }
@@ -268,7 +287,7 @@ function matchBlocks(ctx, x, channelId) {
   const e = (n) => etxt(ctx.emojis, n);
   const item = { id: `${x.platform}:${x.id}`, platform: x.platform, item_id: x.id, url: canonicalUrl(x.platform, x.id) };
   const meta = [formatPrice(x.price, ctx.money), x.sold ? `${e('fb_fire')} ${x.sold}` : null, x.qc ? `${e('fb_qc')} ${x.qc} QC` : null].filter(Boolean);
-  const head = `${e('fb_search')} **L'article qui ressemble le plus**\n${escape(String(x.title || '').slice(0, 80))}\n${meta.join('  ·  ')}\n-# Vérifie que c'est bien le tien avant de comparer.`;
+  const head = `${e('fb_search')} **Je pense que c'est celui-là**\n${escape(String(x.title || '').slice(0, 80))}\n${meta.join('  ·  ')}\n-# Vérifie que c'est bien le même avant d'acheter.`;
   const agent = ctx.agents && ctx.agents[0];
   return [
     sep(),

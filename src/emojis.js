@@ -3,6 +3,7 @@
 // Leurs identifiants sont gardés dans les réglages ; sans eux, l'emoji Unicode de secours est utilisé.
 
 import { discordApi } from './discord.js';
+import { kvGet, kvSet } from './kvstore.js';
 
 // Emoji de secours (Unicode) de chaque emoji du bot.
 export const FALLBACK = {
@@ -12,15 +13,25 @@ export const FALLBACK = {
   fb_signup: '✍️', fb_stats: '📊', fb_bell: '🔔', fb_box: '📦', fb_trend: '📈', fb_bot: '🤖', fb_warn: '⚠️', fb_live: '🟢',
   fb_loading: '⏳',
   fb_aiscan: '🤖',
+  fb_ok: '✅', fb_mid: '⚠️', fb_bad: '❌', fb_tag: '🏷️', fb_ruler: '📏', fb_thread: '🧵', fb_zoom: '🔍', fb_brain: '✨',
+  fb_redo: '🔁', fb_clock: '⏱️', fb_tip: '💡', fb_ask: '📸', fb_s1: '★', fb_s0: '☆', fb_done: '✅', fb_todo: '▫️',
+  fb_barl1: '▰', fb_barm1: '▰', fb_barr1: '▰', fb_barl0: '▱', fb_barm0: '▱', fb_barr0: '▱',
 };
 
 // Emoji d'un agent ou d'une plateforme (badge dédié s'il existe, sinon le chariot).
 export const AGENT_EMOJI = { bbdbuy: 'fb_bbdbuy', kakobuy: 'fb_kakobuy' };
 export const PLATFORM_EMOJI = { weidian: 'fb_weidian', taobao: 'fb_taobao', 1688: 'fb_1688' };
 
+// Liste gardée dans Upstash (sinon les réglages), et 5 min en mémoire.
+let memo = null;
 export async function loadEmojis(env) {
-  const row = await env.DB.prepare("SELECT value FROM settings WHERE key = 'emojis'").first().catch(() => null);
-  try { return row ? JSON.parse(row.value) : {}; } catch { return {}; }
+  if (memo && Date.now() - memo.at < 300000) return memo.map;
+  let raw = await kvGet(env, 'emojis');
+  if (!raw) raw = (await env.DB.prepare("SELECT value FROM settings WHERE key = 'emojis'").first().catch(() => null) || {}).value;
+  let map = {};
+  try { map = raw ? JSON.parse(raw) : {}; } catch {}
+  memo = { at: Date.now(), map };
+  return map;
 }
 
 // Pour un bouton : { id, name, animated } ou { name: Unicode }.
@@ -39,7 +50,9 @@ export function etxt(map, name) {
 export async function refreshEmojis(env) {
   const list = await discordApi(env, 'GET', `/applications/${env.DISCORD_APP_ID}/emojis`);
   const map = Object.fromEntries((list.items || []).filter((e) => e.name.startsWith('fb_')).map((e) => [e.name, { id: e.id, animated: !!e.animated }]));
-  await env.DB.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('emojis', ?)").bind(JSON.stringify(map)).run();
+  await kvSet(env, 'emojis', JSON.stringify(map));
+  await env.DB.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('emojis', ?)").bind(JSON.stringify(map)).run().catch(() => {});
+  memo = { at: Date.now(), map };
   return map;
 }
 
@@ -47,7 +60,7 @@ export async function refreshEmojis(env) {
 export async function uploadEmojis(env, emojis, replace = false) {
   const existing = await refreshEmojis(env);
   const done = [];
-  for (const e of emojis.slice(0, 20)) {
+  for (const e of emojis.slice(0, 25)) {
     if (!/^fb_[a-z0-9_]{1,28}$/.test(e.name) || !/^data:image\/(png|gif);base64,/.test(e.image || '')) continue;
     if (existing[e.name]) {
       if (!replace) continue;

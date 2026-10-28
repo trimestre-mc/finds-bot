@@ -139,9 +139,11 @@ export const LIMITS = {
   image: [{ s: 10, max: 1 }, { s: 3600, max: 30 }],
 };
 
-// Texte d'attente : « dans 3 minutes » (horodatage Discord qui se met à jour tout seul).
-export function limitText(lim, what) {
+// Texte d'attente : « prochaine dans 3 minutes » (horodatage Discord qui se met à jour tout seul).
+export function limitText(lim, what, icon = '⏱️') {
   const per = lim.rule.s >= 86400 ? 'par jour' : lim.rule.s >= 3600 ? 'par heure' : null;
-  const why = per ? `${lim.rule.max} ${what} ${per} par membre` : 'une à la fois';
-  return `⏳ Doucement ! Limite atteinte (${why}). Tu pourras recommencer <t:${Math.ceil(lim.until / 1000)}:R>.`;
+  const next = `<t:${Math.ceil(lim.until / 1000)}:R>`;
+  return per
+    ? `${icon} **Tu enchaînes !** C'est ${lim.rule.max} ${what} ${per} max. Tu pourras recommencer ${next}.`
+    : `${icon} **Une seconde !** Laisse-moi finir la précédente, tu pourras relancer ${next}.`;
 }

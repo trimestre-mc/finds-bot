@@ -32,14 +32,14 @@ test('analyse IA des QC : résultat lisible, gardé en cache, limite du jour', a
   assert.equal(again.cached, true);
   assert.equal(calls, 3); // en cache : aucun appel de plus
   const view = JSON.stringify(analysisView({}, first, { title: 'Nike Tech Fleece Shorts', photos }));
-  assert.match(view, /Quelques points à vérifier/);
+  assert.match(view, /À vérifier/);
   assert.match(view, /⚠️ Photo 2 : fil qui dépasse/);
   assert.match(view, /pas une garantie/);
   // Limite du jour : au-delà de AIQC_PER_DAY analyses nouvelles, plus d'appel à l'IA.
   env.DB.raw.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('ai_qc', ?)").run(JSON.stringify({ day: new Date().toISOString().slice(0, 10), used: AIQC_PER_DAY }));
   const limited = await qcAnalysis(env, ['https://img.finderqc.com/3.jpg']);
   assert.equal(limited.reason, 'limite');
-  assert.match(JSON.stringify(analysisView({}, limited)), /limite du jour/);
+  assert.match(JSON.stringify(analysisView({}, limited)), /Plus d'analyses pour aujourd'hui/);
 });
 
 test('salon d\'analyse IA : photos postées → « analyse en cours » puis le résultat', async () => {
@@ -55,13 +55,13 @@ test('salon d\'analyse IA : photos postées → « analyse en cours » puis le r
   const m = { id: '1', author: { id: '42' }, content: 'mes qc', attachments: [{ url: 'https://cdn.discordapp.com/attachments/1/2/a.jpg', filename: 'a.jpg', content_type: 'image/jpeg' }] };
   await aiqcMessage(env, ctx, c, m);
   assert.equal(c.done, 1);
-  assert.match(sent[0].body, /Analyse de tes QC en cours/);
-  assert.match(sent[0].body, /Résultat estimé <t:\d+:R>/); // compte à rebours
-  assert.ok(sent.some((x) => x.method === 'PATCH' && /✅ Recherche de l'article/.test(x.body))); // étapes qui avancent
+  assert.match(sent[0].body, /Je check ton QC/);
+  assert.match(sent[0].body, /prêt <t:\d+:R>/); // compte à rebours
+  assert.ok(sent.some((x) => x.method === 'PATCH' && /✅ Je retrouve l'article/.test(x.body))); // étapes qui avancent
   const last = sent[sent.length - 1];
   assert.equal(last.method, 'PATCH');
   assert.match(last.body, /Étiquette : taille M/);
-  assert.match(last.body, /Demandé par <@42>/);
+  assert.match(last.body, /pour <@42>/);
   assert.equal(await aiqcMessage(env, ctx, c, { ...m, attachments: [] }), 0); // pas de photo : rien
 });
 
@@ -95,8 +95,8 @@ test('Groq d\'abord (score sur 10, photos à demander), Cloudflare en secours si
   assert.equal(cf, 1, 'Cloudflare seulement pour identifier l\'article (peu coûteux), les photos par Groq');
   assert.equal(res.result.note, 9);
   const view = JSON.stringify(analysisView({}, res, {}));
-  assert.match(view, /Note QC : \*\*9\/10\*\*/);
-  assert.match(view, /À demander à ton agent :\*\* profil de la chaussure · semelle/);
+  assert.match(view, /Top batch  ·  9\/10/);
+  assert.match(view, /Demande à ton agent :\*\* profil de la chaussure · semelle/);
   groqUp = false;
   const fallback = await qcAnalysis(env, ['https://img.finderqc.com/c.jpg']);
   assert.ok(fallback.result, 'analyse faite par Cloudflare');
