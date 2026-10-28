@@ -24,7 +24,35 @@ async function getJob(env) {
 }
 const saveJob = (env, j) => kvSet(env, 'ad:job', JSON.stringify(j));
 
-// Le MP envoyé (et son aperçu).
+// Modèles de messages, chargés en un clic depuis l'onglet (le texte accepte la mise en forme Discord).
+export const PRESETS = {
+  kijfind: {
+    label: 'Partenariat · Kij Find',
+    title: '',
+    text: [
+      '# 🛍️ Kij Find',
+      '-# La communauté des finds Weidian, Taobao et 1688',
+      '',
+      'Tu achètes en Chine pour toi ou pour la revente ? **Kij Find** rassemble tout ce qu\'il te faut, au même endroit.',
+      '',
+      '> 🔗 **Des liens vérifiés** pour tous tes achats',
+      '> 💰 **Des bons plans** pensés pour la revente',
+      '> 🔥 **Les nouveautés** et les meilleures trouvailles, chaque jour',
+      '> 📸 **Des photos QC**, et un bot qui les analyse pour toi',
+      '> 🤝 **Une communauté** qui partage et s\'entraide',
+      '',
+      'Débutant ou revendeur confirmé : **tout le monde est le bienvenu.**',
+      '',
+      '## 💎 Rejoins l\'aventure',
+      '**[discord.gg/9XpCj6p6Rg](https://discord.gg/9XpCj6p6Rg)**',
+    ].join('\n'),
+    btnLabel: 'Rejoindre Kij Find',
+    btnUrl: 'https://discord.gg/9XpCj6p6Rg',
+  },
+};
+
+// Le MP envoyé (et son aperçu). Titre facultatif ; le texte est écrit par le propriétaire et garde sa mise en forme
+// Discord (titres, gras, citations, liens).
 export function adMessage(emojis, d) {
   const e = (n) => etxt(emojis, n);
   const buttons = [
@@ -32,8 +60,8 @@ export function adMessage(emojis, d) {
     d.unsub !== false ? { type: 2, style: Style.SECONDARY, label: 'Se désinscrire', custom_id: 'pub:adoff', emoji: { name: '🔕' } } : null,
   ].filter(Boolean);
   return [container([
-    text(`## ${e('fb_gift')} ${escape(d.title || 'Annonce')}`),
-    text(escape(d.text || '')),
+    d.title ? text(`## ${e('fb_gift')} ${escape(d.title)}`) : null,
+    text(String(d.text || '').slice(0, 3500)),
     buttons.length ? sep() : null,
     buttons.length ? row(...buttons) : null,
   ], COLOR)];
@@ -56,14 +84,16 @@ export async function pubView(env, it, msg = null) {
     msg ? text(msg) : null,
     text(`## ${e('fb_bell')} Pub (bêta)\n-# Réservé au propriétaire. MP aux membres des rôles choisis, ${PER_RUN * 2} par minute, ${MAX_RECIPIENTS} personnes au plus par envoi.`),
     sep(),
-    text(d.text ? `**Message**\n### ${escape(d.title || 'Annonce')}\n${escape(d.text).slice(0, 600)}${d.btnLabel ? `\n-# Bouton : ${escape(d.btnLabel)} → ${escape(d.btnUrl || '')}` : ''}`
-      : '**Message** : aucun pour l\'instant. Clique sur « Modifier le message ».'),
+    text(d.text ? `**Message** (aperçu)${d.title ? ` · ${escape(d.title)}` : ''}\n${String(d.text).slice(0, 700)}${d.btnLabel ? `\n-# Bouton : ${escape(d.btnLabel)} → ${escape(d.btnUrl || '')}` : ''}`
+      : '**Message** : aucun pour l\'instant. Clique sur « Modifier le message » ou choisis un modèle.'),
     text(`**Rôles ciblés** : ${roles.length ? roles.map((r) => `<@&${r}>`).join(' ') : 'aucun'}\n` +
       `**Exclus** : ${blacklist.length ? blacklist.map((u) => `<@${u}>`).join(' ') : 'personne'}\n` +
       `**Bouton « Se désinscrire »** : ${d.unsub !== false ? 'activé' : 'désactivé'}  ·  **Désinscrits** : ${optout}`),
     pending ? text(`${e('fb_mid')} **${pending} membres** vont recevoir ce message. Confirme pour lancer l'envoi.`) : null,
     text(status),
     sep(),
+    { type: 1, components: [{ type: 3, custom_id: 'ad:preset', placeholder: 'Charger un modèle de message', min_values: 1, max_values: 1,
+      options: Object.entries(PRESETS).map(([value, p]) => ({ value, label: p.label.slice(0, 100) })) }] },
     { type: 1, components: [{ type: 6, custom_id: 'ad:roles', placeholder: 'Rôles qui recevront le message', min_values: 0, max_values: 10,
       default_values: roles.map((id) => ({ id, type: 'role' })) }] },
     { type: 1, components: [{ type: 5, custom_id: 'ad:bl', placeholder: 'Membres exclus (ne recevront rien)', min_values: 0, max_values: 25,
@@ -107,11 +137,17 @@ export async function handlePubComponent(it, env, ctx, b, values) {
   switch (b) {
     case 'open': return update(await pubView(env, it));
     case 'edit': return openModal(modal('m:ad', 'Message de la pub', [
-      { id: 'title', label: 'Titre', placeholder: 'ex : -20 % sur BBDBuy ce week-end', value: d.title, max: 100, required: true },
-      { id: 'text', label: 'Message', long: true, value: d.text, max: 1500, required: true },
+      { id: 'title', label: 'Titre (facultatif)', placeholder: 'ex : -20 % sur BBDBuy ce week-end', value: d.title, max: 100 },
+      { id: 'text', label: 'Message (mise en forme Discord acceptée)', long: true, value: d.text, max: 3000, required: true },
       { id: 'btnLabel', label: 'Texte du bouton (facultatif)', placeholder: 'ex : J\'en profite', value: d.btnLabel, max: 60 },
       { id: 'btnUrl', label: 'Lien du bouton (facultatif)', placeholder: 'https://…', value: d.btnUrl, max: 300 },
     ]));
+    case 'preset': {
+      const p = PRESETS[values[0]];
+      if (!p) return update(await pubView(env, it));
+      await saveDraft(env, { ...d, title: p.title, text: p.text, btnLabel: p.btnLabel, btnUrl: p.btnUrl });
+      return update(await pubView(env, it, `✅ Modèle « ${p.label} » chargé. Vérifie-le avec « Aperçu en MP ».`));
+    }
     case 'roles': await saveDraft(env, { ...d, roles: values.slice(0, 10), guild: it.guild_id }); return update(await pubView(env, it));
     case 'bl': await saveDraft(env, { ...d, blacklist: values.slice(0, 25) }); return update(await pubView(env, it));
     case 'unsub': await saveDraft(env, { ...d, unsub: d.unsub === false }); return update(await pubView(env, it));
@@ -161,7 +197,7 @@ export async function handlePubModal(it, env, v) {
   if (!isOwner(env, it)) return panel([container([text('Onglet réservé au propriétaire du bot.')])]);
   const d = await getDraft(env);
   const url = String(v.btnUrl || '').trim();
-  await saveDraft(env, { ...d, title: String(v.title || '').slice(0, 100), text: String(v.text || '').slice(0, 1500),
+  await saveDraft(env, { ...d, title: String(v.title || '').slice(0, 100), text: String(v.text || '').slice(0, 3000),
     btnLabel: url ? String(v.btnLabel || 'Voir').slice(0, 60) : '', btnUrl: /^https:\/\//.test(url) ? url : '' });
   return update(await pubView(env, it, url && !/^https:\/\//.test(url) ? '⚠️ Le lien doit commencer par https:// : bouton retiré.' : '✅ Message enregistré.'));
 }

@@ -10,3 +10,11 @@ test('MP de pub : titre, texte, bouton de lien, « Se désinscrire » activable'
   const off = JSON.stringify(adMessage({}, { title: 'Promo', text: 'Salut', unsub: false }));
   assert.doesNotMatch(off, /pub:adoff/);
 });
+
+test('modèle Kij Find : mise en forme Discord gardée, bouton vers le serveur', async () => {
+  const { adMessage, PRESETS } = await import('../src/pub.js');
+  const s = JSON.stringify(adMessage({}, PRESETS.kijfind));
+  assert.match(s, /# 🛍️ Kij Find/);
+  assert.match(s, /\*\*Des liens vérifiés\*\*/);
+  assert.match(s, /https:\/\/discord\.gg\/9XpCj6p6Rg/);
+});
