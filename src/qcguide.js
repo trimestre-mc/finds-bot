@@ -67,3 +67,69 @@ export function qcGuide(article) {
 
 // Type d'article reconnu dans le texte ? (sinon l'analyse garde la liste courte de tous les types)
 export const knownType = (article) => TYPES.some(([re]) => re.test(String(article || '')));
+
+// Ce qu'un contrôleur sévère vérifie, par type d'article, et ce qui est NORMAL pour ce type (à ne pas prendre pour
+// un défaut). Le premier type reconnu dans le nom de l'article l'emporte.
+const CHECKS = [
+  [/sneaker|basket|chaussure|shoe|jordan|dunk|air force|af1|yeezy|new balance|\bnb\b|trainer|runner|triple s|\bb2[0-9]\b|\bb30\b|samba|gazelle/i,
+    'CHAUSSURES', 'forme du bout (toe box) trop gonflé ou trop pointu, talon penché vu de dos, hauteur du col, silhouette du vrai modèle ; symétrie entre les deux chaussures ; colle qui déborde à la jonction semelle-tige, semelle mal alignée ou tachée ; coutures de travers ou fils ; logo (marque, swoosh, CD, Jumpman…) déformé, mal placé ou de mauvaise taille ; cuir craquelé ou plastique, daim irrégulier, plis profonds',
+    'mesh, nylon, synthétique, cuir lisse ou verni selon le modèle ; ne parle ni de polyester ni de densité de coutures comme pour un vêtement'],
+  [/boot|botte|slide|claquette|sandal|mule|clog|loafer|mocassin/i,
+    'BOTTES, CLAQUETTES, MOCASSINS', 'symétrie des deux pieds, semelle collée sans débord, coutures, logo en relief net et bien placé, boucles et quincaillerie gravées, matière (daim régulier, cuir sans plis profonds)',
+    'caoutchouc, EVA ou mousse pour les claquettes ; synthétique selon le modèle'],
+  [/jersey|maillot|football|soccer|\bkit\b|basketball shirt|nba/i,
+    'MAILLOT DE SPORT', 'écusson du club (brodé ou thermocollé selon la version) net et bien centré, sponsors et logo de l\'équipementier nets et bien placés, flocage (nom, numéro) régulier sans bulles, couleurs et motifs du vrai maillot, coutures, étiquette intérieure (code produit, taille)',
+    'tissu technique en polyester léger et un peu brillant ; la version « player » est plus fine et ajustée, la version « fan » plus épaisse avec un écusson brodé'],
+  [/hoodie|sweat|crewneck|pull(over)?\b|zip.?up|fleece|tech fleece/i,
+    'SWEAT, HOODIE', 'épaisseur du molleton (tient sa forme, pas fin ni transparent) ; logo : broderie dense sans fils sautés ou impression opaque et nette (pas pixelisée, pas de film plastique qui craquelle) ; police et proportions du logo ; côtes des poignets et du bas serrées ; cordons, œillets et zip de marque ; coutures droites',
+    'Tech Fleece et sweats techniques sont en coton-polyester, un aspect lisse est normal ; coton épais et mat pour la plupart des marques streetwear'],
+  [/puffer|doudoune|down jacket|parka|coat|manteau|windbreaker|coupe.?vent|jacket|veste|gilet|vest/i,
+    'VESTE, DOUDOUNE', 'matelassage régulier, gonflant homogène sans zones plates, plumes qui ne sortent pas ; zip de marque qui ferme droit ; boutons-pression gravés ; doublure bien cousue ; badge ou logo net et bien placé ; capuche et col symétriques',
+    'nylon ou polyester brillant normal pour une doudoune ou un coupe-vent ; tissu technique pour les vestes outdoor (Arc\'teryx, TNF)'],
+  [/\bt.?shirt|\btee\b|polo|débardeur|tank/i,
+    'T-SHIRT, POLO', 'épaisseur et tenue du coton ; impression : sérigraphie opaque et nette, pas pixelisée, pas de transfert plastique ; police, taille et placement du logo ; col côtelé qui ne gondole pas ; coutures double aiguille régulières',
+    'coton léger pour certains t-shirts basiques ; polyester normal pour un polo ou t-shirt de sport'],
+  [/jean|denim/i,
+    'JEAN', 'délavage et usure naturels (pas imprimés ni répétés), toile épaisse, surpiqûres régulières, poches arrière symétriques, rivets et bouton gravés, patch au dos, ourlet',
+    'élasthanne normal pour un jean stretch'],
+  [/pant|pantalon|jogger|jogging|short|cargo|trouser|tracksuit|survêt/i,
+    'PANTALON, SHORT, SURVÊTEMENT', 'cordon et œillets, élastique régulier, poches symétriques et bien cousues, coutures latérales droites, logo net et bien placé, bas et chevilles',
+    'polyester ou nylon normal pour un survêtement ou un short de sport ; coton molletonné pour un jogging'],
+  [/knit|maille|cardigan|sweater|beanie|bonnet/i,
+    'MAILLE', 'mailles régulières sans trous ni fils tirés, motif tricoté (pas imprimé) si le vrai l\'est, côtes serrées, logo tissé ou brodé net',
+    'laine, coton ou acrylique selon le modèle'],
+  [/\bshirt\b|chemise|overshirt/i,
+    'CHEMISE', 'col symétrique et rigide, boutons alignés et bien cousus, boutonnières propres, motif aligné aux coutures, poignets, logo',
+    'coton, lin ou viscose selon le modèle'],
+  [/\bcap\b|casquette|\bhat\b|chapeau|bucket/i,
+    'CASQUETTE, CHAPEAU', 'forme de la visière et de la couronne (symétrique, pas écrasée), broderie 3D dense sans fils sautés, œillets brodés, bande intérieure et étiquettes, fermeture arrière',
+    'coton, polyester ou nylon selon le modèle'],
+  [/bag|sac|tote|backpack|pochette|pouch|purse|handbag|sacoche|crossbody|speedy|neverfull|keepall/i,
+    'SAC', 'forme qui se tient (pas molle ni affaissée), coutures régulières, tranches peintes lisses sans bavure, motif aligné et continu aux coutures, quincaillerie lourde gravée net, zip de marque, doublure, étiquette ou numéro intérieur',
+    'toile enduite (monogramme LV, GG Supreme) qui n\'est pas du cuir ; nylon pour Prada Re-Nylon ou les sacs de sport'],
+  [/wallet|portefeuille|card ?holder|porte.?carte|belt|ceinture/i,
+    'PORTEFEUILLE, CEINTURE', 'coutures régulières, tranches peintes lisses, estampage du logo net et droit, boucle lourde et gravée',
+    'toile enduite ou cuir selon le modèle'],
+  [/watch|montre|rolex|\bap\b|audemars|omega|cartier/i,
+    'MONTRE', 'alignement des index et de la lunette, marquages du cadran nets et bien espacés, aiguilles qui atteignent les index, date centrée dans sa fenêtre, couronne, finitions brossées et polies franches, bracelet et fermoir gravés',
+    'les reflets sur le verre ne sont pas des défauts'],
+  [/\bring\b|bague|necklace|collier|chain|chaîne|bracelet|earring|boucle d.oreille|pendant|pendentif|jewel|bijou/i,
+    'BIJOU', 'épaisseur et poids apparents, gravures et poinçons nets, poli régulier sans rayures ni bulles, pierres serties droites, fermoir solide, couleur du métal homogène',
+    'les reflets du métal ne sont pas des défauts'],
+  [/sunglass|lunette|glasses/i,
+    'LUNETTES', 'symétrie de la monture, charnières métal, gravures sur les branches, logo net, verres sans défaut, étui',
+    'acétate ou métal selon le modèle'],
+  [/sock|chaussette|underwear|boxer|caleçon|slip/i,
+    'CHAUSSETTES, SOUS-VÊTEMENTS', 'élastique régulier, logo tissé ou imprimé net et bien placé, coutures, étiquettes',
+    'coton mélangé à de l\'élasthanne ou du polyester'],
+];
+
+const GENERIC_CHECKS = 'matière anormale pour ce type d\'article (aspect plastique, tissu trop fin) ; impression floue, pixelisée ou baveuse ; logo ou police déformés (lettres mal dessinées, mauvaises proportions, mauvais espacement) ; motif mal reproduit ; quincaillerie générique ; coutures de travers, fils, colle';
+
+// Consignes de contrôle sévère pour l'article (type reconnu dans son nom), en une ligne lisible par le modèle.
+export function qcChecks(article) {
+  const hit = CHECKS.find(([re]) => re.test(String(article || '')));
+  if (!hit) return `Signes d'un mauvais batch : ${GENERIC_CHECKS}. Ne juge la matière que si elle est anormale pour ce type d'article.`;
+  const [, name, check, normal] = hit;
+  return `${name} (juge-le avec ces critères, pas comme un autre type d'article) : ${check}. NORMAL pour ce type, pas un défaut : ${normal}.`;
+}

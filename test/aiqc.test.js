@@ -167,3 +167,13 @@ test('analyse QC : ce qui n\'est pas visible n\'est pas un défaut', async () =>
   assert.equal(r.note, 5);
   assert.equal(r.verdict, 'a_verifier');
 });
+
+test('consignes de contrôle propres à chaque type d\'article', async () => {
+  const { qcChecks } = await import('../src/qcguide.js');
+  assert.match(qcChecks('Dior B23 sneakers'), /CHAUSSURES.*colle/);
+  assert.match(qcChecks('Maillot de football PSG'), /MAILLOT DE SPORT.*polyester/);
+  assert.match(qcChecks('Moncler puffer jacket'), /DOUDOUNE.*nylon/);
+  assert.match(qcChecks('Nike Tech Fleece Hooded Jacket'), /SWEAT/);
+  assert.match(qcChecks('LV Speedy bag'), /SAC.*toile enduite/);
+  assert.match(qcChecks('article inconnu'), /mauvais batch/);
+});
