@@ -59,3 +59,15 @@ test('marque lue dans le texte d\'un logo ou d\'une étiquette', async () => {
   assert.equal(brandIn('S'), null);
   assert.equal(brandIn(null), null);
 });
+
+test('titres lisibles : jargon de vendeur retiré, marques codées remises', async () => {
+  const { cleanTitle, ADULT } = await import('../src/titles.js');
+  assert.equal(cleanTitle('Putian Shoe Factory Direct Sales Aj4 White Oreo'), 'Air Jordan 4 White Oreo');
+  assert.equal(cleanTitle('Cross-Border In-Stock Trendy Brand Gallery Logo Tee for Men and Women'), 'Gallery Logo Tee');
+  assert.equal(cleanTitle('Flyerbuy N*K tech fleece set'), 'Flyerbuy Nike tech fleece set');
+  assert.equal(cleanTitle('Crow Heart AirPods Pro Case'), 'Chrome Hearts AirPods Pro Case');
+  assert.equal(cleanTitle('25-26 B.arce1on home fans version jersey【ID：4425081847】'), '25-26 Barcelona home fans version jersey');
+  assert.equal(cleanTitle('Men\'s Cotton T-Shirt'), 'Men\'s Cotton T-Shirt');
+  assert.ok(ADULT.test('Solid Silicone Inverted Mold Sex Doll Male Adult Products'));
+  assert.ok(!ADULT.test('Hoodie oversize'));
+});

@@ -124,7 +124,8 @@ const latinAlt = (s) => /^[a-z0-9' -]+$/.test(s);
 
 // Même filtre que where() de search.js, en Postgres.
 export function neonWhere(params, money) {
-  const clauses = ['hidden = 0'];
+  // Jamais de produit pour adultes (titres repérés ; FinderQC les signale aussi à la synchro).
+  const clauses = ['hidden = 0', "lower(coalesce(title_en, '')) !~ '(sex ?(doll|toy)s?|adult products?|vibrator|dildo|masturbat|inverted mold|erotic)'"];
   const binds = [];
   const p = (v) => { binds.push(v); return `$${binds.length}`; };
   for (const g of params.groups || []) {

@@ -3,7 +3,7 @@
 // qui ressemblent le plus : photo, prix, nombre de QC, bouton d'achat avec ton code et bouton QC.
 
 import { container, text, sep, section, thumb, row, link, escape } from './components.js';
-import { formatPrice, itemTitle, postContext, trackedLink, signupButton } from './post.js';
+import { formatPrice, itemTitle, cardTitle, postContext, trackedLink, signupButton } from './post.js';
 import { buildAgentLink, canonicalUrl } from './links.js';
 import { ACCENTS } from './config.js';
 import { describeImage, smallImageUrl } from './vision.js';
@@ -168,7 +168,7 @@ export function imageResultsView(ctx, found, channelId, seen = null) {
     const meta = [formatPrice(x.price, ctx.money)];
     if (x.qc) meta.push(`${e('fb_qc')} ${fmt(x.qc)} QC`);
     if (x.sold) meta.push(`${e('fb_fire')} ${fmt(x.sold)}`);
-    const head = `**${escape(itemTitle(item).slice(0, 80))}**\n${meta.join('  ·  ')}`;
+    const head = `**${escape(cardTitle(item, 80))}**\n${meta.join('  ·  ')}`;
     const agent = ctx.agents[0];
     const buttons = [
       agent

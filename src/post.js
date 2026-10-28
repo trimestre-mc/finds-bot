@@ -10,6 +10,7 @@ import { qcButtons, refreshQc, communityQc, postForumQc } from './qc.js';
 import { itemDb, itemsWhereIds, batchByDb } from './shard.js';
 import { loadEmojis, emo, etxt, AGENT_EMOJI, PLATFORM_EMOJI } from './emojis.js';
 import { logEvent, kvGet, kvSet } from './kvstore.js';
+import { cleanTitle } from './titles.js';
 
 export const PLATFORM_NAMES = { weidian: 'Weidian', taobao: 'Taobao', '1688': '1688' };
 export const FORUM = 15;
@@ -135,8 +136,7 @@ const nf = (n) => Number(n || 0).toLocaleString('fr-FR').replace(/\u202f|\u00a0/
 
 // Titre lisible : sans les mots de vendeur inutiles en tête, coupé proprement.
 export function cardTitle(item, max = 100) {
-  const raw = itemTitle(item).replace(/^(cross[- ]border|wholesale|hot[- ]selling|new|high[- ]quality)\b[\s,:-]*/gi, '').trim() || itemTitle(item);
-  return raw.length > max ? `${raw.slice(0, max - 1).replace(/[\s,;:-]+\S*$/, '')}…` : raw;
+  return cleanTitle(itemTitle(item), max);
 }
 
 // Carte d'un item posté dans un salon (Components V2) : photos, titre, prix, puis les infos utiles en une ligne.

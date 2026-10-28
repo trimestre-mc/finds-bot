@@ -11,6 +11,7 @@ import { budget, rowsWritten } from './budget.js';
 import { itemDb, onDb, perDb, groupByDb, batchByDb } from './shard.js';
 import { emo, etxt } from './emojis.js';
 import { kvGet, kvSet, kvLock, kvDel, logEvent, finderBusy, finderPaused } from './kvstore.js';
+import { ADULT } from './titles.js';
 
 const UA = 'finds-bot/1.0 (+https://github.com/trimestre-mc/finds-bot)';
 const API = 'https://server.finderqc.com/api/spu/webSpuInfo';
@@ -468,7 +469,7 @@ export function finderItemStatements(env, x, now = Date.now()) {
        OR items.image IS NULL OR items.title_en IS NULL`,
   ).bind(key, platform, id, title ? String(title).slice(0, 200) : null, x.cnPrice != null ? Number(x.cnPrice) : null,
     image, canonicalUrl(platform, id), Math.max(0, Number(x.oneYear) || 0), now, detectCategory(title), qc, now,
-    isDeadLink(title, x.cnPrice) ? 2 : 0)];
+    isDeadLink(title, x.cnPrice) ? 2 : x.isAdult || ADULT.test(String(title || "")) ? 1 : 0)];
   if (platform === 'weidian') {
     stmts.push(env.DB.prepare(
       `INSERT OR IGNORE INTO link_queue (item_id, source, added_at)
