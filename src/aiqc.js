@@ -14,7 +14,7 @@ import { searchByImage } from './imagesearch.js';
 import { trackedLink, formatPrice } from './post.js';
 import { buildAgentLink, canonicalUrl } from './links.js';
 import { fetchQc, fetchQcPage, goldPhoto } from './qc.js';
-import { cacheGet, cacheSet, dayAdd, kvGet, kvSet } from './kvstore.js';
+import { cacheGet, cacheSet, dayAdd, kvGet, kvSet, rateLimit, LIMITS, limitText } from './kvstore.js';
 
 export const AIQC_PER_DAY = 40; // plafond de sécurité sans Groq ; la vraie limite est le quota d'IA du jour (neurons)
 const AIQC_PER_DAY_GROQ = 150; // avec Groq (~1 000 requêtes/jour gratuites, ~6 par analyse)
@@ -214,6 +214,13 @@ export async function aiqcMessage(env, ctx, c, m) {
   const isImg = (a) => /^image\/(jpeg|png|webp)/.test(a.content_type || '') || /\.(jpe?g|png|webp)$/i.test(a.filename || '');
   const shots = (m.attachments || []).filter(isImg).slice(0, PHOTOS);
   if (!shots.length) return 0;
+  const lim = await rateLimit(env, 'aiqc', m.author && m.author.id, LIMITS.aiqc);
+  if (!lim.ok) {
+    await discordApi(env, 'POST', `/channels/${c.channel_id}/messages`, {
+      content: limitText(lim, 'analyses IA'), allowed_mentions: { parse: [] }, message_reference: { message_id: m.id, fail_if_not_exists: false },
+    }).catch(() => {});
+    return 1;
+  }
   const accent = (ACCENTS[ctx.cfg.accent] || ACCENTS.orange).color;
   // Message d'attente tout de suite, mis à jour à chaque étape (barre de progression, temps restant).
   let pending = null;

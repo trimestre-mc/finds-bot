@@ -55,10 +55,10 @@ export async function dayGet(env, name) {
 
 let ready = null;
 
-async function neon(env, query, params = []) {
+export async function neon(env, query, params = []) {
   const url = new URL(env.NEON_URL.replace(/^postgres(ql)?:/, 'https:'));
   const res = await fetch(`https://${url.hostname}/sql`, {
-    method: 'POST', signal: AbortSignal.timeout(6000),
+    method: 'POST', signal: AbortSignal.timeout(env.NEON_TIMEOUT || 8000),
     headers: { 'Neon-Connection-String': env.NEON_URL, 'Content-Type': 'application/json' },
     body: JSON.stringify({ query, params }),
   });
@@ -105,4 +105,43 @@ export async function cacheClear(env, olderMs = 0) {
   await (olderMs
     ? env.DB.prepare('DELETE FROM search_cache WHERE at < ?').bind(Date.now() - olderMs)
     : env.DB.prepare('DELETE FROM search_cache')).run().catch(() => {});
+}
+
+// ---------------------------------------------------------------- Verrous et limites (Upstash)
+
+// Verrou d'un message de salon : true la 1re fois, false s'il est déjà pris (jamais deux réponses au même message,
+// même si la base refuse les écritures), undefined si Upstash ne répond pas.
+export async function lockMessage(env, id) {
+  const r = await pipeline(env, [['SET', `msg:${id}`, '1', 'NX', 'EX', '172800']]);
+  return r === undefined ? undefined : r[0] === 'OK';
+}
+
+// Limites par membre : rules = [{ s: durée en secondes, max }]. Renvoie { ok: true } ou { ok: false, until, rule }
+// (until : fin de la fenêtre dépassée, en ms). Sans Upstash : toujours ok. Le propriétaire du bot n'a pas de limite.
+export async function rateLimit(env, scope, userId, rules) {
+  if (!userId || (env.AGENTS_OWNER_ID && userId === env.AGENTS_OWNER_ID)) return { ok: true };
+  const now = Math.floor(Date.now() / 1000);
+  const keys = rules.map((r) => `rl:${scope}:${userId}:${r.s}:${Math.floor(now / r.s)}`);
+  const r = await pipeline(env, keys.flatMap((k, i) => [['INCR', k], ['EXPIRE', k, String(rules[i].s + 5)]]));
+  if (r === undefined) return { ok: true };
+  for (const [i, rule] of rules.entries()) {
+    if (Number(r[i * 2]) > rule.max) return { ok: false, until: (Math.floor(now / rule.s) + 1) * rule.s * 1000, rule };
+  }
+  return { ok: true };
+}
+
+
+// Délais choisis (par membre) :
+// - analyse IA des QC (coûteuse en quota d'IA) : 1 toutes les 20 s, 5 par heure, 15 par jour ;
+// - recherche par image (FinderQC, qui limite vite) : 1 toutes les 10 s, 30 par heure.
+export const LIMITS = {
+  aiqc: [{ s: 20, max: 1 }, { s: 3600, max: 5 }, { s: 86400, max: 15 }],
+  image: [{ s: 10, max: 1 }, { s: 3600, max: 30 }],
+};
+
+// Texte d'attente : « dans 3 minutes » (horodatage Discord qui se met à jour tout seul).
+export function limitText(lim, what) {
+  const per = lim.rule.s >= 86400 ? 'par jour' : lim.rule.s >= 3600 ? 'par heure' : null;
+  const why = per ? `${lim.rule.max} ${what} ${per} par membre` : 'une à la fois';
+  return `⏳ Doucement ! Limite atteinte (${why}). Tu pourras recommencer <t:${Math.ceil(lim.until / 1000)}:R>.`;
 }

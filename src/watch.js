@@ -18,7 +18,7 @@ import { ACCENTS } from './config.js';
 import { itemsWhereIds, groupByDb, onDb, batchByDb } from './shard.js';
 import { etxt } from './emojis.js';
 import { aiqcMessage } from './aiqc.js';
-import { kvGet } from './kvstore.js';
+import { kvGet, lockMessage, rateLimit, LIMITS, limitText } from './kvstore.js';
 
 const MAX_CALLS = 46;
 // Compteur de chaque type de salon (colonne = colonne + n).
@@ -87,6 +87,7 @@ export async function watchChannels(env, ms = 55000, exec = null, force = false)
         c.cursor = m.id;
         if (m.author && m.author.bot) continue;
         if (answered.has(m.id)) continue;
+        if ((await lockMessage(env, m.id)) === false) continue; // déjà pris par le traitement en direct
         if (!ctx) ctx = await postContext(env);
         try {
           if (c.kind === 'convert') external += await convertMessage(env, ctx, c, m);
@@ -124,6 +125,8 @@ export async function handleLiveMessage(env, channelId, m) {
     const row = c || await env.DB.prepare(`SELECT * FROM ${table} WHERE channel_id = ?`).bind(channelId).first()
       .then((r) => (r && (!r.last_message_id || BigInt(r.last_message_id) < BigInt(m.id)) ? r : null)).catch(() => null);
     if (!row) continue;
+    // Verrou dans Upstash : un message n'est traité qu'une fois (direct ou relecture), même sans écriture en base.
+    if ((await lockMessage(env, m.id)) === false) return 0;
     const ctx = await postContext(env);
     const ch = { ...row, kind, table, done: 0 };
     const found = [];
@@ -159,11 +162,23 @@ async function convertMessage(env, ctx, c, m) {
   return calls + 1;
 }
 
+// Membre au-dessus de sa limite : petite réponse qui dit quand recommencer.
+export async function limitNotice(env, c, m, msg) {
+  await discordApi(env, 'POST', `/channels/${c.channel_id}/messages`, {
+    content: msg, allowed_mentions: { parse: [] }, message_reference: { message_id: m.id, fail_if_not_exists: false },
+  }).catch((err) => console.log('limite', String(err).slice(0, 100)));
+  return 1;
+}
+
 // Photo(s) dans un message : « recherche en cours » tout de suite, puis la recherche dans une autre exécution du
 // bot (son propre quota de requêtes ; sans env.SELF, ici même). Renvoie le nombre de requêtes faites.
 async function imageMessage(env, ctx, c, m, found, exec) {
   const images = (m.attachments || []).filter(isImage).slice(0, 2);
   let calls = 0;
+  if (images.length) {
+    const lim = await rateLimit(env, 'image', m.author && m.author.id, LIMITS.image);
+    if (!lim.ok) return calls + await limitNotice(env, c, m, limitText(lim, 'recherches par image'));
+  }
   const accent = (ACCENTS[ctx.cfg.accent] || ACCENTS.orange).color;
   for (const a of images) {
     const pending = await discordApi(env, 'POST', `/channels/${c.channel_id}/messages`, {

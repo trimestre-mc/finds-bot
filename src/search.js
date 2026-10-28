@@ -7,6 +7,7 @@ import { perDb, allRows, itemsWhereIds } from './shard.js';
 import { translate } from './translate.js';
 import { detectCategory } from './categories.js';
 import { cacheGet, cacheSet } from './kvstore.js';
+import { searchIndexReady, indexSearch, fuzzySearch } from './searchindex.js';
 
 export const PAGE_SIZE = 5;
 export const MAX_BULK = 500;
@@ -137,15 +138,24 @@ export async function allResultIds(env, params, money) {
     if (!params.shop && params.live !== false) await addLiveResults(env, params, money);
     let groups = params.groups;
     const ids = [];
+    const indexed = await searchIndexReady(env).catch(() => false);
     for (let tries = 0; groups && tries < 3 && ids.length < FEW_RESULTS; tries++, groups = relaxQuery(groups)) {
-      for (const id of await rankedIds(env, { ...params, groups }, money)) if (!ids.includes(id)) ids.push(id);
+      for (const id of await rankedIds(env, { ...params, groups }, money, indexed)) if (!ids.includes(id)) ids.push(id);
+    }
+    // Toujours trop peu : faute de frappe probable (« hodie », « jordna »), mots approchants dans l'index.
+    if (indexed && ids.length < FEW_RESULTS && params.q) {
+      const words = String(params.q).toLowerCase().split(/[^\p{L}\p{N}]+/u).filter(Boolean);
+      for (const r of await fuzzySearch(env, words, params, money)) if (!ids.includes(r.id)) ids.push(r.id);
     }
     return ids.slice(0, MAX_BULK);
   }
   return plainIds(env, params, money);
 }
 
-async function rankedIds(env, params, money) {
+async function rankedIds(env, params, money, indexed = false) {
+  // Index de recherche (Neon) complet : la recherche s'y fait, sans lire les bases du catalogue.
+  const fromIndex = indexed ? await indexSearch(env, params, money) : null;
+  if (fromIndex) return rankRows(fromIndex, params);
   const w = where(params, money);
   // Recherche par mots : les plus pertinents d'abord (mots trouvés dans le titre anglais, bon type d'article),
   // puis le tri choisi. On parcourt l'index de popularité et on s'arrête à 5000 trouvés (quota de lectures Turso),
@@ -161,7 +171,11 @@ async function rankedIds(env, params, money) {
        ) ${w.sql} LIMIT 5000`,
     ).bind(scan, ...w.binds).all()).results;
   }));
-  const results = parts.flat();
+  return rankRows(parts.flat(), params);
+}
+
+// Pertinence, tri et doublons d'une liste de résultats (bases ou index).
+function rankRows(results, params) {
   const scored = results.map((r) => ({ ...r, score: relevance(params.groups, r) })).filter((r) => r.score > 0);
   const sorted = sortRows(scored, params);
   if (!params.sort || params.sort === 'popular') sorted.sort((a, b) => b.score - a.score || b.popularity - a.popularity || b.first_seen - a.first_seen);

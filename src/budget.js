@@ -1,3 +1,5 @@
+import { dayAdd, dayGet } from './kvstore.js';
+
 // Budgets d'écriture : par jour et par type de travail, plus un plafond mensuel global (base Turso gratuite :
 // 10 millions de lignes écrites par mois, index compris).
 // Un item ajouté ou modifié écrit ~8 lignes (table + index), une page produit (photos, titre) ~4, une catégorie ~3.
@@ -75,6 +77,16 @@ async function recordReadsOn(env, db) {
 }
 
 export async function budget(env, kind) {
+  // Base D1 (secours) : compteur du jour dans Upstash, aucune écriture en base pour le budget lui-même.
+  if (env.DB && env.DB.isD1) {
+    const fast = await dayGet(env, `budget:d1:${kind}`);
+    if (fast !== undefined) {
+      return {
+        left: Math.max(0, CAPS[kind] - fast),
+        use: (n, rows = null) => dayAdd(env, `budget:d1:${kind}`, Math.round(((rows != null ? rows : n * ROWS[kind]) / ROWS[kind]) * 100) / 100),
+      };
+    }
+  }
   const now = new Date();
   const day = now.toISOString().slice(0, 10);
   const month = day.slice(0, 7);

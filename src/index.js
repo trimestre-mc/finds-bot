@@ -136,6 +136,12 @@ async function handleScheduled(event, env, ctx) {
       }
       if (!over) await runQcChannels(env).catch((e) => console.log('salons QC', String(e)));
     })());
+    // Toutes les 15 min : copie d'une tranche du catalogue dans l'index de recherche (Neon), dans une exécution à part
+    // (son propre quota de requêtes).
+    if (env.NEON_URL && env.SELF && new Date().getUTCMinutes() % 15 === 0) {
+      ctx.waitUntil(env.SELF.fetch('https://finds-bot/api/searchindex/sync', { method: 'POST', headers: { Authorization: `Bearer ${env.INDEXER_SECRET}` } })
+        .catch((e) => console.log('index de recherche', String(e).slice(0, 120))));
+    }
     return;
   }
   // Chaque minute : la file d'envoi d'abord (seule dans l'exécution), sinon l'entretien (traduction, catégories, indexeur).
@@ -733,6 +739,30 @@ async function handleApi(request, env, url) {
     });
     const rest = await env.DB.prepare("SELECT value FROM settings WHERE key = 'groq:rest'").first().catch(() => null);
     return json({ ok: res.ok, status: res.status, error: res.ok ? null : (await res.text()).slice(0, 300), restUntil: rest ? Number(rest.value) : null });
+  }
+
+  // Index de recherche (Neon) : une tranche de copie, et son état.
+  if (path === '/api/searchindex/sync' && request.method === 'POST') {
+    const { syncSearchIndex } = await import('./searchindex.js');
+    try {
+      return json({ ok: true, copied: await syncSearchIndex(env) });
+    } catch (err) {
+      return json({ ok: false, error: String(err.message || err).slice(0, 300) });
+    }
+  }
+  if (path === '/api/searchindex/sizes' && request.method === 'GET') {
+    const { neon } = await import('./kvstore.js');
+    return json(await neon(env, `SELECT c.relname, pg_size_pretty(pg_total_relation_size(c.oid)) AS size FROM pg_class c
+      WHERE c.relname LIKE 'items_search%' OR c.relname = 'cache' ORDER BY pg_total_relation_size(c.oid) DESC`).catch((e) => String(e)));
+  }
+  if (path === '/api/searchindex' && request.method === 'GET') {
+    const { neon, kvGet } = await import('./kvstore.js');
+    const { searchIndexReady } = await import('./searchindex.js');
+    const [rows] = await neon(env, "SELECT COUNT(*) AS n, pg_size_pretty(pg_total_relation_size('items_search')) AS size, pg_size_pretty(pg_database_size(current_database())) AS db FROM items_search")
+      .catch((err) => [{ error: String(err).slice(0, 200) }]);
+    const tags = ['d1', 'db1', 'db2'];
+    const state = Object.fromEntries(await Promise.all(tags.map(async (t) => [t, { cursor: await kvGet(env, `sidx:cursor:${t}`), done: await kvGet(env, `sidx:done:${t}`) }])));
+    return json({ ok: true, ...rows, ready: await searchIndexReady(env), state });
   }
 
   // Diagnostic : Upstash (compteurs) et Neon (cache) répondent-ils ?
