@@ -116,7 +116,8 @@ export async function homeView(env, it, msg, ctx = null) {
     ),
     row(b('fb_bot', 'Publier le guide ici', 'guide:post'), b('fb_coupon', 'Publier /coupon ici', 'coupon:post'),
       // Onglet « Pub » (MP aux rôles choisis) : visible seulement par le propriétaire du bot.
-      owner ? b('fb_crown', 'Secret', 'sec:open', Style.PRIMARY) : null),
+      // « Secret » : visible par tous, utilisable seulement par le propriétaire (les autres reçoivent un refus).
+      b('fb_crown', 'Secret', 'sec:open', owner ? Style.PRIMARY : Style.SECONDARY)),
   ])];
 }
 

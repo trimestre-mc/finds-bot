@@ -145,6 +145,8 @@ async function handleScheduled(event, env, ctx) {
       }
       if (!over) await runQcChannels(env).catch((e) => console.log('salons QC', String(e)));
     })());
+    // Nouveau serveur ajouté : MP d'approbation au propriétaire (guilds.js).
+    ctx.waitUntil(import('./guilds.js').then(({ checkNewGuilds }) => checkNewGuilds(env)).catch((e) => console.log('serveurs', String(e).slice(0, 120))));
     // Toutes les 15 min : copie d'une tranche du catalogue dans l'index de recherche (Neon), dans une exécution à part
     // (son propre quota de requêtes).
     // Toutes les 3 min : marque lue sur la photo de quelques items populaires sans marque dans le titre.
@@ -228,7 +230,22 @@ async function handleInteraction(request, env, ctx) {
   const it = JSON.parse(body);
 
   if (it.type === InteractionType.PING) return json({ type: Reply.PONG });
+  // Boutons des MP du bot : « Se désinscrire » (pub) et approbation d'un nouveau serveur (propriétaire).
+  if (!it.guild_id && it.type === InteractionType.COMPONENT && /^pub:(adoff|gok|gno)\b/.test(it.data.custom_id)) {
+    const [, kind, gid] = it.data.custom_id.split(':');
+    if (kind === 'adoff') { const { pubUnsubscribe } = await import('./pub.js'); return pubUnsubscribe(it, env); }
+    const { handleGuildDecision } = await import('./guilds.js');
+    return handleGuildDecision(it, env, kind, gid);
+  }
   if (!it.guild_id) return reply('Ce bot s\'utilise uniquement dans un serveur.');
+  // Serveur pas encore approuvé par le propriétaire : le bot n'y fait rien (guilds.js).
+  {
+    const { guildApproved, notApprovedView } = await import('./guilds.js');
+    if (!(await guildApproved(env, it.guild_id))) {
+      if (it.type === InteractionType.AUTOCOMPLETE) return json({ type: Reply.AUTOCOMPLETE, data: { choices: [] } });
+      return panel(notApprovedView());
+    }
+  }
 
   // Commandes et boutons publics (/find, /convert) : ouverts à tous les membres.
   // Autocomplétion de /find : suggestions calculées sans base (synonyms.js).
@@ -976,6 +993,15 @@ async function handleApi(request, env, url) {
       out.push({ name: g.name, ok: await discordApi(env, 'GET', `/guilds/${g.id}/members?limit=5`).then((l) => l.length).catch((e) => String(e).slice(0, 80)) });
     }
     return json({ ok: true, guilds: out });
+  }
+
+  // Approbation des serveurs : vérification tout de suite (sinon toutes les 3 min).
+  if (path === '/api/guilds/check' && request.method === 'POST') {
+    const { checkNewGuilds } = await import('./guilds.js');
+    const { redis } = await import('./kvstore.js');
+    const sent = await checkNewGuilds(env);
+    const [ok, pending] = await redis(env, [['SMEMBERS', 'guilds:ok'], ['SMEMBERS', 'guilds:pending']]) || [[], []];
+    return json({ ok: true, sent, approved: ok.length, pending: pending.length });
   }
 
   // Pub : les MP suivants de la file (lancé chaque minute par le cron, deux fois en parallèle).

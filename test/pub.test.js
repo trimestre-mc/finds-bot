@@ -47,3 +47,35 @@ test('onglet Secret : outils du propriétaire, refusé aux autres', async () => 
   const denied = await handleSecretComponent({ member: { user: { id: '7' } } }, env);
   assert.match(await denied.text(), /propriétaire/);
 });
+
+test('approbation des serveurs : 1er passage = serveurs actuels approuvés, puis MP pour un nouveau', async () => {
+  const sets = { 'guilds:ok': new Set(), 'guilds:pending': new Set() };
+  const sent = [];
+  let guilds = [{ id: '1', name: 'A' }, { id: '2', name: 'B' }];
+  globalThis.fetch = async (url, opts = {}) => {
+    const u = String(url);
+    if (u.startsWith('https://up.test')) {
+      const cmds = JSON.parse(opts.body);
+      return Response.json(cmds.map(([c, k, ...v]) => {
+        if (c === 'SMEMBERS') return { result: [...sets[k]] };
+        if (c === 'SADD') { v.forEach((x) => sets[k].add(x)); return { result: v.length }; }
+        if (c === 'SREM') { v.forEach((x) => sets[k].delete(x)); return { result: 1 }; }
+        if (c === 'SISMEMBER') return { result: sets[k].has(v[0]) ? 1 : 0 };
+        if (c === 'SCARD') return { result: sets[k].size };
+        return { result: null };
+      }));
+    }
+    if (u.includes('/users/@me/guilds')) return Response.json(guilds);
+    sent.push(`${opts.method} ${u}`);
+    return Response.json({ id: 'dm' });
+  };
+  const env = { UPSTASH_URL: 'https://up.test', UPSTASH_TOKEN: 't', AGENTS_OWNER_ID: '42', DISCORD_API: 'https://discord.test', DB: { prepare: () => ({ first: async () => null }) } };
+  const { checkNewGuilds, guildApproved } = await import('../src/guilds.js');
+  assert.equal(await checkNewGuilds(env), 0);
+  assert.deepEqual([...sets['guilds:ok']].sort(), ['1', '2']);
+  guilds = [...guilds, { id: '3', name: 'Nouveau' }];
+  assert.equal(await checkNewGuilds(env), 1);
+  assert.ok(sent.some((s) => s.includes('/channels/dm/messages')));
+  assert.equal(await guildApproved(env, '3'), false);
+  assert.equal(await checkNewGuilds(env), 0); // déjà signalé : pas de 2e MP
+});
