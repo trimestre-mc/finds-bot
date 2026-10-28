@@ -14,7 +14,7 @@ import { searchByImage } from './imagesearch.js';
 import { trackedLink, formatPrice } from './post.js';
 import { buildAgentLink, canonicalUrl } from './links.js';
 import { fetchQc, fetchQcPage, goldPhoto } from './qc.js';
-import { cacheGet, cacheSet, dayAdd, kvGet, kvSet, rateLimit, LIMITS, limitText } from './kvstore.js';
+import { cacheGet, cacheSet, dayAdd, kvGet, kvSet, rateLimit, LIMITS, limitText, logEvent } from './kvstore.js';
 
 export const AIQC_PER_DAY = 40; // plafond de sécurité sans Groq ; la vraie limite est le quota d'IA du jour (neurons)
 const AIQC_PER_DAY_GROQ = 150; // avec Groq (~1 000 requêtes/jour gratuites, ~6 par analyse)
@@ -96,6 +96,7 @@ export async function qcAnalysis(env, photos, { ref = null, what = null, gold = 
   if (!result) return { result: null, reason: 'echec' };
   if (result.neurons) await aiNeurons(env).then((b) => b.add(Math.round(result.neurons))).catch(() => {});
   await cacheSet(env, key, JSON.stringify(result));
+  await logEvent(env, 'aiqc', `${result.article || what || 'Article'} · ${result.note != null ? `${result.note}/10` : result.verdict} · ${result.photos} photo${result.photos > 1 ? 's' : ''}`).catch(() => {});
   return { result, cached: false };
 }
 
@@ -128,6 +129,8 @@ async function recordMs(env, ms) {
 
 // Carte « analyse en cours » : étapes (faite, en cours, à venir), barre de progression et temps restant (compte à
 // rebours Discord, qui défile tout seul).
+const clock = (ms) => { const s = Math.floor(ms / 1000); return `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`; };
+
 export function progressView(emojis, p, accent) {
   const e = (n) => etxt(emojis, n);
   const keys = p.keys;
@@ -150,6 +153,7 @@ export function progressView(emojis, p, accent) {
     text(`## ${e('fb_aiscan')} Analyse des QC en cours\n-# ${p.count} photo${p.count > 1 ? 's' : ''} · logo, matière, coutures, étiquettes et mesures`),
     sep(),
     text(lines.join('\n')),
+    p.logs && p.logs.length ? text(`\`\`\`\n${p.logs.slice(-6).map((l) => `${clock(l.at)}  ${l.line.replace(/`/g, "'")}`).join('\n')}\n\`\`\``) : null,
     sep(),
     text(`${bar}  **${Math.round(frac * 100)} %**\n${e('fb_clock')} ${left}`),
   ], accent)];
@@ -158,9 +162,17 @@ export function progressView(emojis, p, accent) {
 // Suivi de progression : renvoie step(clé) qui met à jour le message (au plus une modification par seconde, sauf
 // changement d'étape) ; send(components) publie la carte.
 export async function tracker(env, emojis, { keys, count, accent, send }) {
-  const p = { keys, count, current: keys[0], started: new Set([keys[0]]), start: Date.now(), eta: await averageMs(env) };
+  const p = { keys, count, current: keys[0], started: new Set([keys[0]]), start: Date.now(), eta: await averageMs(env), logs: [] };
   let chain = Promise.resolve();
-  const push = () => { chain = chain.then(() => send(progressView(emojis, p, accent))).catch((err) => console.log('progression', String(err).slice(0, 120))); return chain; };
+  // Une modification du message à la fois ; plusieurs lignes de journal arrivées entre-temps partent ensemble.
+  let queued = false;
+  const push = () => {
+    if (queued) return chain;
+    queued = true;
+    chain = chain.then(() => { queued = false; return send(progressView(emojis, p, accent)); })
+      .catch((err) => console.log('progression', String(err).slice(0, 120)));
+    return chain;
+  };
   const step = (key) => {
     if (!keys.includes(key) || key === p.current) return chain;
     if (keys.indexOf(key) < keys.indexOf(p.current)) return chain;
@@ -169,6 +181,8 @@ export async function tracker(env, emojis, { keys, count, accent, send }) {
     return push();
   };
   step.first = () => push();
+  // Ligne de journal (« 00:07  Photos 1 et 2 : 4 points relevés »).
+  step.log = (line) => { p.logs.push({ at: Date.now() - p.start, line: String(line).slice(0, 90) }); return push(); };
   step.finish = async (counted) => { await chain; if (counted) await recordMs(env, Date.now() - p.start); };
   return step;
 }
@@ -264,11 +278,13 @@ export async function aiqcMessage(env, ctx, c, m) {
     const item = await itemById(env, `${refItem.platform}:${refItem.itemId}`).catch(() => null)
       || { id: `${refItem.platform}:${refItem.itemId}`, platform: refItem.platform, item_id: refItem.itemId };
     if (item.image || item.title_en) { ref = /^https:\/\//.test(item.image || '') ? item.image : null; title = item.title_en || item.title_zh; }
+    step.log(title ? `Lien de l'article détecté : ${String(title).slice(0, 50)}` : 'Lien de l\'article détecté');
     gold = goldPhoto(await fetchQc(item, 1).catch(() => null), urls, item);
-  }
+  } else step.log('Recherche de l\'article dans le catalogue…');
   // Sinon : l'article qui ressemble le plus (recherche par image FinderQC, sans quota d'IA), montré avec ses boutons
   // d'achat et de QC ; une de ses QC sert de référence (l'IA vérifie d'abord que c'est le même article).
   const found = refItem ? [] : await searchByImage(shots[0].url, shots[0].filename, 3).catch(() => []);
+  if (!refItem) step.log(found[0] ? `Article correspondant probable : ${String(found[0].title || '').slice(0, 45)}` : 'Aucun article correspondant : analyse sans référence');
   if (!gold && found[0] && found[0].qc) {
     gold = goldPhoto(await fetchQcPage(found[0].id, 1).catch(() => null), urls, {}, false);
   }

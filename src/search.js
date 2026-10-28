@@ -6,7 +6,7 @@ import { readsOver } from './budget.js';
 import { perDb, allRows, itemsWhereIds } from './shard.js';
 import { translate } from './translate.js';
 import { detectCategory } from './categories.js';
-import { cacheGet, cacheSet } from './kvstore.js';
+import { cacheGet, cacheSet, logEvent } from './kvstore.js';
 import { searchIndexReady, indexSearch, fuzzySearch } from './searchindex.js';
 
 export const PAGE_SIZE = 5;
@@ -241,6 +241,7 @@ function cacheKey(params) {
 }
 
 export async function cachedIds(env, params, money) {
+  if (params.q) await logEvent(env, 'search', `« ${String(params.q).slice(0, 60)} »`).catch(() => {});
   const key = cacheKey(params);
   const row = await cacheGet(env, key);
   if (row && Date.now() - row.at < CACHE_MS) return JSON.parse(row.ids);

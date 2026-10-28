@@ -86,6 +86,10 @@ async function handleFetch(request, env, ctx) {
     if (request.method === 'POST' && url.pathname === '/interactions') return await handleInteraction(request, env, ctx);
     if (url.pathname.startsWith('/api/')) return await handleApi(request, env, url);
     if (request.method === 'GET' && url.pathname.startsWith('/go/')) return await handleGo(url, env, ctx);
+    if (request.method === 'GET' && (url.pathname === '/dashboard' || url.pathname === '/dashboard/data')) {
+      const { handleDashboard } = await import('./dashboard.js');
+      return await handleDashboard(url, env);
+    }
     if (url.pathname === '/') return new Response('finds-bot en ligne');
     return new Response('Not found', { status: 404 });
   } catch (err) {
@@ -766,6 +770,11 @@ async function handleApi(request, env, url) {
     if (!/^\s*select\b/i.test(q) || /;/.test(q)) return json({ ok: false, error: 'SELECT seulement' });
     const { neon } = await import('./kvstore.js');
     return json(await neon(env, q).then((rows) => ({ ok: true, rows })).catch((e) => ({ ok: false, error: String(e).slice(0, 300) })));
+  }
+  // Lien du dashboard (comme /dashboard, pour le propriétaire depuis un terminal).
+  if (path === '/api/dashboard-link' && request.method === 'GET') {
+    const { dashboardToken } = await import('./dashboard.js');
+    return json({ ok: true, url: `${(env.PUBLIC_URL || '').replace(/\/$/, '')}/dashboard?t=${await dashboardToken(env)}` });
   }
   if (path === '/api/brandscan' && request.method === 'POST') {
     const { scanBrands } = await import('./searchindex.js');

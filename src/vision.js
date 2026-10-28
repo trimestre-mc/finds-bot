@@ -353,6 +353,9 @@ const noteOf = (m) => (m && Number.isFinite(Number(m.note)) && m.note !== null &
 // gold : { url, same, gl } = QC d'un autre acheteur prise comme référence (même article, ou article qui ressemble).
 export async function analyzeQc(env, photos, { ref = null, what = null, model = VISION_MODEL, gold = null, trace = null, progress = null } = {}) {
   const step = (k) => (progress ? progress(k) : null);
+  // Journal lisible affiché aux membres pendant l'analyse (étapes et résultats intermédiaires).
+  const say = (t) => (progress && progress.log ? progress.log(t) : null);
+  const pts = (n) => `${n} point${n > 1 ? 's' : ''}`;
   const note = (step, x) => { if (trace) trace.push(`${step} : ${String(x).slice(0, 700)}`); };
   if (!env.AI && !env.GROQ_API_KEY) return null;
   const shots = photos.filter(Boolean).slice(0, 3); // 3 photos : rapide, et dans les limites gratuites
@@ -402,9 +405,18 @@ export async function analyzeQc(env, photos, { ref = null, what = null, model = 
     i += size;
   }
   step('photos');
-  const per = await inTurn(groups.map((g) => () => runVision(env, model,
-    QC_PROMPT({ ref: !!(ref && g.from === 0), what, from: g.from + 1, count: g.urls.length }),
-    [...(ref && g.from === 0 ? [ref] : []), ...g.urls], view).catch(failure)));
+  const label = (g) => (g.urls.length > 1 ? `photos ${g.from + 1} et ${g.from + 2}` : `photo ${g.from + 1}`);
+  const per = await inTurn(groups.map((g) => async () => {
+    say(`Lecture des ${label(g)}${ref && g.from === 0 ? ' avec la photo du vendeur' : ''}…`);
+    const r = await runVision(env, model, QC_PROMPT({ ref: !!(ref && g.from === 0), what, from: g.from + 1, count: g.urls.length }),
+      [...(ref && g.from === 0 ? [ref] : []), ...g.urls], view).catch(failure);
+    if (r.raw && Array.isArray(r.raw.points)) {
+      const bad = r.raw.points.filter((x) => etat(x.etat) !== 'ok').length;
+      say(`${label(g)[0].toUpperCase()}${label(g).slice(1)} : ${pts(r.raw.points.length)} relevé${r.raw.points.length > 1 ? 's' : ''}${bad ? `, dont ${bad} à surveiller` : ''}`);
+      if (r.raw.article && !what) say(`Article reconnu : ${clean(r.raw.article) || r.raw.article}`);
+    } else say(`${label(g)[0].toUpperCase()}${label(g).slice(1)} : lecture impossible, analyse poursuivie`);
+    return r;
+  }));
   per.forEach((p, i) => note(`photos du groupe ${i + 1}`, p.raw ? `ok, zoom ${JSON.stringify(p.raw.zoom || null)}` : `illisible : ${p.out || ''}`));
   const ok = per.filter((p) => p.raw && Array.isArray(p.raw.points));
   if (!ok.length && per.some((p) => p.quota)) throw new Error('4006 : quota d\'IA du jour épuisé');
@@ -436,8 +448,11 @@ export async function analyzeQc(env, photos, { ref = null, what = null, model = 
       const size = (await image(shots[zoomOf]).catch(() => ({}))).size;
       const crop = cropUrl(shots[zoomOf], zone, size);
       note('gros plan', crop || `pas de zone (taille ${JSON.stringify(size || null)})`);
-      if (!crop) return null;
+      if (!crop) { say('Gros plan non disponible pour cette photo'); return null; }
+      say(`Gros plan sur la photo ${zoomOf + 1} (zone du logo ou de l'étiquette)`);
       const r = await runVision(env, model, ZOOM_PROMPT({ n: zoomOf + 1, what: known }), [crop], load, 250).catch(failure);
+      say(r.raw && r.raw.utile !== false && Array.isArray(r.raw.points) && r.raw.points.length
+        ? `Gros plan examiné : ${pts(r.raw.points.length)}` : 'Gros plan peu exploitable, ignoré');
       return r.raw && r.raw.utile !== false && Array.isArray(r.raw.points) && r.raw.points.length ? { r, obs: { photo: `gros plan de la photo ${zoomOf + 1}`, vu: String(r.raw.vu || '').slice(0, 200), points: r.raw.points.map((x) => `${etat(x.etat)} : ${x.texte}`) } } : { r };
     });
   }
@@ -445,8 +460,13 @@ export async function analyzeQc(env, photos, { ref = null, what = null, model = 
     extra.push(async () => {
       step('compare');
       note('comparaison', gold.url);
+      say(`Batch de référence chargé (autre acheteur${gold.gl ? ', jugé GL' : ''})`);
       const r = await runVision(env, model, GOLD_PROMPT({ same: gold.same, gl: gold.gl, what: known }), [gold.url, shots[0]], view, 250).catch(failure);
-      return r.raw && (gold.same || r.raw.meme !== false) && Array.isArray(r.raw.points) && r.raw.points.length
+      const usable = r.raw && (gold.same || r.raw.meme !== false) && Array.isArray(r.raw.points) && r.raw.points.length;
+      const diff = usable ? r.raw.points.filter((x) => etat(x.etat) !== 'ok').length : 0;
+      say(usable ? (diff ? `Comparaison : ${diff} différence${diff > 1 ? 's' : ''} avec la référence` : 'Comparaison : conforme à la référence')
+        : 'Référence trop différente de l\'article, comparaison ignorée');
+      return usable
         ? { r, obs: { photo: `comparaison avec la QC d'un autre acheteur${gold.gl ? ' (batch jugé GL)' : ''}`, points: r.raw.points.map((x) => `${etat(x.etat)} : ${x.texte}`) } } : { r };
     });
   }
@@ -475,21 +495,24 @@ export async function analyzeQc(env, photos, { ref = null, what = null, model = 
     return m && Array.isArray(m.points) ? m : null;
   };
   step('merge');
+  say(`Synthèse de ${observations.length} observation${observations.length > 1 ? 's' : ''}…`);
   let merged = await merge(observations).catch((err) => { console.log('analyse QC (fusion)', String(err).slice(0, 160)); return null; });
 
   // Note entre 5 et 7 : les doutes sont revus sur les photos concernées, puis l'analyse est refaite.
   let verified = false;
   const doubts = merged ? merged.points.filter((p) => etat(p.etat) !== 'ok').map((p) => String(p.texte || '')).filter(Boolean).slice(0, 4) : [];
+  if (merged && noteOf(merged) != null) say(`Note provisoire : ${noteOf(merged)}/10`);
   if (merged && noteOf(merged) >= 5 && noteOf(merged) <= 7 && doubts.length) {
     const cited = [...new Set(doubts.flatMap((d) => [...d.matchAll(/photo (\d)/gi)].map((m) => Number(m[1]) - 1)))].filter((i) => shots[i]);
     const look = (cited.length ? cited : [0, 1]).filter((i) => shots[i]).slice(0, 2).map((i) => shots[i]);
     step('verify');
+    say(`Note intermédiaire : ${doubts.length} point${doubts.length > 1 ? 's' : ''} douteux à revérifier`);
     note('2e lecture', doubts.join(' | '));
     const r = await runVision(env, model, VERIFY_PROMPT({ doubts, what: known }), look, view, 300).catch(failure);
     neurons += r.neurons || 0;
     if (r.raw && Array.isArray(r.raw.points) && r.raw.points.length) {
       const again = await merge([...observations, { photo: '2e lecture des doutes', points: r.raw.points.map((x) => `${etat(x.etat)} : ${x.texte}`) }]).catch(() => null);
-      if (again) { merged = again; verified = true; }
+      if (again) { merged = again; verified = true; say(`Seconde vérification terminée : note ${noteOf(merged) ?? '?'}/10`); }
     }
   }
 

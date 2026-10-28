@@ -48,6 +48,12 @@ export const COMMANDS = [
   },
   {
     ...base,
+    name: 'dashboard',
+    description: 'Tableau de bord du bot en temps réel (réservé au propriétaire)',
+    default_member_permissions: '0',
+  },
+  {
+    ...base,
     name: 'convert',
     description: 'Transformer un lien Weidian, Taobao, 1688 ou d\'agent en liens d\'achat',
     options: [{ type: STRING, name: 'lien', description: 'Le lien à convertir', required: true, max_length: 500 }],

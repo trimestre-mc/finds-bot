@@ -33,6 +33,8 @@ export class Gateway extends DurableObject {
   // Appelé chaque minute par le cron (et à la main) : vérifie la connexion, la relance si besoin.
   // /refresh : liste des salons modifiée dans les réglages, relue tout de suite.
   async fetch(request) {
+    // /status : simple lecture de l'état (dashboard), sans vérification.
+    if (new URL(request.url).pathname === '/status') return Response.json(this.status());
     if (new URL(request.url).pathname === '/refresh') await this.loadChannels();
     await this.ensure();
     return Response.json(this.status());

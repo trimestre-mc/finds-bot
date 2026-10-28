@@ -2,7 +2,7 @@
 // conversion automatique des liens, filtres, liste noire, historique, réglages, santé.
 
 import { discordApi, followup, editOriginal } from './discord.js';
-import { COMPONENTS_V2, container, text, escape, section, thumb } from './components.js';
+import { COMPONENTS_V2, container, text, escape, section, thumb, row } from './components.js';
 import { panel, update, openModal, later, userId } from './respond.js';
 import { buildAgentLink, canonicalUrl, extractItemRefs } from './links.js';
 import { communityQc, refreshQc, communityPhotos, qcWindow, qcShareMessage, qcPagePhotos, goldPhoto } from './qc.js';
@@ -83,6 +83,17 @@ export async function handleGo(url, env, ctx) {
 export async function handlePublicCommand(it, env, ctx) {
   const opts = Object.fromEntries((it.data.options || []).map((o) => [o.name, o.value]));
   if (it.data.name === 'coupon') return panel(await couponView(env), false);
+  if (it.data.name === 'dashboard') {
+    // Lien privé (signé, 7 jours) vers le dashboard : seulement pour le propriétaire du bot.
+    if (!env.AGENTS_OWNER_ID || userId(it) !== env.AGENTS_OWNER_ID) return panel([container([text('Commande réservée au propriétaire du bot.')])]);
+    const { dashboardToken } = await import('./dashboard.js');
+    const url = `${(env.PUBLIC_URL || '').replace(/\/$/, '')}/dashboard?t=${await dashboardToken(env)}`;
+    const emojis = await loadEmojis(env);
+    return panel([container([
+      text(`## ${etxt(emojis, 'fb_stats')} Dashboard\nÉtat des services, catalogue, quotas et activité en direct.\n-# Lien personnel valable 7 jours : ne le partage pas.`),
+      row({ type: 2, style: 5, label: 'Ouvrir le dashboard', url, emoji: emo(emojis, 'fb_stats') }),
+    ])]);
+  }
   if (it.data.name === 'aide') return panel(await guideView(env), true);
   if (it.data.name === 'suivis') return panel(await watchesView(env, userId(it)), true);
   if (it.data.name === 'find') {

@@ -18,7 +18,7 @@ import { ACCENTS } from './config.js';
 import { itemsWhereIds, groupByDb, onDb, batchByDb } from './shard.js';
 import { etxt } from './emojis.js';
 import { aiqcMessage } from './aiqc.js';
-import { kvGet, lockMessage, rateLimit, LIMITS, limitText } from './kvstore.js';
+import { kvGet, lockMessage, rateLimit, LIMITS, limitText, logEvent } from './kvstore.js';
 
 const MAX_CALLS = 46;
 // Compteur de chaque type de salon (colonne = colonne + n).
@@ -154,6 +154,7 @@ async function convertMessage(env, ctx, c, m) {
   const results = await itemsWhereIds(env, ids);
   const known = new Map(results.map((i) => [i.id, i]));
   for (const ref of refs) cards.push(...await convertView(env, ref, known.get(`${ref.platform}:${ref.itemId}`) || null, ctx));
+  await logEvent(env, 'convert', refs.map((r) => `${r.platform} ${r.itemId}${known.has(`${r.platform}:${r.itemId}`) ? '' : ' (hors catalogue)'}`).join(', ')).catch(() => {});
   await discordApi(env, 'POST', `/channels/${c.channel_id}/messages`, {
     flags: COMPONENTS_V2, components: cards, allowed_mentions: { parse: [] },
     message_reference: { message_id: m.id, fail_if_not_exists: false },
@@ -218,9 +219,11 @@ export async function imageJob(env, job, ctx = null) {
     const res = await smartImageSearch(env, job.attachment);
     items = res.items;
     components = imageResultsView(ctx, items, job.channel_id, res.seen);
+    await logEvent(env, 'image', `${items.length} résultat${items.length > 1 ? 's' : ''}${res.seen && res.seen.brand ? ` · marque ${res.seen.brand}` : ''}${res.seen && res.seen.item ? ` · ${res.seen.item}` : ''}`).catch(() => {});
   } catch (err) {
     console.log('image', String(err).slice(0, 200));
-    components = [container([text(`### ${etxt(ctx.emojis, 'fb_warn')} Recherche impossible pour le moment\n-# La recherche par image ne répond pas. Reposte ta photo dans une minute.`)], accent)];
+    await logEvent(env, 'error', `Recherche par image : ${String(err).slice(0, 100)}`).catch(() => {});
+    components = [container([text(`### ${etxt(ctx.emojis, 'fb_warn')} Recherche indisponible pour le moment\n-# Le service de recherche par image ne répond pas. Merci de renvoyer la photo dans une minute.`)], accent)];
   }
   await discordApi(env, 'PATCH', `/channels/${job.channel_id}/messages/${job.pending_id}`, { flags: COMPONENTS_V2, components, allowed_mentions: { parse: [] } });
   return items;

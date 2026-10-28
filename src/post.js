@@ -9,6 +9,7 @@ import { forumTagFor, CATEGORY_BY_KEY } from './categories.js';
 import { qcButtons, refreshQc, communityQc, postForumQc } from './qc.js';
 import { itemDb, itemsWhereIds, batchByDb } from './shard.js';
 import { loadEmojis, emo, etxt, AGENT_EMOJI, PLATFORM_EMOJI } from './emojis.js';
+import { logEvent } from './kvstore.js';
 
 export const PLATFORM_NAMES = { weidian: 'Weidian', taobao: 'Taobao', '1688': '1688' };
 export const FORUM = 15;
@@ -330,6 +331,7 @@ export async function processQueue(env, budgetMs) {
 
 // Journal des erreurs (écran 🩺 Santé), limité aux 200 dernières.
 export async function logError(env, kind, message) {
+  await logEvent(env, 'error', `${kind} : ${String(message).slice(0, 140)}`).catch(() => {});
   await env.DB.batch([
     env.DB.prepare('INSERT INTO logs (at, kind, message) VALUES (?, ?, ?)').bind(Date.now(), kind, String(message).slice(0, 300)),
     env.DB.prepare('DELETE FROM logs WHERE id NOT IN (SELECT id FROM logs ORDER BY id DESC LIMIT 200)'),

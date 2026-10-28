@@ -4,7 +4,7 @@
 // La copie est tenue à jour par tranches (syncSearchIndex, toutes les 15 min) ; tant qu'elle n'est pas complète, ou si
 // Neon ne répond pas, la recherche se fait comme avant dans les bases.
 
-import { neon, kvGet, kvSet } from './kvstore.js';
+import { neon, kvGet, kvSet, logEvent } from './kvstore.js';
 import { perDb, itemsWhereIds } from './shard.js';
 import { mentionsBrand, brandNames } from './synonyms.js';
 import { describeImage } from './vision.js';
@@ -185,6 +185,7 @@ export async function scanBrands(env) {
       const seen = await describeImage(env, image, undefined, 'ovh-only').catch((err) => { console.log('marque (photo)', String(err).slice(0, 120)); return undefined; });
       if (seen === undefined) break; // OVH saturé : on reprendra au prochain passage
       brand = seen && seen.brand ? seen.brand.toLowerCase().slice(0, 40) : '';
+      if (brand) await logEvent(env, 'brand', `${brand} · ${String(r.title_en || r.title_zh || r.id).slice(0, 60)}`).catch(() => {});
     }
     found.push({ id: r.id, brand });
   }

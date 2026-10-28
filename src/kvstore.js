@@ -147,3 +147,33 @@ export function limitText(lim, what, icon = '⏱️') {
     ? `${icon} **Limite atteinte** : ${lim.rule.max} ${what} ${per} et par membre. Prochaine demande possible ${next}.`
     : `${icon} **Demande précédente en cours de traitement.** Nouvelle demande possible ${next}.`;
 }
+
+// ---------------------------------------------------------------- Journal d'activité (dashboard)
+
+// Événement du bot (analyse IA, recherche, conversion, erreur…) : gardé dans les 300 derniers, et compté par jour.
+export async function logEvent(env, type, text) {
+  if (!hasRedis(env)) return;
+  const day = new Date().toISOString().slice(0, 10);
+  await pipeline(env, [
+    ['LPUSH', 'events', JSON.stringify({ at: Date.now(), type, text: String(text || '').slice(0, 160) })],
+    ['LTRIM', 'events', '0', '299'],
+    ['INCR', `stat:${type}:${day}`], ['EXPIRE', `stat:${type}:${day}`, '1209600'],
+  ]);
+}
+
+// Derniers événements et compteurs des 7 derniers jours par type.
+export async function readActivity(env, types) {
+  const days = Array.from({ length: 7 }, (_, i) => new Date(Date.now() - i * 86400000).toISOString().slice(0, 10));
+  const cmds = [['LRANGE', 'events', '0', '79'], ...types.flatMap((t) => days.map((d) => ['GET', `stat:${t}:${d}`]))];
+  const r = await pipeline(env, cmds);
+  if (!r) return null;
+  const events = (r[0] || []).map((x) => { try { return JSON.parse(x); } catch { return null; } }).filter(Boolean);
+  const stats = Object.fromEntries(types.map((t, i) => [t, days.map((d, j) => ({ day: d, n: Number(r[1 + i * days.length + j]) || 0 })).reverse()]));
+  return { events, stats };
+}
+
+// Plusieurs clés d'un coup (dashboard).
+export async function kvMany(env, keys) {
+  const r = await pipeline(env, keys.map((k) => ['GET', k]));
+  return r ? Object.fromEntries(keys.map((k, i) => [k, r[i]])) : {};
+}
