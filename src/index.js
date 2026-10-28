@@ -927,6 +927,13 @@ async function handleApi(request, env, url) {
   // Diagnostic : recherche par image d'une photo (URL), comme dans un salon de recherche par image.
   if (path === '/api/image-search' && request.method === 'GET') {
     try {
+      // smart=1 : la recherche du bot (marque et type lus par l'IA), sinon celle de FinderQC seule.
+      if (url.searchParams.get('smart')) {
+        const { smartImageSearch } = await import('./imagesearch.js');
+        const u = url.searchParams.get('url') || '';
+        const r = await smartImageSearch(env, { url: u, filename: 'eval.jpg' }, url.searchParams.get('prefer') || 'ovh');
+        return json({ ok: true, items: r.items, seen: r.seen });
+      }
       return json({ ok: true, items: await searchByImage(url.searchParams.get('url') || '') });
     } catch (err) {
       return json({ ok: false, error: String(err.message || err) });

@@ -112,7 +112,14 @@ export async function smartImageSearch(env, attachment, prefer = 'cloudflare', m
   ]);
   if (!found && !(seen && seen.brand)) throw new Error('recherche par image indisponible');
   const shapes = found || [];
-  if (!seen || !seen.brand) return { items: shapes.slice(0, RESULTS), seen };
+  if (!seen || !seen.brand) {
+    // Pas de marque lue, mais le type d'article (« hoodie », « sneakers ») : les items de ce type passent devant (les
+    // formes seules de FinderQC confondent souvent un hoodie et un t-shirt sur une photo QC).
+    const types = seen && seen.item ? expandQuery(seen.item).filter((g) => g.kind === 'type') : [];
+    if (!types.length) return { items: shapes.slice(0, RESULTS), seen };
+    const fits = (x) => relevance(types, { title_en: x.title }) > 0;
+    return { items: [...shapes.filter(fits), ...shapes.filter((x) => !fits(x))].slice(0, RESULTS), seen };
+  }
   const brandGroups = expandQuery(seen.brand).filter((g) => g.kind === 'brand');
   const groups = brandGroups.length ? brandGroups : expandQuery(seen.brand);
   const typeGroups = seen.item ? expandQuery(seen.item).filter((g) => g.kind === 'type') : [];
