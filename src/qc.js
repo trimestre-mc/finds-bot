@@ -159,7 +159,7 @@ export async function communityQc(env, itemId) {
     `SELECT COUNT(*) AS posts, COALESCE(SUM(images), 0) AS images,
        (SELECT guild_id || '/' || channel_id || '/' || message_id FROM qc_posts WHERE item_id = ? ORDER BY at DESC LIMIT 1) AS latest
      FROM qc_posts WHERE item_id = ?`,
-  ).bind(itemId, itemId).first();
+  ).bind(itemId, itemId).first().catch(() => null); // base illisible : pas de QC de la communauté, le reste marche
   return row && row.posts ? { posts: row.posts, images: row.images, jump: `https://discord.com/channels/${row.latest}` } : null;
 }
 

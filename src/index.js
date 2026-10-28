@@ -999,6 +999,13 @@ async function handleApi(request, env, url) {
     return json({ ok: true, guilds: out });
   }
 
+  // Copie de secours du contexte des cartes (agents, réglages) dans Upstash, utilisée si la base est illisible.
+  if (path === '/api/ctx-cache' && request.method === 'POST') {
+    const { kvSet } = await import('./kvstore.js');
+    const body = await request.json();
+    return json({ ok: await kvSet(env, 'ctx:cache', JSON.stringify(body)) });
+  }
+
   // Copie de la liste des salons surveillés dans Upstash (secours quand la base est illisible).
   if (path === '/api/channels/mirror' && request.method === 'POST') {
     const { kvSet } = await import('./kvstore.js');

@@ -294,11 +294,13 @@ export async function handlePublicComponent(it, env, ctx) {
 
 // Fenêtre QC d'un item, entièrement dans Discord.
 async function openQc(env, key, platform, itemId, view = 0) {
-  let item = await itemById(env, key);
-  item = await refreshQc(env, item || { id: key, item_id: itemId, platform, url: canonicalUrl(platform, itemId), popularity: 0 });
-  const community = view === 0 ? (await communityPhotos(env, key, 10)).photos : [];
-  const { results: qcCh } = await env.DB.prepare('SELECT channel_id FROM qc_channels LIMIT 1').all();
-  const cfg = await getConfig(env);
+  // Chaque lecture de la base tolère une base illisible (quota du jour) : les QC viennent de FinderQC de toute façon.
+  let item = await itemById(env, key).catch(() => null);
+  const stub = { id: key, item_id: itemId, platform, url: canonicalUrl(platform, itemId), popularity: 0 };
+  item = await refreshQc(env, item || stub).catch(() => item || stub);
+  const community = view === 0 ? ((await communityPhotos(env, key, 10).catch(() => null)) || { photos: [] }).photos : [];
+  const { results: qcCh } = await env.DB.prepare('SELECT channel_id FROM qc_channels LIMIT 1').all().catch(() => ({ results: [] }));
+  const cfg = await getConfig(env).catch(() => ({ lang: 'fr', accent: 'orange' }));
   return qcWindow(env, item, view, {
     community, qcChannel: qcCh[0] && qcCh[0].channel_id, lang: cfg.lang, accent: (ACCENTS[cfg.accent] || ACCENTS.orange).color,
     emojis: await loadEmojis(env),
