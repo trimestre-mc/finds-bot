@@ -24,11 +24,46 @@ const GUIDE = [
   [/off.?white/i, 'Off-White : rayures diagonales régulières et alignées, flèches nettes, texte entre guillemets à la bonne police, étiquette zip-tie.'],
 ];
 
-const GENERAL = 'Une marque a souvent plusieurs logos officiels (box, script, gothique, petit logo, ton sur ton) : ne pénalise pas un logo parce que ce n\'est pas la version la plus connue ; juge la qualité de son exécution.';
+// Savoir général d'un contrôleur QC, par type d'article (vaut pour toutes les marques, même inconnues).
+const TYPES = [
+  [/sneaker|basket|chaussure|shoe|jordan|dunk|air force|af1|yeezy|new balance|\bnb\b|trainer|runner|triple s/i, 'Chaussures : compare les deux pieds (même forme, même hauteur, logos à la même place) ; bout (toe box) ni trop pointu ni gonflé ; talon droit vu de dos, pas penché ; colle qui déborde à la jonction semelle-tige ; coutures doublées régulières, pas de fils ; cuir sans plis profonds ni craquelures ; semelle propre, motif net ; étiquette intérieure : code produit et pointures cohérentes entre elles et entre les deux pieds ; lacets et boîte secondaires.'],
+  [/boot|botte|slide|claquette|sandal|mule|clog|loafer|mocassin/i, 'Bottes, claquettes, mocassins : symétrie des deux pieds, semelle bien collée sans débord, coutures, logo en relief net, matière (daim régulier, cuir sans plis), boucles et quincaillerie gravées.'],
+  [/hoodie|sweat|crewneck|pull|zip.?up|fleece/i, 'Sweat / hoodie : épaisseur du molleton (un bon sweat tient sa forme, pas fin ni transparent) ; côtes des poignets et du bas épaisses et serrées ; capuche doublée si le vrai l\'est ; cordons et œillets métal, embouts propres ; zip de marque qui ferme droit ; logo : broderie dense sans trous ni fils sautés, ou impression sérigraphie opaque (pas un transfert plastique brillant qui craquelle) ; logo centré à la bonne hauteur.'],
+  [/\bt.?shirt|\btee\b|polo|débardeur|tank/i, 'T-shirt / polo : épaisseur et tenue du coton (heavyweight si le vrai l\'est), col côtelé qui ne gondole pas, coutures double aiguille régulières aux manches et au bas ; impression : sérigraphie opaque et nette, pas pixelisée, pas de transfert brillant ; placement et taille du logo ; étiquette de col.'],
+  [/jacket|veste|puffer|doudoune|coat|manteau|parka|windbreaker|coupe.?vent|gilet|vest/i, 'Veste / doudoune : matelassage régulier, gonflant homogène sans zones plates, plumes qui ne sortent pas ; zip de marque qui glisse droit, rabats alignés ; boutons-pression gravés ; doublure bien cousue ; coutures droites des épaules et des manches ; patch ou badge net ; capuche et fourrure symétriques.'],
+  [/jean|denim/i, 'Jean : délavage et usure naturels (pas un motif répété ou imprimé), toile épaisse, coutures en fil épais régulières (surpiqûres, poches arrière symétriques), rivets et bouton gravés, patch en cuir au dos, ourlet, étiquettes.'],
+  [/pant|pantalon|jogger|jogging|short|cargo|trouser|sweatpant|tracksuit|survêt/i, 'Pantalon / short / jogging : cordon et œillets, élastique de taille régulier, poches symétriques et bien cousues, coutures latérales droites, logo net à la bonne place, bas et chevilles, étiquettes.'],
+  [/knit|maille|cardigan|sweater|beanie|bonnet/i, 'Maille : mailles régulières sans trous ni fils tirés, motif tricoté (pas imprimé) si le vrai l\'est, côtes bien serrées, logo tissé ou brodé net, épaisseur.'],
+  [/\bshirt\b|chemise|overshirt/i, 'Chemise : col symétrique et rigide, boutons alignés et bien cousus, boutonnières propres, motif aligné aux coutures, poignets, étiquettes.'],
+  [/\bcap\b|casquette|\bhat\b|chapeau|bucket/i, 'Casquette / chapeau : forme de la visière et de la couronne (symétrique, pas écrasée), broderie 3D dense sans fils sautés, œillets brodés, bande intérieure et étiquettes, fermeture arrière (boucle gravée).'],
+  [/bag|sac|tote|backpack|pochette|pouch|purse|handbag|sacoche|crossbody/i, 'Sac : symétrie et tenue de la forme (pas mou ni affaissé), coutures régulières au même nombre de points, bords peints (tranches) lisses sans bavure, motif aligné et continu aux coutures, quincaillerie lourde et gravée net (pas de peinture qui s\'écaille), zip de marque, doublure, numéro de série / étiquette intérieure.'],
+  [/wallet|portefeuille|card ?holder|porte.?carte|belt|ceinture/i, 'Portefeuille / ceinture : coutures régulières, tranches peintes lisses, cuir sans plis ni aspect plastique, boucle lourde gravée nette, estampage du logo net et droit.'],
+  [/watch|montre|rolex|\bap\b|audemars|omega|cartier/i, 'Montre : alignement des index et de la lunette, marquages du cadran nets et bien espacés, aiguilles qui atteignent les index, date centrée dans sa fenêtre (loupe), couronne, finitions brossées / polies franches, bracelet et fermoir gravés.'],
+  [/\bring\b|bague|necklace|collier|chain|chaîne|bracelet|earring|boucle d.oreille|pendant|pendentif|jewel|bijou/i, 'Bijou : poids et épaisseur, gravures et poinçons nets, poli régulier sans rayures ni bulles, pierres serties droites, fermoir solide, couleur du métal homogène (pas de plaquage qui part).'],
+  [/sunglass|lunette|glasses/i, 'Lunettes : symétrie de la monture, charnières métal, gravures sur les branches, logo net, verres sans défaut, étui.'],
+];
 
-// Points d'expert de la marque de l'article (texte vide si marque inconnue ou non listée).
+// Ce qui trahit un mauvais batch quel que soit l'article.
+const GENERAL = 'Savoir général d\'un contrôleur : '
+  + 'une marque a souvent plusieurs logos officiels (box, script, gothique, petit logo, ton sur ton) : ne pénalise pas un logo parce que ce n\'est pas la version la plus connue, juge la qualité de son exécution. '
+  + 'Matière : le coton épais est mat avec un grain visible, le polyester bon marché brille et paraît fin ; le cuir bon marché a un aspect plastique, lisse et uniforme. '
+  + 'Impression : sérigraphie = encre opaque, bords nets ; transfert / DTF bon marché = film brillant plastique, bords visibles ; sublimation = couleurs fondues dans le tissu, souvent sur polyester. Broderie : dense, points serrés, pas de fond visible entre les points. '
+  + 'Coutures : régulières, droites, même espacement, pas de fils qui dépassent ni de points sautés. Quincaillerie (zips, boutons, rivets) : de marque, gravée nette, pas de peinture qui s\'écaille. '
+  + 'Couleur : compare à la photo du vendeur, mais une photo d\'entrepôt (lumière jaune ou blanche) change un peu la teinte. '
+  + 'Mesures : une différence de plus de 2-3 cm avec le guide des tailles compte. '
+  + 'Taches, plis de transport et odeur ne sont pas des défauts du batch (lavables), sauf tache de colle ou d\'encre.';
+
+// Points d'expert pour un article (marque + type) : ce qu'un revendeur regarde en premier, puis le savoir général.
 export function qcGuide(article) {
   const text = String(article || '');
-  const hits = GUIDE.filter(([re]) => re.test(text)).map(([, tip]) => tip);
-  return hits.length ? `Points d'expert pour cette marque : ${hits.slice(0, 2).join(' ')} ${GENERAL}` : GENERAL;
+  const brands = GUIDE.filter(([re]) => re.test(text)).map(([, tip]) => tip).slice(0, 2);
+  const types = TYPES.filter(([re]) => re.test(text)).map(([, tip]) => tip).slice(0, 2);
+  return [
+    brands.length ? `Points d'expert pour cette marque : ${brands.join(' ')}` : '',
+    types.length ? `Points d'expert pour ce type d'article : ${types.join(' ')}` : '',
+    GENERAL,
+  ].filter(Boolean).join('\n');
 }
+
+// Type d'article reconnu dans le texte ? (sinon l'analyse garde la liste courte de tous les types)
+export const knownType = (article) => TYPES.some(([re]) => re.test(String(article || '')));

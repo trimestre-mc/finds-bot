@@ -108,3 +108,15 @@ test('points d\'expert par marque : la bonne marque, plusieurs logos officiels a
   assert.match(qcGuide('article inconnu'), /plusieurs logos officiels/);
   assert.doesNotMatch(qcGuide('article inconnu'), /Supreme|BAPE/);
 });
+
+test('qcGuide : savoir général par type d\'article, même sans marque connue', async () => {
+  const { qcGuide, knownType } = await import('../src/qcguide.js');
+  assert.match(qcGuide('sneakers blanches'), /deux pieds/);
+  assert.match(qcGuide('sac en cuir'), /tranches/);
+  assert.match(qcGuide('hoodie à capuche'), /molleton/);
+  assert.doesNotMatch(qcGuide('hoodie à capuche'), /Casquette/);
+  assert.doesNotMatch(qcGuide('sweatshirt'), /T-shirt/);
+  assert.match(qcGuide('article inconnu'), /sérigraphie/);
+  assert.equal(knownType('article inconnu'), false);
+  assert.equal(knownType('Air Jordan 4'), true);
+});

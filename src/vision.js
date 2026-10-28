@@ -1,7 +1,7 @@
 // Lecture d'une photo par un modèle de vision gratuit (Workers AI) : marque (logo, étiquette), modèle et type
 // d'article. Complète la recherche par image de FinderQC, qui compare les formes mais rate souvent la marque.
 
-import { qcGuide } from './qcguide.js';
+import { qcGuide, knownType } from './qcguide.js';
 
 export const VISION_MODEL = '@cf/meta/llama-4-scout-17b-16e-instruct';
 
@@ -167,13 +167,13 @@ IGNORE ce que l'agent ajoute à la photo : filigrane, QR code, logo de l'agent (
 « probleme » seulement pour un défaut réellement visible ; un doute ou une chose à confirmer = « attention ».
 Vérifie aussi : défauts (taches, trous, fils qui dépassent, colle), coutures, symétrie, couleur${ctx.ref ? ' par rapport à la photo du vendeur' : ''}, étiquettes, finitions, forme.
 ${qcGuide(ctx.what)}
-Points d'expert selon le type d'article :
+${knownType(ctx.what) ? '' : `Points d'expert selon le type d'article :
 - Chaussures : forme du bout et du talon, symétrie des deux pieds, traces de colle, coutures, logo de semelle et de languette, étiquette intérieure (taille, code).
 - Hauts (t-shirt, sweat, veste) : logo/brodé/imprimé (netteté, centrage), cordons et œillets, poignets et bas, étiquettes de col et de lavage.
 - Pantalons, shorts : cordon, poches, coutures latérales, logo, étiquettes.
 - Sacs, petite maroquinerie : symétrie, coutures régulières, quincaillerie (gravures, finition), logo, doublure.
 - Bijoux, montres : gravures, poli, fermoir, alignement des éléments.
-Étiquettes : lis-les entièrement. Chaussures : pointures US / UK / EUR / cm, code produit (ex : FQ8138-001), dates ; vérifie que les pointures sont cohérentes entre elles (ex : US 11 = UK 10 = EUR 45 = 29 cm) et que les étiquettes gauche et droite concordent. Vêtements : taille (S, M, L…) et composition.
+`}Étiquettes : lis-les entièrement. Chaussures : pointures US / UK / EUR / cm, code produit (ex : FQ8138-001), dates ; vérifie que les pointures sont cohérentes entre elles (ex : US 11 = UK 10 = EUR 45 = 29 cm) et que les étiquettes gauche et droite concordent. Vêtements : taille (S, M, L…) et composition.
 Si une règle graduée est visible, estime une mesure utile (ex : « Longueur ≈ 70 cm ») et dis si elle paraît cohérente avec la taille de l'étiquette.
 ${ctx.ref ? 'Si la photo du vendeur montre plusieurs coloris (collage), ne compare pas la couleur avec elle.' : ''}
 Indique le numéro de la photo QC (photo ${ctx.n || 1}). Ne te contredis pas. Évite les phrases vagues (« belle finition ») : dis ce que tu vois. Sois bref : des faits, pas de longues phrases.
