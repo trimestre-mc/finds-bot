@@ -1,7 +1,8 @@
 name: test-nightly
 
-# Chaque nuit (4 h 30 à Paris en hiver) : tests rapides puis test de bout en bout (Worker en local + faux Discord + vrai
-# indexeur Weidian). En cas d'échec, le bot envoie un MP au propriétaire avec le lien vers le détail.
+# Chaque nuit (4 h 30 à Paris en hiver) : tests rapides puis contrôle du bot en production (services, index de
+# recherche, vraies recherches). En cas d'échec, le bot envoie un MP au propriétaire avec le lien vers le détail.
+# (Le test de bout en bout complet se lance en local : sur GitHub, Weidian bloque les adresses des machines.)
 on:
   schedule:
     - cron: '30 3 * * *'
@@ -19,24 +20,16 @@ jobs:
           node-version: 22
 
       - name: Installer
-        run: |
-          npm ci --no-audit --no-fund
-          npm ci --prefix indexer --no-audit --no-fund
-          npx --prefix indexer playwright install --with-deps chromium
+        run: npm ci --no-audit --no-fund
 
       - name: Tests rapides
         run: npm test
 
-      - name: Test de bout en bout
-        run: npm run test:e2e
-
-      - name: Journal du Worker (en cas d'échec)
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: worker-log
-          path: .wrangler/e2e-dev.log
-          if-no-files-found: ignore
+      - name: Contrôle du bot en production
+        env:
+          WORKER_URL: ${{ secrets.WORKER_URL }}
+          INDEXER_SECRET: ${{ secrets.INDEXER_SECRET }}
+        run: node test/smoke.mjs
 
       - name: Prévenir le propriétaire
         if: failure()
