@@ -10,7 +10,7 @@ import { analyzeQc, smallImageUrl } from './vision.js';
 import { aiNeurons, AI_NEURONS_PER_DAY } from './translate.js';
 import { etxt, emo, AGENT_EMOJI } from './emojis.js';
 import { ACCENTS } from './config.js';
-import { searchByImage } from './imagesearch.js';
+import { smartImageSearch } from './imagesearch.js';
 import { trackedLink, formatPrice } from './post.js';
 import { buildAgentLink, canonicalUrl } from './links.js';
 import { fetchQc, fetchQcPage, goldPhoto } from './qc.js';
@@ -283,18 +283,29 @@ export async function aiqcMessage(env, ctx, c, m) {
     step.log(title ? `Lien de l'article détecté : ${String(title).slice(0, 50)}` : 'Lien de l\'article détecté');
     gold = goldPhoto(await fetchQc(item, 1).catch(() => null), urls, item);
   } else step.log('Recherche de l\'article dans le catalogue…');
-  // Sinon : l'article qui ressemble le plus (recherche par image FinderQC, sans quota d'IA), montré avec ses boutons
-  // d'achat et de QC ; une de ses QC sert de référence (l'IA vérifie d'abord que c'est le même article).
-  const found = refItem ? [] : await searchByImage(shots[0].url, shots[0].filename, 3).catch(() => []);
-  if (!refItem) step.log(found[0] ? `Article correspondant probable : ${String(found[0].title || '').slice(0, 45)}` : 'Aucun article correspondant : analyse sans référence');
-  if (!gold && found[0] && found[0].qc) {
-    gold = goldPhoto(await fetchQcPage(found[0].id, 1).catch(() => null), urls, {}, false);
+  // Sinon : marque lue sur la photo (modèle de vision) et recherche par image FinderQC en même temps ; on ne garde que
+  // l'article de la même marque (ou de la même catégorie). Il sert de référence (une de ses QC) et s'affiche sous le
+  // résultat. Rien plutôt qu'un article sans rapport.
+  let seenText = '';
+  let candidate = null;
+  if (!refItem) {
+    const look = await smartImageSearch(env, shots[0]).catch((err) => { console.log('analyse IA (recherche)', String(err).slice(0, 120)); return null; });
+    const seen = look && look.seen;
+    seenText = seen ? [seen.brand, seen.model, seen.item].filter(Boolean).join(' ') : '';
+    if (seen && seen.brand) step.log(`Marque reconnue sur la photo : ${seen.brand}${seen.item ? ` · ${seen.item}` : ''}`);
+    else if (seen && seen.item) step.log(`Type d'article reconnu : ${seen.item}`);
+    candidate = seenText ? ((look && look.items) || []).find((f) => sameArticle(seenText, f.title)) || null : null;
+    step.log(candidate ? `Article correspondant dans le catalogue : ${String(candidate.title || '').slice(0, 45)}`
+      : 'Aucun article du catalogue ne correspond : analyse sans référence');
+    if (candidate && candidate.qc) gold = goldPhoto(await fetchQcPage(candidate.id, 1).catch(() => null), urls, {}, false);
   }
   step('photos');
-  const res = await qcAnalysis(env, urls, { ref, what: title, gold, progress: step });
+  const res = await qcAnalysis(env, urls, { ref, what: title || seenText || null, gold, progress: step });
   await step.finish(res.result && !res.cached);
   c.done++;
-  const body = { flags: COMPONENTS_V2, allowed_mentions: { parse: [] }, components: analysisView(ctx.emojis, res, { title, who: m.author && m.author.id, match: (() => { const x = res.result && found.find((f) => sameArticle(res.result.article || title, f.title)); return x ? matchBlocks(ctx, x, c.channel_id) : null; })() }) };
+  // Article affiché sous le résultat : toujours cohérent avec l'article analysé.
+  const shown = candidate && res.result && sameArticle(`${res.result.article || ''} ${seenText}`, candidate.title) ? candidate : null;
+  const body = { flags: COMPONENTS_V2, allowed_mentions: { parse: [] }, components: analysisView(ctx.emojis, res, { title, who: m.author && m.author.id, match: shown ? matchBlocks(ctx, shown, c.channel_id) : null }) };
   if (pending) await discordApi(env, 'PATCH', `/channels/${c.channel_id}/messages/${pending.id}`, body);
   else await discordApi(env, 'POST', `/channels/${c.channel_id}/messages`, { ...body, message_reference: { message_id: m.id, fail_if_not_exists: false } });
   return 8;
