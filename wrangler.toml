@@ -30,6 +30,8 @@ tag = "v1"
 new_sqlite_classes = ["Gateway"]
 
 [vars]
+# Upstash Redis (compteurs du bot, voir src/kvstore.js) ; le jeton est le secret UPSTASH_TOKEN.
+UPSTASH_URL = "https://upright-gator-200848.upstash.io"
 DISCORD_APP_ID = "1564065839194448043"
 DISCORD_PUBLIC_KEY = "d10bd37d232a95ebe948df712c3f68b7eeb8d5e70af9986852beb1112e89f871"
 # Seul ce compte Discord peut modifier les liens d'affiliation (agents)

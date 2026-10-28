@@ -6,6 +6,7 @@ import { readsOver } from './budget.js';
 import { perDb, allRows, itemsWhereIds } from './shard.js';
 import { translate } from './translate.js';
 import { detectCategory } from './categories.js';
+import { cacheGet, cacheSet } from './kvstore.js';
 
 export const PAGE_SIZE = 5;
 export const MAX_BULK = 500;
@@ -227,11 +228,10 @@ function cacheKey(params) {
 
 export async function cachedIds(env, params, money) {
   const key = cacheKey(params);
-  const row = await env.DB.prepare('SELECT ids, at FROM search_cache WHERE key = ?').bind(key).first().catch(() => null);
+  const row = await cacheGet(env, key);
   if (row && Date.now() - row.at < CACHE_MS) return JSON.parse(row.ids);
   const ids = await allResultIds(env, params, money);
-  await env.DB.prepare('INSERT OR REPLACE INTO search_cache (key, ids, at) VALUES (?, ?, ?)')
-    .bind(key, JSON.stringify(ids), Date.now()).run().catch(() => {});
+  await cacheSet(env, key, JSON.stringify(ids));
   return ids;
 }
 

@@ -22,6 +22,7 @@ import { itemDb, itemById, batchByDb, deleteShopItems } from './shard.js';
 import { compareView } from './compare.js';
 import { loadEmojis, emo } from './emojis.js';
 import { toggleWatch, watchesView, toggleSearchAlert, deleteSearchAlert } from './alerts.js';
+import { cacheGet, cacheSet, cacheClear } from './kvstore.js';
 
 // ---------------------------------------------------------------- Indexeur GitHub
 
@@ -239,13 +240,13 @@ export async function handlePublicComponent(it, env, ctx) {
       };
       // Pas deux fois le même partage dans le même salon en 10 minutes.
       const recentKey = `share:${it.channel_id}:${key}:${view}`;
-      const recent = await env.DB.prepare('SELECT at FROM search_cache WHERE key = ?').bind(recentKey).first().catch(() => null);
+      const recent = await cacheGet(env, recentKey);
       if (recent && Date.now() - recent.at < 10 * 60000) return notice('ℹ️ Ces QC viennent déjà d\'être partagées dans ce salon.');
       const item = (await itemById(env, key)) || { id: key, item_id: itemId, platform, url: canonicalUrl(platform, itemId) };
       const message = await qcShareMessage(env, item, view, userId(it), await postContext(env), it.channel_id);
       if (!message) return notice('ℹ️ Pas de photos QC à partager sur cette page.');
       await followup(env, it.token, message);
-      await env.DB.prepare('INSERT OR REPLACE INTO search_cache (key, ids, at) VALUES (?, ?, ?)').bind(recentKey, '[]', Date.now()).run().catch(() => {});
+      await cacheSet(env, recentKey, '[]');
       ctx.waitUntil(env.DB.prepare('INSERT INTO clicks (item_id, agent, channel_id, at) VALUES (?, ?, ?, ?)')
         .bind(key, 'qc_share', it.channel_id || null, Date.now()).run().catch(() => {}));
       return notice('✅ Partagé dans le salon : tout le monde peut voir ces QC.');
@@ -335,7 +336,7 @@ export async function handleFeatureComponent(it, env, ctx, a, b, c, d, values) {
     case 's:hide': {
       if (values.length) {
         await batchByDb(values.map((id) => [itemDb(env, id), itemDb(env, id).prepare('UPDATE items SET hidden = 1 WHERE id = ?').bind(id)]));
-        await env.DB.prepare('DELETE FROM search_cache').run().catch(() => {}); // les recherches en cache contenaient ces items
+        await cacheClear(env); // les recherches en cache contenaient ces items
         await saveParams(env, c, {});
       }
       return update(await resultsView(env, c, Number(d) || 0, `🚫 ${values.length} item${values.length > 1 ? 's' : ''} masqué${values.length > 1 ? 's' : ''} : ils n'apparaîtront plus.`));

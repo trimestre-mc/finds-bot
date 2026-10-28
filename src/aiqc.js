@@ -14,6 +14,7 @@ import { searchByImage } from './imagesearch.js';
 import { trackedLink, formatPrice } from './post.js';
 import { buildAgentLink, canonicalUrl } from './links.js';
 import { fetchQc, fetchQcPage, goldPhoto } from './qc.js';
+import { cacheGet, cacheSet, dayAdd, kvGet, kvSet } from './kvstore.js';
 
 export const AIQC_PER_DAY = 40; // plafond de sécurité sans Groq ; la vraie limite est le quota d'IA du jour (neurons)
 const AIQC_PER_DAY_GROQ = 150; // avec Groq (~1 000 requêtes/jour gratuites, ~6 par analyse)
@@ -36,6 +37,8 @@ async function hashKey(parts) {
 async function allowed(env) {
   // Sans Groq, tout passe par le quota Cloudflare (neurons) ; avec, Groq a ses propres limites (Cloudflare en secours).
   if (!env.GROQ_API_KEY && (await aiNeurons(env)).used >= AI_NEURONS_PER_DAY) return false;
+  const fast = await dayAdd(env, 'ai_qc');
+  if (fast !== undefined) return fast <= (env.GROQ_API_KEY ? AIQC_PER_DAY_GROQ : AIQC_PER_DAY);
   const day = new Date().toISOString().slice(0, 10);
   const row = await env.DB.prepare(
     `INSERT INTO settings (key, value) VALUES ('ai_qc', json_object('day', ?1, 'used', 1))
@@ -52,6 +55,7 @@ async function allowed(env) {
 
 // Une analyse qui n'a pas pu se faire (IA saturée) ne compte pas dans la limite du jour.
 async function uncount(env) {
+  if ((await dayAdd(env, 'ai_qc', -1)) !== undefined) return;
   const day = new Date().toISOString().slice(0, 10);
   await env.DB.prepare(
     `UPDATE settings SET value = json_object('day', ?1, 'used', MAX(0, json_extract(value, '$.used') - 1))
@@ -64,7 +68,7 @@ export async function qcAnalysis(env, photos, { ref = null, what = null, gold = 
   const shots = photos.filter((u) => /^https:\/\//.test(u || '')).slice(0, PHOTOS);
   if (!shots.length) return { result: null, reason: 'photos' };
   const key = `aiqc:${await hashKey([ref || '', ...shots])}`;
-  const hit = await env.DB.prepare('SELECT ids, at FROM search_cache WHERE key = ?').bind(key).first().catch(() => null);
+  const hit = await cacheGet(env, key);
   if (hit && Date.now() - hit.at < CACHE_MS) return { result: JSON.parse(hit.ids), cached: true };
   if (!(await allowed(env))) return { result: null, reason: 'limite' };
   let quota = false;
@@ -87,7 +91,7 @@ export async function qcAnalysis(env, photos, { ref = null, what = null, gold = 
   }
   if (!result) return { result: null, reason: 'echec' };
   if (result.neurons) await aiNeurons(env).then((b) => b.add(Math.round(result.neurons))).catch(() => {});
-  await env.DB.prepare('INSERT OR REPLACE INTO search_cache (key, ids, at) VALUES (?, ?, ?)').bind(key, JSON.stringify(result), Date.now()).run().catch(() => {});
+  await cacheSet(env, key, JSON.stringify(result));
   return { result, cached: false };
 }
 
@@ -106,14 +110,16 @@ const DEFAULT_MS = 35000;
 
 // Durée moyenne d'une analyse (gardée dans les réglages), pour l'estimation du temps.
 async function averageMs(env) {
-  const row = await env.DB.prepare("SELECT value FROM settings WHERE key = 'aiqc:avg'").first().catch(() => null);
+  const kept = await kvGet(env, 'aiqc:avg');
+  const row = kept !== undefined ? { value: kept } : await env.DB.prepare("SELECT value FROM settings WHERE key = 'aiqc:avg'").first().catch(() => null);
   const v = row && Number(row.value);
   return v > 5000 && v < 300000 ? v : DEFAULT_MS;
 }
 
 async function recordMs(env, ms) {
   const avg = await averageMs(env);
-  await env.DB.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('aiqc:avg', ?)").bind(String(Math.round(avg * 0.7 + ms * 0.3))).run().catch(() => {});
+  const next = String(Math.round(avg * 0.7 + ms * 0.3));
+  if (!(await kvSet(env, 'aiqc:avg', next))) await env.DB.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('aiqc:avg', ?)").bind(next).run().catch(() => {});
 }
 
 // Carte « analyse en cours » : étapes (faite, en cours, à venir), barre de progression et temps restant (compte à

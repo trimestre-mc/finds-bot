@@ -6,6 +6,7 @@
 
 import { DurableObject } from 'cloudflare:workers';
 import { withDb } from './turso.js';
+import { kvSet } from './kvstore.js';
 
 const GATEWAY = 'https://gateway.discord.gg/?v=10&encoding=json';
 const INTENTS = (1 << 0) | (1 << 9) | (1 << 15); // GUILDS, GUILD_MESSAGES, MESSAGE_CONTENT
@@ -42,7 +43,7 @@ export class Gateway extends DurableObject {
   }
 
   status() {
-    return { connected: this.alive(), session: !!this.session, lastEvent: this.lastEvent, seen: this.seen, handled: this.handled, channels: this.channels.size };
+    return { connected: this.alive(), session: !!this.session, lastEvent: this.lastEvent, seen: this.seen, handled: this.handled, channels: this.channels.size, aliveSaved: this.aliveSaved ?? null, upstash: !!this.env.UPSTASH_URL };
   }
 
   alive() {
@@ -54,7 +55,10 @@ export class Gateway extends DurableObject {
     if (!this.alive()) await this.connect();
     if (this.alive()) {
       const env = withDb(this.env);
-      await env.DB.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('gateway:alive', ?)").bind(String(Date.now())).run().catch(() => {});
+      this.aliveSaved = await kvSet(env, 'gateway:alive', Date.now(), 300);
+      if (!this.aliveSaved) {
+        await env.DB.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('gateway:alive', ?)").bind(String(Date.now())).run().catch(() => {});
+      }
     }
   }
 

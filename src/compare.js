@@ -11,6 +11,7 @@ import { itemById } from './shard.js';
 import { emo, etxt, AGENT_EMOJI } from './emojis.js';
 import { ACCENTS } from './config.js';
 import { finderItem } from './livesearch.js';
+import { cacheGet, cacheSet } from './kvstore.js';
 
 const CACHE_MS = 24 * 3600000;
 const SHOWN = 5;
@@ -18,14 +19,13 @@ const fmt = (n) => Number(n || 0).toLocaleString('fr-FR').replace(/ | /g, ' '
 
 async function sellers(env, item) {
   const key = `cmp:${item.id}`;
-  const row0 = await env.DB.prepare('SELECT ids, at FROM search_cache WHERE key = ?').bind(key).first().catch(() => null);
+  const row0 = await cacheGet(env, key);
   if (row0 && Date.now() - row0.at < CACHE_MS) return JSON.parse(row0.ids);
   const cat = item.category && item.category !== 'other' ? item.category : detectCategory(`${item.title_en || ''} ${item.title_zh || ''}`);
   const found = await searchByImage(item.image, 'item.jpg', 16);
   const same = found.filter((x) => !(x.platform === item.platform && x.id === String(item.item_id))
     && (!cat || cat === 'other' || detectCategory(x.title) === cat));
-  await env.DB.prepare('INSERT OR REPLACE INTO search_cache (key, ids, at) VALUES (?, ?, ?)')
-    .bind(key, JSON.stringify(same), Date.now()).run().catch(() => {});
+  await cacheSet(env, key, JSON.stringify(same));
   return same;
 }
 

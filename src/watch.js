@@ -18,6 +18,7 @@ import { ACCENTS } from './config.js';
 import { itemsWhereIds, groupByDb, onDb, batchByDb } from './shard.js';
 import { etxt } from './emojis.js';
 import { aiqcMessage } from './aiqc.js';
+import { kvGet } from './kvstore.js';
 
 const MAX_CALLS = 46;
 // Compteur de chaque type de salon (colonne = colonne + n).
@@ -33,7 +34,9 @@ const newer = (a, b) => BigInt(a) > BigInt(b);
 export async function watchChannels(env, ms = 55000, exec = null, force = false) {
   // Connexion permanente à Discord active (gateway.js) : les messages arrivent déjà en direct, pas de relecture
   // (sauf rattrapage demandé, ex. un salon ajouté à l'instant).
-  const alive = force ? null : await env.DB.prepare("SELECT value FROM settings WHERE key = 'gateway:alive'").first().catch(() => null);
+  const kept = force ? undefined : await kvGet(env, 'gateway:alive');
+  const alive = force ? null : kept !== undefined ? (kept ? { value: kept } : null)
+    : await env.DB.prepare("SELECT value FROM settings WHERE key = 'gateway:alive'").first().catch(() => null);
   if (alive && Date.now() - Number(alive.value) < 75000) return 0;
   const deadline = Date.now() + ms;
   let external = 0;

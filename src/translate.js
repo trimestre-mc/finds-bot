@@ -2,6 +2,7 @@
 // en titres produit courts et propres en anglais. m2m100 sert de secours.
 
 import { chineseBrandNames } from './synonyms.js';
+import { dayAdd, dayGet } from './kvstore.js';
 
 const MT_MODEL = '@cf/meta/m2m100-1.2b';
 // Gemma 4 : meilleurs titres que Llama 3.3 70B sur nos tests (marques reconnues) et ~5 fois moins cher en neurons.
@@ -115,6 +116,9 @@ const TRANSLATE_NEURONS = 4500;
 const NEURONS_PER_TITLE = 0.7; // estimation si la réponse ne donne pas le chiffre
 
 export async function aiNeurons(env) {
+  // Upstash (compteur du jour) s'il est branché : aucune écriture dans la base.
+  const fast = await dayGet(env, 'ai_neurons');
+  if (fast !== undefined) return { used: fast, add: (n) => dayAdd(env, 'ai_neurons', Number(n) || 0) };
   const db = env.MAIN || env.DB;
   const day = new Date().toISOString().slice(0, 10);
   const row = await db.prepare("SELECT value FROM settings WHERE key = 'ai_neurons'").first();

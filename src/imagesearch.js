@@ -11,6 +11,7 @@ import { aiNeurons, AI_NEURONS_PER_DAY } from './translate.js';
 import { expandQuery, relevance } from './synonyms.js';
 import { finderSearch, liveQuery } from './livesearch.js';
 import { etxt, emo, AGENT_EMOJI, PLATFORM_EMOJI } from './emojis.js';
+import { dayAdd } from './kvstore.js';
 
 const API = 'https://server.finderqc.com/api/searchImage';
 const UA = 'finds-bot/1.0 (+https://finds-bot.wheatenmoon5861.workers.dev)';
@@ -61,6 +62,8 @@ const VISION_NEURONS = 40; // estimation par photo (Llama 4 Scout, image réduit
 
 async function visionAllowed(env) {
   if (!env.GROQ_API_KEY && (await aiNeurons(env)).used >= AI_NEURONS_PER_DAY) return false;
+  const fast = await dayAdd(env, 'ai_vision');
+  if (fast !== undefined) return fast <= VISION_PER_DAY;
   const day = new Date().toISOString().slice(0, 10);
   const row = await env.DB.prepare(
     `INSERT INTO settings (key, value) VALUES ('ai_vision', json_object('day', ?1, 'used', 1))

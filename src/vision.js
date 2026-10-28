@@ -2,6 +2,7 @@
 // d'article. Complète la recherche par image de FinderQC, qui compare les formes mais rate souvent la marque.
 
 import { qcGuide, knownType } from './qcguide.js';
+import { kvGet, kvSet } from './kvstore.js';
 
 export const VISION_MODEL = '@cf/meta/llama-4-scout-17b-16e-instruct';
 
@@ -112,6 +113,8 @@ const GROQ_TEXT = 'openai/gpt-oss-120b';
 
 // Groq au repos (quota du jour atteint) jusqu'à l'heure gardée dans les réglages.
 async function groqResting(env) {
+  const kept = await kvGet(env, 'groq:rest');
+  if (kept !== undefined) return Number(kept || 0) > Date.now();
   if (!env.DB) return false;
   const row = await env.DB.prepare("SELECT value FROM settings WHERE key = 'groq:rest'").first().catch(() => null);
   return !!row && Number(row.value) > Date.now();
@@ -120,6 +123,7 @@ async function groqResting(env) {
 async function groqRest(env, err) {
   const m = String(err).match(/try again in (?:(\d+)h)?(?:(\d+)m)?([\d.]+)s/);
   const ms = m ? ((Number(m[1] || 0) * 60 + Number(m[2] || 0)) * 60 + Number(m[3] || 0)) * 1000 : 3600000;
+  if (await kvSet(env, 'groq:rest', Date.now() + ms, Math.ceil(ms / 1000) + 60)) return;
   await env.DB.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('groq:rest', ?)").bind(String(Date.now() + ms)).run().catch(() => {});
 }
 

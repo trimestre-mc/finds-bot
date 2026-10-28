@@ -38,6 +38,7 @@ import {
 import { itemDb, itemById, itemDbs, perDb, allRows, countAll, batchByDb, groupByDb, itemsWhereIds, onDb, itemEnv, deleteShopItems } from './shard.js';
 import { checkWatches, checkSearchAlerts } from './alerts.js';
 import { sendDailyReport, dailyReport, sendWeeklyTop } from './report.js';
+import { cacheClear, kvGet } from './kvstore.js';
 
 // Une boutique est relue tous les 3 jours (quota gratuit D1 : 100 000 lignes écrites par jour).
 const REINDEX_HOURS = 72;
@@ -162,7 +163,7 @@ async function handleScheduled(event, env, ctx) {
     ]);
     if (over) return;
     await env.DB.prepare('DELETE FROM searches WHERE created_at < ?').bind(Date.now() - 24 * 3600 * 1000).run().catch(() => {});
-    await env.DB.prepare('DELETE FROM search_cache WHERE at < ?').bind(Date.now() - 6 * 3600 * 1000).run().catch(() => {});
+    await cacheClear(env, 6 * 3600 * 1000);
   })());
 }
 
@@ -732,6 +733,16 @@ async function handleApi(request, env, url) {
     });
     const rest = await env.DB.prepare("SELECT value FROM settings WHERE key = 'groq:rest'").first().catch(() => null);
     return json({ ok: res.ok, status: res.status, error: res.ok ? null : (await res.text()).slice(0, 300), restUntil: rest ? Number(rest.value) : null });
+  }
+
+  // Diagnostic : Upstash (compteurs) et Neon (cache) répondent-ils ?
+  if (path === '/api/stores-check' && request.method === 'GET') {
+    const { kvSet, kvGet, cacheSet, cacheGet } = await import('./kvstore.js');
+    const t = String(Date.now());
+    const redisOk = (await kvSet(env, 'check', t, 60)) && (await kvGet(env, 'check')) === t;
+    await cacheSet(env, 'check', t);
+    const row = await cacheGet(env, 'check');
+    return json({ ok: true, upstash: redisOk, neon: !!(env.NEON_URL && row && row.ids === t), gatewayAlive: await kvGet(env, 'gateway:alive') });
   }
 
   // Diagnostic : modèles disponibles chez Groq (les noms changent avec le temps).
