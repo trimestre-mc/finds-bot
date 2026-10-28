@@ -280,6 +280,11 @@ async function isAdmin(env, it) {
 async function onComponent(it, env, ctx) {
   const [a, b, c, d] = it.data.custom_id.split(':');
   const values = it.data.values || [];
+  if (a === 'sec') {
+    // Onglet « Secret » : outils du propriétaire (secret.js).
+    const { handleSecretComponent } = await import('./secret.js');
+    return handleSecretComponent(it, env);
+  }
   if (a === 'srv') {
     // Serveurs du bot (propriétaire seulement), voir servers.js.
     const { handleServersComponent } = await import('./servers.js');

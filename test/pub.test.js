@@ -36,3 +36,14 @@ test('serveurs du bot : liste, confirmation avant de quitter, réservé au propr
   assert.match(await denied.text(), /propriétaire/);
   assert.ok(!calls.some((c) => c.startsWith('DELETE')));
 });
+
+test('onglet Secret : outils du propriétaire, refusé aux autres', async () => {
+  const { secretView, handleSecretComponent } = await import('../src/secret.js');
+  const env = { AGENTS_OWNER_ID: '42', INDEXER_SECRET: 's', PUBLIC_URL: 'https://bot.test', DB: { prepare: () => ({ first: async () => null }) } };
+  const v = JSON.stringify(await secretView(env, { member: { user: { id: '42' } } }));
+  assert.match(v, /ad:open/);
+  assert.match(v, /srv:open/);
+  assert.match(v, /bot\.test\/dashboard\?t=/);
+  const denied = await handleSecretComponent({ member: { user: { id: '7' } } }, env);
+  assert.match(await denied.text(), /propriétaire/);
+});

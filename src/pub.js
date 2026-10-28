@@ -108,7 +108,7 @@ export async function pubView(env, it, msg = null) {
       pending ? btn(`Confirmer l'envoi (${pending})`, 'ad:go', Style.SUCCESS) : btn('Préparer l\'envoi', 'ad:send', Style.SUCCESS, { disabled: !d.text || !roles.length || (job && job.state === 'running') }),
       pending ? btn('Annuler', 'ad:cancel', Style.SECONDARY) : null,
       job && job.state === 'running' ? btn('Arrêter l\'envoi', 'ad:stop', Style.DANGER) : null,
-      btn('Retour', 'home', Style.SECONDARY),
+      btn('Retour', 'sec:open', Style.SECONDARY),
     ),
   ], COLOR)];
 }

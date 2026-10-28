@@ -28,7 +28,7 @@ export async function serversView(env, it, msg = null, confirm = null) {
       ? row(btn('Oui, quitter ce serveur', `srv:leave:${target.id}`, Style.DANGER), btn('Annuler', 'srv:open', Style.SECONDARY))
       : { type: 1, components: [{ type: 3, custom_id: 'srv:pick', placeholder: 'Choisir un serveur à quitter', min_values: 1, max_values: 1,
         options: guilds.slice(0, 25).map((g) => ({ value: g.id, label: g.name.slice(0, 100), description: g.id === it.guild_id ? 'Serveur actuel' : undefined })) }] },
-    row(btn('Retour', 'home', Style.SECONDARY, { emoji: emo(emojis, 'fb_bot') })),
+    row(btn('Retour', 'sec:open', Style.SECONDARY, { emoji: emo(emojis, 'fb_crown') })),
   ], 0x64748b)];
 }
 
