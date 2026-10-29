@@ -39,11 +39,56 @@ const SCHEMA = [
 // Étiquettes de marque d'un item, calculées dans Neon à partir de son texte (x = ligne en cours d'insertion).
 const TAGS = `coalesce((SELECT array_agg(r.name) FROM brand_rules r WHERE lower(coalesce(x.title_en,'') || ' ' || coalesce(x.title_zh,'') || ' ' || coalesce(x.shop_name,'')) ~ r.re), '{}')`;
 
-let schemaReady = null;
+// Deux projets Neon gratuits (0,5 Go chacun) : Weidian dans le 2e (NEON_URL_2), Taobao et 1688 dans le 1er. Sans
+// NEON_URL_2, tout reste dans le 1er. Chaque recherche interroge les deux en même temps et fusionne.
+export function neonParts(env) {
+  return env.NEON_URL_2 ? [env, Object.assign(Object.create(env), { NEON_URL: env.NEON_URL_2, NEON_PART: 2 })] : [env];
+}
+const partFor = (parts, id) => (parts.length > 1 && String(id).startsWith('weidian:') ? parts[1] : parts[0]);
+const suffix = (pe) => (pe.NEON_PART === 2 ? ':2' : '');
+
+// Lignes regroupées par projet : [[env du projet, lignes], …] (projets sans ligne omis).
+function byPart(env, rows, idOf = (r) => r.id) {
+  const parts = neonParts(env);
+  const map = new Map();
+  for (const r of rows) {
+    const pe = partFor(parts, idOf(r));
+    if (!map.has(pe)) map.set(pe, []);
+    map.get(pe).push(r);
+  }
+  return [...map];
+}
+
+// Même requête sur chaque projet ; un projet qui ne répond pas est sauté (null si aucun ne répond).
+async function fromParts(env, run) {
+  const out = await Promise.all(neonParts(env).map((pe) => run(pe).catch((err) => {
+    console.log(`index de recherche (Neon ${pe.NEON_PART || 1})`, String(err).slice(0, 160));
+    return null;
+  })));
+  const ok = out.filter(Boolean);
+  return ok.length ? ok.flat() : null;
+}
+
+const schemaReady = new Map();
 function ensureSchema(env) {
-  schemaReady = schemaReady || (async () => { for (const q of SCHEMA) await neon(env, q); })()
-    .catch((err) => { schemaReady = null; throw err; });
-  return schemaReady;
+  const key = env.NEON_URL;
+  if (!schemaReady.has(key)) {
+    schemaReady.set(key, (async () => { for (const q of SCHEMA) await neon(env, q); await ensureRules(env); })()
+      .catch((err) => { schemaReady.delete(key); throw err; }));
+  }
+  return schemaReady.get(key);
+}
+
+// Règles de marque (synonyms.js) recopiées dans un projet quand elles changent. true si elles viennent de changer.
+const rulesVersion = (rules) => String(rules.map((r) => r.name + r.re).join('|').length) + ':' + rules.length;
+async function ensureRules(pe) {
+  const rules = brandRules();
+  const version = rulesVersion(rules);
+  if ((await kvGet(pe, `sidx:rules${suffix(pe)}`)) === version) return false;
+  await neon(pe, 'DELETE FROM brand_rules');
+  await neon(pe, 'INSERT INTO brand_rules (name, re) SELECT name, re FROM jsonb_to_recordset($1::jsonb) AS x(name TEXT, re TEXT)', [JSON.stringify(rules)]);
+  await kvSet(pe, `sidx:rules${suffix(pe)}`, version);
+  return true;
 }
 
 // Nom de chaque base du catalogue (pour sa position de copie).
@@ -53,7 +98,7 @@ const dbTag = (e, env) => (e.DB.isD1 ? 'd1' : env.DB2 && e.DB === env.DB2 ? 'db2
 // recommence (prix, popularité et nombre de QC mis à jour à chaque tour). Renvoie le nombre d'items copiés.
 export async function syncSearchIndex(env) {
   if (!env.NEON_URL) return 0;
-  await ensureSchema(env);
+  for (const pe of neonParts(env)) await ensureSchema(pe);
   let copied = 0;
   for (const e of perDb(env)) {
     const tag = dbTag(e, env);
@@ -97,7 +142,12 @@ async function copyRows(env, e, after) {
      FROM items WHERE rowid > ? ORDER BY rowid LIMIT ?`,
   ).bind(after, CHUNK).all();
   if (!results.length) return { n: 0, last: null };
-  await neon(env, `INSERT INTO items_search (id, title_en, title_zh, shop_name, shop_id, category, popularity, first_seen, price,
+  for (const [pe, rows] of byPart(env, results)) await upsertRows(pe, rows.map(({ rid, ...x }) => x));
+  return { n: results.length, last: results[results.length - 1].rid };
+}
+
+async function upsertRows(pe, rows) {
+  await neon(pe, `INSERT INTO items_search (id, title_en, title_zh, shop_name, shop_id, category, popularity, first_seen, price,
        hidden, posted, qc, prev_price, price_changed_at, brands)
      SELECT id, title_en, title_zh, shop_name, shop_id, category, coalesce(popularity, 0), first_seen, price_cny,
        coalesce(hidden, 0), coalesce(posted_count, 0), coalesce(qc_count, 0), prev_price, price_changed_at, ${TAGS}
@@ -108,8 +158,7 @@ async function copyRows(env, e, after) {
        shop_id = EXCLUDED.shop_id, category = EXCLUDED.category, popularity = EXCLUDED.popularity, first_seen = EXCLUDED.first_seen,
        price = EXCLUDED.price, hidden = EXCLUDED.hidden, posted = EXCLUDED.posted, qc = EXCLUDED.qc,
        prev_price = EXCLUDED.prev_price, price_changed_at = EXCLUDED.price_changed_at, brands = EXCLUDED.brands`,
-  [JSON.stringify(results.map(({ rid, ...x }) => x))]);
-  return { n: results.length, last: results[results.length - 1].rid };
+  [JSON.stringify(rows)]);
 }
 
 // L'index est utilisable quand chaque base du catalogue a été copiée en entier au moins une fois.
@@ -181,15 +230,20 @@ async function tagged(env) {
   return tagMemo.ok;
 }
 
+// Résultats des deux projets fusionnés dans l'ordre demandé.
+const byPopular = (a, b) => b.popularity - a.popularity || b.first_seen - a.first_seen;
+const MERGE = {
+  popular: byPopular,
+  recent: (a, b) => b.first_seen - a.first_seen,
+  price_asc: (a, b) => (a.price_cny ?? Infinity) - (b.price_cny ?? Infinity),
+  price_desc: (a, b) => (b.price_cny ?? -Infinity) - (a.price_cny ?? -Infinity),
+};
+const merged = (rows, limit, sort = 'popular') => (rows ? rows.map(num).sort(MERGE[sort]).slice(0, limit) : null);
+
 export async function indexSearch(env, params, money) {
   const w = neonWhere({ ...params, tagged: await tagged(env) }, money);
-  try {
-    const rows = await neon(env, `SELECT ${COLS} FROM items_search ${w.sql} ORDER BY popularity DESC, first_seen DESC LIMIT 5000`, w.binds);
-    return rows.map(num);
-  } catch (err) {
-    console.log('index de recherche', String(err).slice(0, 160));
-    return null;
-  }
+  const rows = await fromParts(env, (pe) => neon(pe, `SELECT ${COLS} FROM items_search ${w.sql} ORDER BY popularity DESC, first_seen DESC LIMIT 5000`, w.binds));
+  return merged(rows, 5000);
 }
 
 // Fautes de frappe (« suprem hodie ») : items dont le texte contient un mot proche de chacun des mots cherchés
@@ -199,14 +253,9 @@ export async function fuzzySearch(env, words, params, money) {
   if (!list.length) return [];
   const w = neonWhere({ ...params, groups: [] }, money);
   const conds = list.map((x) => { w.binds.push(x); return `$${w.binds.length} <% ${TXT}`; });
-  try {
-    const rows = await neon(env,
-      `SELECT ${COLS} FROM items_search ${w.sql} AND ${conds.join(' AND ')} ORDER BY popularity DESC, first_seen DESC LIMIT 200`, w.binds);
-    return rows.map(num);
-  } catch (err) {
-    console.log('recherche approchante', String(err).slice(0, 160));
-    return [];
-  }
+  const rows = await fromParts(env, (pe) => neon(pe,
+    `SELECT ${COLS} FROM items_search ${w.sql} AND ${conds.join(' AND ')} ORDER BY popularity DESC, first_seen DESC LIMIT 200`, w.binds));
+  return merged(rows, 200) || [];
 }
 
 // Toutes les 3 min : la marque des items populaires dont le titre ne cite aucune marque, lue sur leur photo (modèle de
@@ -215,9 +264,10 @@ export async function fuzzySearch(env, words, params, money) {
 const SCAN_PER_RUN = 6;
 export async function scanBrands(env) {
   if (!env.NEON_URL || env.BRAND_SCAN === '0') return 0;
-  await ensureSchema(env);
-  const rows = await neon(env, `SELECT id, title_en, title_zh, shop_name FROM items_search
-    WHERE brand_checked IS NULL AND hidden = 0 AND popularity >= 20 ORDER BY popularity DESC LIMIT 60`);
+  for (const pe of neonParts(env)) await ensureSchema(pe);
+  const rows = ((await fromParts(env, (pe) => neon(pe, `SELECT id, title_en, title_zh, shop_name, popularity FROM items_search
+    WHERE brand_checked IS NULL AND hidden = 0 AND popularity >= 20 ORDER BY popularity DESC LIMIT 60`))) || [])
+    .sort((a, b) => Number(b.popularity) - Number(a.popularity)).slice(0, 60);
   if (!rows.length) return 0;
   // Titre qui cite déjà une marque (nom, modèle ou nom codé) : rien à lire.
   const named = rows.filter((r) => mentionsBrand(`${r.title_en || ''} ${r.title_zh || ''} ${r.shop_name || ''}`)).map((r) => r.id);
@@ -236,9 +286,9 @@ export async function scanBrands(env) {
     found.push({ id: r.id, brand });
   }
   const marks = [...named.map((id) => ({ id, brand: null })), ...found];
-  if (marks.length) {
-    await neon(env, `UPDATE items_search s SET brand = coalesce(nullif(x.brand, ''), s.brand), brand_checked = $2
-      FROM jsonb_to_recordset($1::jsonb) AS x(id TEXT, brand TEXT) WHERE s.id = x.id`, [JSON.stringify(marks), Date.now()]);
+  for (const [pe, part] of byPart(env, marks)) {
+    await neon(pe, `UPDATE items_search s SET brand = coalesce(nullif(x.brand, ''), s.brand), brand_checked = $2
+      FROM jsonb_to_recordset($1::jsonb) AS x(id TEXT, brand TEXT) WHERE s.id = x.id`, [JSON.stringify(part), Date.now()]);
   }
   return found.length;
 }
@@ -254,19 +304,16 @@ const LIST_ORDER = {
 export async function indexList(env, params, money) {
   const w = neonWhere({ ...params, tagged: await tagged(env) }, money);
   const sort = params.sort && LIST_ORDER[params.sort] ? params.sort : params.latest ? 'recent' : 'popular';
-  try {
-    return (await neon(env, `SELECT ${COLS} FROM items_search ${w.sql} ORDER BY ${LIST_ORDER[sort]} LIMIT 1000`, w.binds)).map(num);
-  } catch (err) {
-    console.log('index de recherche (liste)', String(err).slice(0, 160));
-    return null;
-  }
+  const rows = await fromParts(env, (pe) => neon(pe, `SELECT ${COLS} FROM items_search ${w.sql} ORDER BY ${LIST_ORDER[sort]} LIMIT 1000`, w.binds));
+  return merged(rows, 1000, sort);
 }
 
 // Fiches d'items tirées de l'index (quand les bases sont illisibles) : mêmes champs que la table items, sans photo.
 export async function indexItems(env, ids) {
   if (!ids.length) return [];
-  const rows = await neon(env, `SELECT id, title_en, title_zh, shop_name, shop_id, category, popularity, first_seen, price, posted, qc, prev_price, price_changed_at
-    FROM items_search WHERE hidden = 0 AND id IN (SELECT jsonb_array_elements_text($1::jsonb))`, [JSON.stringify(ids.slice(0, 500))]);
+  const rows = (await Promise.all(byPart(env, ids.slice(0, 500), (id) => id).map(([pe, part]) => neon(pe,
+    `SELECT id, title_en, title_zh, shop_name, shop_id, category, popularity, first_seen, price, posted, qc, prev_price, price_changed_at
+    FROM items_search WHERE hidden = 0 AND id IN (SELECT jsonb_array_elements_text($1::jsonb))`, [JSON.stringify(part)])))).flat();
   return rows.map((r) => {
     const [platform, itemId] = r.id.split(':');
     return { id: r.id, platform, item_id: itemId, url: canonicalUrl(platform, itemId), title_en: r.title_en, title_zh: r.title_zh,
@@ -284,32 +331,56 @@ export async function indexUpsert(env, list) {
     popularity: Math.max(0, Number(x.oneYear) || 0), first_seen: Date.now(), price: x.cnPrice != null ? Number(x.cnPrice) : null, qc: Number(x.qcPhotosCount) || 0 }))
     .filter((r) => /^(weidian|taobao|1688):\d+$/.test(r.id));
   if (!rows.length) return 0;
-  await neon(env, `INSERT INTO items_search (id, title_en, title_zh, category, popularity, first_seen, price, qc, brands)
-    SELECT id, title_en, title_zh, category, popularity, first_seen, price, qc, ${TAGS} FROM jsonb_to_recordset($1::jsonb)
-      AS x(id TEXT, title_en TEXT, title_zh TEXT, shop_name TEXT, category TEXT, popularity INTEGER, first_seen BIGINT, price REAL, qc INTEGER)
-    ON CONFLICT (id) DO NOTHING`, [JSON.stringify(rows)]);
+  for (const [pe, part] of byPart(env, rows)) {
+    await ensureSchema(pe);
+    await neon(pe, `INSERT INTO items_search (id, title_en, title_zh, category, popularity, first_seen, price, qc, brands)
+      SELECT id, title_en, title_zh, category, popularity, first_seen, price, qc, ${TAGS} FROM jsonb_to_recordset($1::jsonb)
+        AS x(id TEXT, title_en TEXT, title_zh TEXT, shop_name TEXT, category TEXT, popularity INTEGER, first_seen BIGINT, price REAL, qc INTEGER)
+      ON CONFLICT (id) DO NOTHING`, [JSON.stringify(part)]);
+  }
   return rows.length;
 }
 
 // Règles de marque (synonyms.js) recopiées dans Neon quand elles changent, puis étiquettes des items sans étiquette
 // (par paquets : après un changement de règles, toutes les étiquettes sont recalculées). Renvoie { rules, tagged, left }.
 export async function syncBrandTags(env, batch = 4000) {
-  await ensureSchema(env);
-  const rules = brandRules();
-  const version = String(rules.map((r) => r.name + r.re).join('|').length) + ':' + rules.length;
-  if ((await kvGet(env, 'sidx:rules')) !== version) {
-    await neon(env, 'DELETE FROM brand_rules');
-    await neon(env, 'INSERT INTO brand_rules (name, re) SELECT name, re FROM jsonb_to_recordset($1::jsonb) AS x(name TEXT, re TEXT)', [JSON.stringify(rules)]);
-    await neon(env, 'UPDATE items_search SET brands = NULL WHERE brands IS NOT NULL');
-    await kvSet(env, 'sidx:rules', version);
-    await kvSet(env, 'sidx:tagged', '0');
+  let left = 0;
+  for (const pe of neonParts(env)) {
+    await ensureSchema(pe);
+    if (await ensureRules(pe)) {
+      await neon(pe, 'UPDATE items_search SET brands = NULL WHERE brands IS NOT NULL');
+      await kvSet(env, 'sidx:tagged', '0');
+    }
+    await neon(Object.assign(Object.create(pe), { NEON_TIMEOUT: 25000 }), `UPDATE items_search x SET brands = ${TAGS}
+      WHERE x.id IN (SELECT id FROM items_search WHERE brands IS NULL LIMIT ${Number(batch) || 4000})`);
+    const [r] = await neon(pe, 'SELECT count(*) FILTER (WHERE brands IS NULL) AS left FROM items_search');
+    left += Number(r.left);
   }
-  await neon(Object.assign(Object.create(env), { NEON_TIMEOUT: 25000 }), `UPDATE items_search x SET brands = ${TAGS}
-    WHERE x.id IN (SELECT id FROM items_search WHERE brands IS NULL LIMIT ${Number(batch) || 4000})`);
-  const [r] = await neon(env, 'SELECT count(*) FILTER (WHERE brands IS NULL) AS left FROM items_search');
-  const left = Number(r.left);
   if (!left) await kvSet(env, 'sidx:tagged', '1');
-  return { rules: rules.length, left };
+  return { rules: brandRules().length, left };
+}
+
+// Passage à deux projets : les items Weidian du 1er projet déplacés dans le 2e (marque lue sur la photo comprise), par
+// paquets. Renvoie { moved, left }.
+export async function moveToSecondPart(env, batch = 4000) {
+  const parts = neonParts(env);
+  if (parts.length < 2) return { moved: 0, left: 0, error: 'NEON_URL_2 manquant' };
+  const [one, two] = parts;
+  await ensureSchema(two);
+  const rows = await neon(Object.assign(Object.create(one), { NEON_TIMEOUT: 25000 }),
+    `SELECT id, title_en, title_zh, shop_name, shop_id, category, popularity, first_seen, price AS price_cny, hidden, posted AS posted_count,
+       qc AS qc_count, prev_price, price_changed_at, brand, brand_checked FROM items_search WHERE id LIKE 'weidian:%' LIMIT ${Number(batch) || 4000}`);
+  if (rows.length) {
+    await upsertRows(Object.assign(Object.create(two), { NEON_TIMEOUT: 25000 }), rows.map(({ brand, brand_checked, ...x }) => x));
+    const marks = rows.filter((r) => r.brand || r.brand_checked).map((r) => ({ id: r.id, brand: r.brand, at: r.brand_checked }));
+    if (marks.length) {
+      await neon(two, `UPDATE items_search s SET brand = x.brand, brand_checked = x.at
+        FROM jsonb_to_recordset($1::jsonb) AS x(id TEXT, brand TEXT, at BIGINT) WHERE s.id = x.id`, [JSON.stringify(marks)]);
+    }
+    await neon(one, 'DELETE FROM items_search WHERE id IN (SELECT jsonb_array_elements_text($1::jsonb))', [JSON.stringify(rows.map((r) => r.id))]);
+  }
+  const [r] = await neon(one, "SELECT count(*) AS n FROM items_search WHERE id LIKE 'weidian:%'");
+  return { moved: rows.length, left: Number(r.n) };
 }
 
 export async function tagsReady(env) {

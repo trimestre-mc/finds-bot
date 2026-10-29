@@ -56,9 +56,13 @@ export async function checkHealth(env) {
 
   // Neon : place de l'index de recherche (0,5 Go par projet).
   if (env.NEON_URL) {
-    const [r] = await neon(env, 'SELECT pg_database_size(current_database()) AS b').catch(() => [null]);
-    const used = r ? Number(r.b) : 0;
-    if (pct(used, 512 * 1024 * 1024) >= 85) found.push(['neon', 'Neon presque plein', `${Math.round(used / 1048576)} Mo sur 512 Mo. Il faut ajouter un 2e projet Neon pour l'index de recherche.`]);
+    const { neonParts } = await import('./searchindex.js');
+    for (const pe of neonParts(env)) {
+      const n = pe.NEON_PART || 1;
+      const [r] = await neon(pe, 'SELECT pg_database_size(current_database()) AS b').catch(() => [null]);
+      const used = r ? Number(r.b) : 0;
+      if (pct(used, 512 * 1024 * 1024) >= 85) found.push([`neon-${n}`, `Neon ${n} presque plein`, `${Math.round(used / 1048576)} Mo sur 512 Mo dans le projet Neon ${n} (index de recherche). Il faut un projet Neon de plus.`]);
+    }
   }
 
   // Turso : écritures et lectures du mois, pour chaque base Turso.

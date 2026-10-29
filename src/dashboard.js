@@ -3,6 +3,7 @@
 // (réservé au propriétaire) : aucune donnée sans le lien.
 
 import { neon, kvGet, kvMany, readActivity, hasRedis } from './kvstore.js';
+import { neonParts } from './searchindex.js';
 import { CAPS } from './budget.js';
 import { discordApi } from './discord.js';
 
@@ -33,9 +34,13 @@ async function slowParts(env) {
   if (slow && Date.now() - slow.at < 60000) return slow.data;
   const [guilds, index, channels] = await Promise.all([
     discordApi(env, 'GET', '/users/@me/guilds').then((g) => g.length).catch(() => null),
-    env.NEON_URL ? neon(env, `SELECT count(*) AS items, count(*) FILTER (WHERE popularity > 0) AS sold,
+    env.NEON_URL ? Promise.all(neonParts(env).map((pe) => neon(pe, `SELECT count(*) AS items, count(*) FILTER (WHERE popularity > 0) AS sold,
         count(brand) AS brands, count(brand_checked) AS checked, count(*) FILTER (WHERE popularity >= 20) AS popular,
-        pg_database_size(current_database()) AS bytes FROM items_search`).then((r) => r[0]).catch(() => null) : null,
+        pg_database_size(current_database()) AS bytes FROM items_search`).then((r) => r[0])))
+      // Deux projets Neon : totaux, et place du projet le plus rempli (chaque projet a sa limite de 0,5 Go).
+      .then((rows) => ({ ...Object.fromEntries(['items', 'sold', 'brands', 'checked', 'popular'].map((k) => [k, rows.reduce((t, x) => t + Number(x[k]), 0)])),
+        bytes: Math.max(...rows.map((x) => Number(x.bytes))), parts: rows.map((x) => Number(x.bytes)) }))
+      .catch(() => null) : null,
     Promise.all(['convert_channels', 'image_channels', 'aiqc_channels'].map((t) => env.DB.prepare(`SELECT COUNT(*) AS n FROM ${t}`).first()
       .then((r) => (r ? r.n : 0)).catch(() => 0))),
   ]);

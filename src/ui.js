@@ -41,9 +41,13 @@ export async function bigCounts(env) {
   const { searchIndexReady } = await import('./searchindex.js');
   if (await searchIndexReady(env).catch(() => false)) {
     const { neon } = await import('./kvstore.js');
-    const [r] = await neon(env, `SELECT count(*) AS items, count(*) FILTER (WHERE hidden = 0) AS visible,
+    const { neonParts } = await import('./searchindex.js');
+    const parts = await Promise.all(neonParts(env).map((pe) => neon(pe, `SELECT count(*) AS items, count(*) FILTER (WHERE hidden = 0) AS visible,
         count(*) FILTER (WHERE title_en IS NULL) AS untranslated,
-        count(*) FILTER (WHERE hidden = 0 AND prev_price > price AND price_changed_at > $1) AS drops FROM items_search`, [Date.now() - 14 * 86400000]).catch(() => [null]);
+        count(*) FILTER (WHERE hidden = 0 AND prev_price > price AND price_changed_at > $1) AS drops FROM items_search`, [Date.now() - 14 * 86400000])
+      .then((x) => x[0]).catch(() => null)));
+    // Totaux des deux projets Neon (aucun si l'un ne répond pas : comptage partiel trompeur).
+    const r = parts.every(Boolean) ? Object.fromEntries(['items', 'visible', 'untranslated', 'drops'].map((k) => [k, parts.reduce((t, x) => t + Number(x[k]), 0)])) : null;
     // Sans photo : seulement connu des bases (gardé du dernier comptage).
     if (r) c = { at: Date.now(), items: Number(r.items), visible: Number(r.visible), noPhoto: kept ? kept.noPhoto : 0, untranslated: Number(r.untranslated), drops: Number(r.drops) };
   }

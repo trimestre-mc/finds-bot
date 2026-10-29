@@ -838,7 +838,9 @@ async function handleApi(request, env, url) {
     const q = url.searchParams.get('q') || '';
     if (!/^\s*select\b/i.test(q) || /;/.test(q)) return json({ ok: false, error: 'SELECT seulement' });
     const { neon } = await import('./kvstore.js');
-    return json(await neon(env, q).then((rows) => ({ ok: true, rows })).catch((e) => ({ ok: false, error: String(e).slice(0, 300) })));
+    const { neonParts } = await import('./searchindex.js');
+    const pe = neonParts(env)[url.searchParams.get('part') === '2' ? 1 : 0] || env;
+    return json(await neon(pe, q).then((rows) => ({ ok: true, rows })).catch((e) => ({ ok: false, error: String(e).slice(0, 300) })));
   }
   // Lien du dashboard (comme /dashboard, pour le propriétaire depuis un terminal).
   if (path === '/api/dashboard-link' && request.method === 'GET') {
@@ -859,6 +861,15 @@ async function handleApi(request, env, url) {
     const { kvSet } = await import('./kvstore.js');
     return json({ ok: await kvSet(env, `sidx:tail:${tag}`, Number(rowid) || 0) });
   }
+  // Passage à deux projets Neon : un paquet d'items Weidian déplacé du 1er au 2e (à relancer jusqu'à left = 0).
+  if (path === '/api/searchindex/move' && request.method === 'POST') {
+    const { moveToSecondPart } = await import('./searchindex.js');
+    try {
+      return json({ ok: true, ...await moveToSecondPart(env, Math.min(Number(url.searchParams.get('batch')) || 4000, 8000)) });
+    } catch (err) {
+      return json({ ok: false, error: String(err.message || err).slice(0, 300) });
+    }
+  }
   // Étiquettes de marque dans l'index : règles à jour et un paquet d'items étiquetés (à relancer jusqu'à left = 0).
   if (path === '/api/searchindex/tags' && request.method === 'POST') {
     const { syncBrandTags } = await import('./searchindex.js');
@@ -871,8 +882,10 @@ async function handleApi(request, env, url) {
   if (path === '/api/searchindex' && request.method === 'GET') {
     const { neon, kvGet } = await import('./kvstore.js');
     const { searchIndexReady } = await import('./searchindex.js');
-    const [rows] = await neon(env, "SELECT COUNT(*) AS n, pg_size_pretty(pg_total_relation_size('items_search')) AS size, pg_size_pretty(pg_database_size(current_database())) AS db FROM items_search")
-      .catch((err) => [{ error: String(err).slice(0, 200) }]);
+    const { neonParts } = await import('./searchindex.js');
+    const parts = await Promise.all(neonParts(env).map((pe) => neon(pe, "SELECT COUNT(*) AS n, pg_size_pretty(pg_total_relation_size('items_search')) AS size, pg_size_pretty(pg_database_size(current_database())) AS db FROM items_search")
+      .then((r) => r[0]).catch((err) => ({ error: String(err).slice(0, 200) }))));
+    const rows = { n: parts.reduce((t, x) => t + (Number(x.n) || 0), 0), size: parts.map((x) => x.size).join(' + '), db: parts.map((x) => x.db).join(' + '), parts };
     const tags = ['d1', 'db1', 'db2'];
     const state = Object.fromEntries(await Promise.all(tags.map(async (t) => [t, { cursor: await kvGet(env, `sidx:cursor:${t}`), done: await kvGet(env, `sidx:done:${t}`) }])));
     return json({ ok: true, ...rows, ready: await searchIndexReady(env), state });
@@ -885,7 +898,10 @@ async function handleApi(request, env, url) {
     const redisOk = (await kvSet(env, 'check', t, 60)) && (await kvGet(env, 'check')) === t;
     await cacheSet(env, 'check', t);
     const row = await cacheGet(env, 'check');
-    return json({ ok: true, upstash: redisOk, neon: !!(env.NEON_URL && row && row.ids === t), gatewayAlive: await kvGet(env, 'gateway:alive') });
+    // 2e projet Neon : jamais l'adresse elle-même, seulement si elle diffère de la 1re.
+    const host = (u) => { try { return new URL(String(u).replace(/^postgres(ql)?:/, 'https:')).hostname; } catch { return null; } };
+    const neon2 = env.NEON_URL_2 ? { set: true, sameUrl: env.NEON_URL_2 === env.NEON_URL, sameHost: host(env.NEON_URL_2) === host(env.NEON_URL), parsed: !!host(env.NEON_URL_2) } : { set: false };
+    return json({ ok: true, upstash: redisOk, neon: !!(env.NEON_URL && row && row.ids === t), neon2, gatewayAlive: await kvGet(env, 'gateway:alive') });
   }
 
   // Diagnostic : modèles disponibles chez Groq (les noms changent avec le temps).
