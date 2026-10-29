@@ -46,8 +46,14 @@ export function groupByDb(env, keys) {
 }
 
 // Même requête sur chaque base, résultats mis bout à bout.
+// Une base aux lectures bloquées (quota Turso du mois) est sautée : les autres répondent quand même.
 export async function allRows(env, sql, ...binds) {
-  const parts = await Promise.all(itemDbs(env).map((db) => db.prepare(sql).bind(...binds).all()));
+  const dbs = itemDbs(env);
+  const parts = await Promise.all(dbs.map((db) => db.prepare(sql).bind(...binds).all().catch((err) => {
+    if (dbs.length < 2 || !/reads are blocked|forbidden/i.test(String(err))) throw err;
+    console.log('base sautée (lectures bloquées)', String(err).slice(0, 80));
+    return { results: [] };
+  })));
   return parts.flatMap((p) => p.results);
 }
 

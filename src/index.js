@@ -954,11 +954,26 @@ async function handleApi(request, env, url) {
     }
   }
 
+  // Diagnostic : /find complet (comme dans Discord), erreur et pile renvoyées.
+  if (path === '/api/find-preview' && request.method === 'GET') {
+    const { findView } = await import('./views.js');
+    const q = url.searchParams.get('q') || '';
+    const max = url.searchParams.get('max') ? Number(url.searchParams.get('max')) : null;
+    try {
+      const sid = await createSearch(env, { guild_id: '0', channel_id: '0', member: { user: { id: '0' } } }, { q, groups: expandQuery(q), variants: [], category: null, autoCategory: null, max, includePosted: !url.searchParams.get('menu'), sort: 'popular', public: true });
+      const view = url.searchParams.get('menu') ? await resultsView(env, sid, 0) : await findView(env, sid, 0);
+      return json({ ok: true, text: JSON.stringify(view).slice(0, 600), size: JSON.stringify(view).length });
+    } catch (err) {
+      return json({ ok: false, error: String(err.message || err), stack: String(err.stack || '').slice(0, 1200) });
+    }
+  }
+
   // Diagnostic : résultats d'une recherche (nombre et 10 premiers titres), comme dans /find.
   if (path === '/api/search-preview' && request.method === 'GET') {
     const q = url.searchParams.get('q') || '';
     const groups = expandQuery(q);
-    const ids = await allResultIds(env, { q, groups, variants: [], includePosted: true, sort: 'popular' }, { rate: 1 });
+    const num = (k) => (url.searchParams.get(k) ? Number(url.searchParams.get(k)) : null);
+    const ids = await allResultIds(env, { q, groups, variants: [], includePosted: url.searchParams.get('posted') !== '0', sort: 'popular', min: num('min'), max: num('max') }, { rate: num('rate') || 1 });
     const top = await itemsByIds(env, ids.slice(0, 10));
     return json({ q, groups, count: ids.length, top: top.map((i) => `${i.title_en || i.title_zh} · ${i.category || '?'} · 🔥${i.popularity}`) });
   }

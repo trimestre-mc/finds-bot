@@ -326,7 +326,8 @@ export async function idsToPost(env, sid, params, money) {
   const keep = new Set();
   for (let i = 0; i < ids.length; i += 90) {
     const chunk = ids.slice(i, i + 90);
-    const results = await itemsWhereIds(env, chunk, 'id', 'posted_count = 0 AND hidden = 0');
+    // Base illisible : on garde la tranche telle quelle (l'index Neon a déjà retiré les items postés).
+    const results = await itemsWhereIds(env, chunk, 'id', 'posted_count = 0 AND hidden = 0').catch(() => chunk.map((id) => ({ id })));
     results.forEach((r) => keep.add(r.id));
   }
   return ids.filter((id) => keep.has(id));
