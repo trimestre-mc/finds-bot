@@ -9,10 +9,12 @@ import { dayAdd, dayGet } from './kvstore.js';
 // Valeurs pour D1 gratuit ; plus grandes avec Turso (variables BUDGET_ITEMS, BUDGET_PAGES, BUDGET_CATEGORIZE, BUDGET_QCSYNC).
 // Total ≈ 46 000 lignes/jour (ROWS) : la moitié du quota gratuit de D1 (100 000), l'autre moitié reste au bot
 // (réglages, caches, posts, analyses). Le 28/10/2026 les anciennes valeurs (≈ 104 000) ont vidé le quota.
-export const CAPS = { items: 2500, pages: 1500, categorize: 4000, qcsync: 1000 };
+export const CAPS = { items: 3200, pages: 1500, categorize: 4000, qcsync: 300 }; // boutiques entières avant la synchro FinderQC Weidian
 const ROWS = { items: 8, pages: 4, categorize: 3, qcsync: 8 };
 // Part de la journée pour chaque type de travail (le reste non utilisé passe au lendemain).
-const SHARE = { items: 0.4, qcsync: 0.3, pages: 0.2, categorize: 0.1 };
+// Base Weidian : la plus grosse part aux boutiques entières (nouveaux liens), peu à la synchro FinderQC Weidian (surtout
+// des mises à jour d'items déjà connus).
+const SHARE = { items: 0.65, qcsync: 0.05, pages: 0.2, categorize: 0.1 };
 // 2e base du catalogue (Taobao et 1688, voir shard.js) : pas de boutiques ni de pages Weidian, presque tout pour
 // la synchro du catalogue FinderQC.
 const SHARE_DB2 = { items: 0.05, qcsync: 0.85, pages: 0, categorize: 0.1 };

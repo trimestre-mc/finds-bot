@@ -25,7 +25,7 @@ test('budget lissé : la part du jour est répartie entre les tâches, le début
   const env = { DB, TURSO_URL: 'x', BUDGET_ITEMS: '1000000', BUDGET_PAGES: '1000000', BUDGET_MONTH_ROWS: '9000000' };
   DB.raw.prepare("INSERT INTO settings VALUES ('budget:month', ?)").run(JSON.stringify({ month: new Date().toISOString().slice(0, 7), rows: 1000, day: '2000-01-01' }));
   const b = await budget(env, 'items');
-  const expected = Math.floor(dailyRows(9000000, 1000) * 0.4 / 8);
+  const expected = Math.floor(dailyRows(9000000, 1000) * 0.65 / 8);
   assert.equal(b.left, expected);
   await b.use(100);
   const m = JSON.parse(DB.raw.prepare("SELECT value FROM settings WHERE key = 'budget:month'").get().value);
