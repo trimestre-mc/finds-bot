@@ -1102,6 +1102,14 @@ async function handleApi(request, env, url) {
     return json({ ok: true, sent: await runPubQueue(env) });
   }
 
+  // Où en est la synchro du catalogue FinderQC (plateforme, tranche de prix, page) pour chaque parcours.
+  if (path === '/api/qcsync/state' && request.method === 'GET') {
+    const { kvMany } = await import('./kvstore.js');
+    const kv = await kvMany(env, ['qcsync:state', 'qcsync:2:state', 'fqc:busy']);
+    const parse = (v) => { try { return JSON.parse(v); } catch { return null; } };
+    return json({ ok: true, weidian: parse(kv['qcsync:state']), taobao1688: parse(kv['qcsync:2:state']), finderPausedUntil: Number(kv['fqc:busy']) || null });
+  }
+
   // Synchro du catalogue FinderQC d'un parcours, dans une exécution à part (lancée chaque minute par le cron).
   if (path === '/api/qcsync' && request.method === 'POST') {
     const lane = SYNC_LANES[url.searchParams.get('lane')] || SYNC_LANES.others;
