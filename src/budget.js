@@ -49,7 +49,12 @@ const readsCap = (env) => (turso(env) && Number(env.READS_MONTH_CAP)) || 0;
 
 export async function readsOver(env) {
   if (!readsCap(env)) return false;
-  const row = await env.DB.prepare("SELECT value FROM settings WHERE key = 'reads:month'").first();
+  // Lectures bloquées par Turso (quota du mois dépassé) : la base est au plafond, ses tâches de fond sont sautées.
+  const row = await env.DB.prepare("SELECT value FROM settings WHERE key = 'reads:month'").first().catch((err) => {
+    if (/reads are blocked|forbidden/i.test(String(err))) return { blocked: true };
+    throw err;
+  });
+  if (row && row.blocked) return true;
   return readsOverValue(env, row && row.value);
 }
 

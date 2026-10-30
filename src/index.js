@@ -708,7 +708,8 @@ async function claimRange(env, key, table, size) {
 async function shardEnv(env, shard, kind) {
   const envs = perDb(env);
   const first = shard.i % envs.length;
-  for (const e of [envs[first], ...envs.filter((_, j) => j !== first)]) if ((await budget(e, kind)).left) return e;
+  // Base aux lectures bloquées (quota Turso du mois) : sautée, le job prend l'autre base.
+  for (const e of [envs[first], ...envs.filter((_, j) => j !== first)]) if (!(await readsOver(e)) && (await budget(e, kind)).left) return e;
   return null;
 }
 
@@ -1278,7 +1279,7 @@ async function handleApi(request, env, url) {
       shops: items.left ? await dueShops(env, 10, sh) : [],
       // Photos : le curseur fait le tour de la table en continu, il y a toujours une tranche à vérifier.
       missingImages: pages.left ? 1 : 0,
-      linkQueue: pages.left && (await Promise.all(itemDbs(env).map((db) => db.prepare('SELECT 1 FROM link_queue LIMIT 1').first()))).some(Boolean) ? 1 : 0,
+      linkQueue: pages.left && (await Promise.all(itemDbs(env).map((db) => db.prepare('SELECT 1 FROM link_queue LIMIT 1').first().catch(() => null)))).some(Boolean) ? 1 : 0,
       jadeship: sh.i === 0 && await jadeshipDue(env),
     });
   }
