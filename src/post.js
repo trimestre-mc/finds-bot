@@ -52,12 +52,20 @@ const memoKey = (env) => {
 };
 export function forgetPostContext() { bumpConfig(); }
 
+const ctxLoading = new WeakMap();
+
 export async function postContext(env) {
   const m = ctxMemo.get(memoKey(env));
   if (m && m.epoch === configVersion && Date.now() - m.at < 20000) return { ...m.ctx, forumTags: new Map() };
-  const ctx = await loadPostContext(env);
-  if (!ctx.fallback) ctxMemo.set(memoKey(env), { at: Date.now(), epoch: configVersion, ctx });
-  return ctx;
+  // Un seul chargement à la fois (/find le lance pendant la création de la recherche, la vue le réutilise).
+  const key = memoKey(env);
+  if (!ctxLoading.has(key)) {
+    ctxLoading.set(key, loadPostContext(env).then((ctx) => {
+      if (!ctx.fallback) ctxMemo.set(key, { at: Date.now(), epoch: configVersion, ctx });
+      return ctx;
+    }).finally(() => ctxLoading.delete(key)));
+  }
+  return ctxLoading.get(key);
 }
 
 async function loadPostContext(env) {

@@ -66,18 +66,24 @@ export async function neon(env, query, params = []) {
   return (await res.json()).rows || [];
 }
 
-async function neonReady(env) {
-  if (!env.NEON_URL) return false;
-  ready = ready || neon(env, 'CREATE TABLE IF NOT EXISTS cache (key TEXT PRIMARY KEY, ids TEXT NOT NULL, at BIGINT NOT NULL)')
-    .then(() => true).catch((err) => { console.log('neon', String(err).slice(0, 160)); ready = null; return false; });
-  return ready;
+// Table du cache créée seulement si elle manque (pas de CREATE à chaque démarrage du Worker : ~170 ms par recherche).
+const neonReady = (env) => !!env.NEON_URL;
+
+async function cacheQuery(env, query, params) {
+  try {
+    return await neon(env, query, params);
+  } catch (err) {
+    if (!/relation "cache" does not exist/i.test(String(err))) throw err;
+    await neon(env, 'CREATE TABLE IF NOT EXISTS cache (key TEXT PRIMARY KEY, ids TEXT NOT NULL, at BIGINT NOT NULL)');
+    return neon(env, query, params);
+  }
 }
 
 // { ids, at } ou null.
 export async function cacheGet(env, key) {
-  if (await neonReady(env)) {
+  if (neonReady(env)) {
     try {
-      const rows = await neon(env, 'SELECT ids, at FROM cache WHERE key = $1', [key]);
+      const rows = await cacheQuery(env, 'SELECT ids, at FROM cache WHERE key = $1', [key]);
       return rows[0] ? { ids: rows[0].ids, at: Number(rows[0].at) } : null;
     } catch (err) { console.log('neon', String(err).slice(0, 160)); }
   }
@@ -85,9 +91,9 @@ export async function cacheGet(env, key) {
 }
 
 export async function cacheSet(env, key, ids) {
-  if (await neonReady(env)) {
+  if (neonReady(env)) {
     try {
-      await neon(env, 'INSERT INTO cache (key, ids, at) VALUES ($1, $2, $3) ON CONFLICT (key) DO UPDATE SET ids = EXCLUDED.ids, at = EXCLUDED.at',
+      await cacheQuery(env, 'INSERT INTO cache (key, ids, at) VALUES ($1, $2, $3) ON CONFLICT (key) DO UPDATE SET ids = EXCLUDED.ids, at = EXCLUDED.at',
         [key, ids, Date.now()]);
       return;
     } catch (err) { console.log('neon', String(err).slice(0, 160)); }
@@ -97,10 +103,10 @@ export async function cacheSet(env, key, ids) {
 
 // Vide le cache (tout, ou les entrées plus vieilles que olderMs, hors analyses IA gardées 30 jours).
 export async function cacheClear(env, olderMs = 0) {
-  if (await neonReady(env)) {
+  if (neonReady(env)) {
     await (olderMs
-      ? neon(env, "DELETE FROM cache WHERE at < $1 AND key NOT LIKE 'aiqc:%'", [Date.now() - olderMs])
-      : neon(env, "DELETE FROM cache WHERE key NOT LIKE 'aiqc:%'")).catch((err) => console.log('neon', String(err).slice(0, 160)));
+      ? cacheQuery(env, "DELETE FROM cache WHERE at < $1 AND key NOT LIKE 'aiqc:%'", [Date.now() - olderMs])
+      : cacheQuery(env, "DELETE FROM cache WHERE key NOT LIKE 'aiqc:%'")).catch((err) => console.log('neon', String(err).slice(0, 160)));
   }
   await (olderMs
     ? env.DB.prepare('DELETE FROM search_cache WHERE at < ?').bind(Date.now() - olderMs)

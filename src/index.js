@@ -364,11 +364,11 @@ async function onComponent(it, env, ctx) {
     case 'search:new': return openModal(searchModal());
     case 'search:trending': {
       const sid = await createSearch(env, it, { q: '', variants: [], trending: true, includePosted: false });
-      return update(await resultsView(env, sid, 0));
+      return update(await resultsView(env, sid, 0, undefined, it));
     }
     case 'search:latest': {
       const sid = await createSearch(env, it, { q: '', variants: [], latest: true, includePosted: false });
-      return update(await resultsView(env, sid, 0));
+      return update(await resultsView(env, sid, 0, undefined, it));
     }
 
     case 'cat:list': return update(await catalogsView(env, Number(c) || 0));
@@ -377,7 +377,7 @@ async function onComponent(it, env, ctx) {
     case 'cat:items': {
       const shop = await env.DB.prepare('SELECT name FROM shops WHERE id = ?').bind(c).first();
       const sid = await createSearch(env, it, { q: '', variants: [], shop: c, shopName: shop ? shop.name : c, includePosted: true });
-      return update(await resultsView(env, sid, 0));
+      return update(await resultsView(env, sid, 0, undefined, it));
     }
     case 'cat:reidx': {
       await env.DB.prepare("UPDATE shops SET status = 'pending', last_error = NULL WHERE id = ?").bind(c).run();
@@ -475,7 +475,7 @@ async function onComponent(it, env, ctx) {
       return update(await accessView(env, it, b === 'add' ? `✅ Accès donné à ${who}.` : `➖ Accès retiré à ${who}.`));
     }
 
-    case 's:pg': return update(await resultsView(env, c, Number(d) || 0));
+    case 's:pg': return update(await resultsView(env, c, Number(d) || 0, undefined, it));
     case 's:edit': {
       const s = await loadSearch(env, c);
       return openModal(searchModal(s ? s.params : {}, c));
@@ -486,7 +486,7 @@ async function onComponent(it, env, ctx) {
         s.params.includePosted = !s.params.includePosted;
         await updateSearch(env, c, { params: withoutCache(s.params) });
       }
-      return update(await resultsView(env, c, 0));
+      return update(await resultsView(env, c, 0, undefined, it));
     }
     case 's:ch': {
       const channel = values[0];
@@ -495,9 +495,9 @@ async function onComponent(it, env, ctx) {
       if (channel) await updateSearch(env, c, { channelId: channel, channelType: type });
       return update(await resultsView(env, c, Number(d) || 0, type === 15
         ? `📍 Forum <#${channel}> : chaque item aura son propre post.`
-        : `📍 Les items seront postés dans <#${channel}>.`));
+        : `📍 Les items seront postés dans <#${channel}>.`, it));
     }
-    case 's:sel': return later(it, env, ctx, () => postSelected(env, c, Number(d) || 0, values));
+    case 's:sel': return later(it, env, ctx, () => postSelected(env, c, Number(d) || 0, values, it));
     case 's:all': return update(await confirmAllView(env, c, Number(d) || 0));
     case 's:ok': {
       const s = await loadSearch(env, c);
@@ -512,15 +512,15 @@ async function onComponent(it, env, ctx) {
       // On commence tout de suite, le cron prend le relais chaque minute.
       ctx.waitUntil(processQueue(env, 25000).catch((e) => console.log('file', String(e))));
       return update(await resultsView(env, c, Number(d) || 0,
-        `📨 **${fmtInt(ids.length)}** items en route vers <#${s.channelId}>. Fin estimée dans ~${Math.ceil(queued.n / QUEUE_PER_MINUTE)} min.`));
+        `📨 **${fmtInt(ids.length)}** items en route vers <#${s.channelId}>. Fin estimée dans ~${Math.ceil(queued.n / QUEUE_PER_MINUTE)} min.`, it));
     }
     default: return update(await homeView(env, it, '❓ Action inconnue, retour au menu.'));
   }
 }
 
-async function postSelected(env, sid, page, ids) {
+async function postSelected(env, sid, page, ids, it) {
   const s = await loadSearch(env, sid);
-  if (!s) return resultsView(env, sid, page);
+  if (!s) return resultsView(env, sid, page, undefined, it);
   const pctx = await postContext(env);
   let ok = 0;
   let error = null;
@@ -541,7 +541,7 @@ async function postSelected(env, sid, page, ids) {
       ? `❌ Le bot ne peut pas écrire dans <#${s.channelId}>. Donne-lui « Voir le salon » et « Envoyer des messages »${s.channelType === 15 ? ' (« Créer des posts » pour un forum)' : ''}.`
       : `${ok ? msg + ' ' : ''}❌ Un envoi a échoué : ${escape(error.slice(0, 120))}`;
   }
-  return resultsView(env, sid, page, msg);
+  return resultsView(env, sid, page, msg, it);
 }
 
 // ---------------------------------------------------------------- Formulaires
@@ -571,10 +571,10 @@ async function onModal(it, env, ctx) {
       if (existing) {
         const params = withoutCache({ ...existing.params, ...fields });
         await updateSearch(env, sid, { params });
-        return resultsView(env, sid, 0);
+        return resultsView(env, sid, 0, undefined, it);
       }
       const newSid = await createSearch(env, it, { ...fields, includePosted: false });
-      return resultsView(env, newSid, 0);
+      return resultsView(env, newSid, 0, undefined, it);
     });
   }
 
@@ -1014,7 +1014,7 @@ async function handleApi(request, env, url) {
     try {
       const sid = await createSearch(env, { guild_id: '0', channel_id: '0', member: { user: { id: '0' } } }, { q, groups: expandQuery(q), variants: [], category: null, autoCategory: null, max, includePosted: !url.searchParams.get('menu'), sort: 'popular', public: true });
       const view = url.searchParams.get('menu') ? await resultsView(env, sid, 0) : await findView(env, sid, 0);
-      return json({ ok: true, ms: Date.now() - t0, text: JSON.stringify(view).slice(0, 600), size: JSON.stringify(view).length, trace });
+      return json({ ok: true, ms: Date.now() - t0, text: JSON.stringify(view).slice(0, 600), size: JSON.stringify(view).length, photos: (JSON.stringify(view).match(/"type":11/g) || []).length, trace });
     } catch (err) {
       return json({ ok: false, error: String(err.message || err), stack: String(err.stack || '').slice(0, 1200) });
     } finally {

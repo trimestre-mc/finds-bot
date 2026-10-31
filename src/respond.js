@@ -23,14 +23,17 @@ export const openModal = (m) => json({ type: MODAL, data: m });
 export function later(it, env, ctx, task, newMessage = false) {
   ctx.waitUntil((async () => {
     let components;
+    const t0 = Date.now();
     try {
       components = await task();
     } catch (err) {
       console.log('tâche', err && err.stack ? err.stack : String(err));
       components = errorView();
     }
+    const t1 = Date.now();
     await editOriginal(env, it.token, { flags: COMPONENTS_V2, components, allowed_mentions: { parse: [] } })
       .catch((e) => console.log('édition', String(e)));
+    console.log('durée', (it.data && (it.data.name || it.data.custom_id)) || it.type, `calcul ${t1 - t0} ms, envoi ${Date.now() - t1} ms`);
   })());
   return json(newMessage
     ? { type: Reply.DEFERRED_MESSAGE, data: { flags: EPHEMERAL | COMPONENTS_V2 } }

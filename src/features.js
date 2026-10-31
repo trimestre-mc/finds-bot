@@ -108,6 +108,7 @@ export async function handlePublicCommand(it, env, ctx) {
   if (it.data.name === 'find') {
     return later(it, env, ctx, async () => {
       const q = String(opts.recherche || '').slice(0, 100);
+      postContext(env).catch(() => {}); // réglages et emojis chargés pendant la création de la recherche
       const sid = await createSearch(env, it, {
         q, groups: expandQuery(q), variants: [], category: opts.categorie || null, autoCategory: null,
         max: opts.prix_max != null ? opts.prix_max : null, includePosted: true, sort: 'popular', public: true,
@@ -358,22 +359,23 @@ export async function handleFeatureComponent(it, env, ctx, a, b, c, d, values) {
     case 'search:drops': {
       // Une baisse de prix est justement une bonne raison de reposter : on inclut les items déjà postés.
       const sid = await createSearch(env, it, { q: '', variants: [], drops: true, includePosted: true });
-      return update(await resultsView(env, sid, 0));
+      return update(await resultsView(env, sid, 0, undefined, it));
     }
     case 's:filt': return update(await filtersView(env, c));
     case 's:cat':
       await saveParams(env, c, { category: values[0] === 'all' ? null : values[0], autoCategory: null });
-      return update(await resultsView(env, c, 0));
+      return update(await resultsView(env, c, 0, undefined, it));
     case 's:sort':
       await saveParams(env, c, { sort: values[0] });
-      return update(await resultsView(env, c, 0));
+      return update(await resultsView(env, c, 0, undefined, it));
     case 's:hide': {
+      if (!env.AGENTS_OWNER_ID || userId(it) !== env.AGENTS_OWNER_ID) return update(await resultsView(env, c, Number(d) || 0, 'Action réservée au propriétaire du bot.', it));
       if (values.length) {
         await batchByDb(values.map((id) => [itemDb(env, id), itemDb(env, id).prepare('UPDATE items SET hidden = 1 WHERE id = ?').bind(id)]));
         await cacheClear(env); // les recherches en cache contenaient ces items
         await saveParams(env, c, {});
       }
-      return update(await resultsView(env, c, Number(d) || 0, `🚫 ${values.length} item${values.length > 1 ? 's' : ''} masqué${values.length > 1 ? 's' : ''} : ils n'apparaîtront plus.`));
+      return update(await resultsView(env, c, Number(d) || 0, `🚫 ${values.length} item${values.length > 1 ? 's' : ''} masqué${values.length > 1 ? 's' : ''} : ils n'apparaîtront plus.`, it));
     }
     case 's:sched': {
       const s = await loadSearch(env, c);
@@ -509,7 +511,7 @@ export async function handleFeatureComponent(it, env, ctx, a, b, c, d, values) {
     case 's:qc': {
       const s = await loadSearch(env, c);
       if (s) await saveParams(env, c, { withQc: !s.params.withQc });
-      return update(await resultsView(env, c, 0));
+      return update(await resultsView(env, c, 0, undefined, it));
     }
     case 'set:image': {
       const stmts = [env.DB.prepare(`DELETE FROM image_channels WHERE guild_id = ? AND channel_id NOT IN (${values.map(() => '?').join(',') || "''"})`)
@@ -552,7 +554,7 @@ export async function handleFeatureComponent(it, env, ctx, a, b, c, d, values) {
     case 'cat:best': {
       const shop = await env.DB.prepare('SELECT name FROM shops WHERE id = ?').bind(c).first();
       const sid = await createSearch(env, it, { q: '', variants: [], shop: c, shopName: shop ? shop.name : c, sort: 'popular', includePosted: false });
-      return update(await resultsView(env, sid, 0));
+      return update(await resultsView(env, sid, 0, undefined, it));
     }
     case 'cat:ban': {
       const shop = await env.DB.prepare('SELECT name FROM shops WHERE id = ?').bind(c).first();

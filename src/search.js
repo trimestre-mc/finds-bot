@@ -3,7 +3,7 @@
 import { relevance, relaxQuery, expandQuery } from './synonyms.js';
 import { addLiveResults } from './livesearch.js';
 import { readsOver } from './budget.js';
-import { perDb, allRows, itemsWhereIds } from './shard.js';
+import { perDb, allRows, itemsWhereIds, groupByDb } from './shard.js';
 import { translate } from './translate.js';
 import { detectCategory } from './categories.js';
 import { cacheGet, cacheSet, logEvent, redis } from './kvstore.js';
@@ -306,11 +306,14 @@ export async function searchIds(env, sid, params, money) {
 // Items d'une tranche de la liste, dans l'ordre de la liste (sans les items masqués entre-temps).
 export async function itemsByIds(env, ids) {
   if (!ids.length) return [];
-  // Base illisible (quota du jour) : les fiches viennent de l'index de recherche Neon (sans photo).
-  const results = await itemsWhereIds(env, ids, '*', 'hidden = 0').catch(async (err) => {
-    console.log('fiches (base illisible, index Neon)', String(err).slice(0, 100));
-    return indexItems(env, ids);
-  });
+  // Base illisible (quota) : ses fiches viennent de l'index de recherche Neon (sans photo) ; les autres bases gardent leurs photos.
+  const results = (await Promise.all(groupByDb(env, ids).map(([db, keys]) => db
+    .prepare(`SELECT * FROM items WHERE hidden = 0 AND id IN (${keys.map(() => '?').join(',')})`).bind(...keys).all()
+    .then((r) => r.results)
+    .catch((err) => {
+      console.log('fiches (base illisible, index Neon)', String(err).slice(0, 100));
+      return indexItems(env, keys);
+    })))).flat();
   const byId = new Map(results.map((r) => [r.id, r]));
   return ids.map((id) => byId.get(id)).filter(Boolean);
 }

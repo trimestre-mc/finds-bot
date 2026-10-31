@@ -95,7 +95,7 @@ export async function homeView(env, it, msg, ctx = null) {
   if (offline && !msg) msg = '⚠️ Mode réduit : la base est momentanément illisible (quota du jour). Recherche, QC et salons marchent ; les réglages reviennent à minuit UTC.';
   const e = (n) => etxt(emojis, n);
   // Propriétaire du bot : onglet « Secret » (pub, serveurs du bot, dashboard) en plus.
-  const owner = !!env.AGENTS_OWNER_ID && !!it && ((it.member && it.member.user && it.member.user.id) || (it.user && it.user.id)) === env.AGENTS_OWNER_ID;
+  const owner = isBotOwner(env, it);
   // Bouton avec un emoji du bot (Unicode de secours).
   const b = (name, label, id, style = Style.SECONDARY) => btn(label, id, style, { emoji: emo(emojis, name) });
   const money = await getRate(env).catch(() => ({ rate: 0.13, code: 'EUR' }));
@@ -206,7 +206,9 @@ export async function createSearch(env, it, params) {
   return sid;
 }
 
-export async function resultsView(env, sid, page, msg) {
+const isBotOwner = (env, it) => !!env.AGENTS_OWNER_ID && !!it && ((it.member && it.member.user && it.member.user.id) || (it.user && it.user.id)) === env.AGENTS_OWNER_ID;
+
+export async function resultsView(env, sid, page, msg, it) {
   const s = await loadSearch(env, sid);
   if (!s) return expiredView();
   const { params, channelId } = s;
@@ -274,7 +276,8 @@ export async function resultsView(env, sid, page, msg) {
       channel_types: [0, 5, 15], default_values: [{ id: channelId, type: 'channel' }],
     }),
     row({ type: 3, custom_id: `s:sel:${sid}:${page}`, placeholder: '📤 Poster les items choisis…', min_values: 1, max_values: items.length, options }),
-    row({ type: 3, custom_id: `s:hide:${sid}:${page}`, placeholder: '🚫 Masquer des items (n\'apparaîtront plus)…', min_values: 1, max_values: items.length, options }),
+    // Masquer un item le retire pour tous les serveurs : réservé au propriétaire du bot.
+    ...(isBotOwner(env, it) ? [row({ type: 3, custom_id: `s:hide:${sid}:${page}`, placeholder: '🚫 Masquer des items (n\'apparaîtront plus)…', min_values: 1, max_values: items.length, options })] : []),
     row(
       emojiBtn('◀️', null, `s:pg:${sid}:${page - 1}`, Style.SECONDARY, { disabled: page === 0 }),
       emojiBtn('▶️', null, `s:pg:${sid}:${page + 1}`, Style.SECONDARY, { disabled: page >= pages - 1 }),
