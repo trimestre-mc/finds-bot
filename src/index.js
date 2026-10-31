@@ -27,7 +27,7 @@ import { describeImage, analyzeQc } from './vision.js';
 import { uploadEmojis, refreshEmojis } from './emojis.js';
 import { expandQuery, suggestQueries } from './synonyms.js';
 import { watchChannels, imageJob, saveFound, handleLiveMessage } from './watch.js';
-import { translatePending, rewriteTitles, titleWait, quickTitles, applyGlossary, groqTitles } from './translate.js';
+import { translatePending, rewriteTitles, titleWait, quickTitles, applyGlossary, groqTitles, refreshTitleQueue } from './translate.js';
 import { fetchWeidianItem } from './weidian.js';
 import { extractWeidian, ingest, resolveQueue, scanSource, runDiscovery } from './discover.js';
 import {
@@ -37,7 +37,7 @@ import {
 import { itemDb, itemById, itemDbs, perDb, allRows, countAll, batchByDb, groupByDb, itemsWhereIds, onDb, itemEnv, deleteShopItems } from './shard.js';
 import { checkWatches, checkSearchAlerts } from './alerts.js';
 import { sendDailyReport, dailyReport, sendWeeklyTop } from './report.js';
-import { cacheClear, kvGet } from './kvstore.js';
+import { cacheClear, kvGet, kvSet } from './kvstore.js';
 import KIJFIND_PNG from '../assets/kijfind.png';
 
 // Une boutique est relue tous les 3 jours (quota gratuit D1 : 100 000 lignes écrites par jour).
@@ -150,22 +150,25 @@ async function handleScheduled(event, env, ctx) {
       ctx.waitUntil(env.SELF.fetch('https://finds-bot/api/guilds/check', { method: 'POST', headers: { Authorization: `Bearer ${env.INDEXER_SECRET}` } })
         .catch((e) => console.log('serveurs', String(e).slice(0, 120))));
     }
-    // Toutes les 30 min : les recherches les plus faites recalculées à l'avance (résultat instantané), à part.
-    if (env.SELF && new Date().getUTCMinutes() % 30 === 9) {
+    // Toutes les 30 min, au créneau Neon : les recherches les plus faites recalculées à l'avance (résultat instantané), à part.
+    if (env.SELF && new Date().getUTCMinutes() % 30 === 0) {
       ctx.waitUntil(env.SELF.fetch('https://finds-bot/api/search/prewarm', { method: 'POST', headers: { Authorization: `Bearer ${env.INDEXER_SECRET}` } })
         .catch((e) => console.log('recherches populaires', String(e).slice(0, 120))));
     }
-    // Toutes les 15 min : chien de garde (MP au propriétaire avant qu'un quota ou un service casse), à part.
-    if (env.SELF && new Date().getUTCMinutes() % 15 === 6) {
+    // Toutes les 15 min, au créneau Neon : chien de garde (MP au propriétaire avant qu'un quota ou un service casse), à part.
+    if (env.SELF && new Date().getUTCMinutes() % 15 === 0) {
       ctx.waitUntil(env.SELF.fetch('https://finds-bot/api/health/check', { method: 'POST', headers: { Authorization: `Bearer ${env.INDEXER_SECRET}` } })
         .catch((e) => console.log('chien de garde', String(e).slice(0, 120))));
     }
     // Toutes les 15 min : copie d'une tranche du catalogue dans l'index de recherche (Neon), dans une exécution à part
     // (son propre quota de requêtes).
-    // Toutes les 3 min : marque lue sur la photo de quelques items populaires sans marque dans le titre.
-    if (env.NEON_URL && env.SELF) {
-      ctx.waitUntil(env.SELF.fetch('https://finds-bot/api/brandscan', { method: 'POST', headers: { Authorization: `Bearer ${env.INDEXER_SECRET}` } })
-        .catch((e) => console.log('marques (photo)', String(e).slice(0, 120))));
+    // Toutes les 15 min, au créneau Neon : marque lue sur la photo de quelques items populaires sans marque dans le
+    // titre (3 exécutions à part, chacune sa tranche de la liste).
+    if (env.NEON_URL && env.SELF && new Date().getUTCMinutes() % 15 === 0) {
+      for (const slice of [0, 1, 2]) {
+        ctx.waitUntil(env.SELF.fetch(`https://finds-bot/api/brandscan?slice=${slice}`, { method: 'POST', headers: { Authorization: `Bearer ${env.INDEXER_SECRET}` } })
+          .catch((e) => console.log('marques (photo)', String(e).slice(0, 120))));
+      }
     }
     if (env.NEON_URL && env.SELF && new Date().getUTCMinutes() % 15 === 0) {
       ctx.waitUntil(env.SELF.fetch('https://finds-bot/api/searchindex/sync', { method: 'POST', headers: { Authorization: `Bearer ${env.INDEXER_SECRET}` } })
@@ -206,9 +209,14 @@ async function handleScheduled(event, env, ctx) {
       refreshRate(env).catch((e) => console.log('taux', String(e))),
       autoIndex(env).catch((e) => console.log('indexeur', String(e))),
     ]);
+    // Créneau Neon (toutes les 15 min, avec la copie de l'index et la lecture des marques) : Neon gratuit a 100 h de
+    // calcul par mois et ne s'éteint qu'après 5 min sans requête, le travail de fond n'y va donc qu'à ce moment-là.
+    if (new Date().getUTCMinutes() % 15 === 0) {
+      await refreshTitleQueue(env).catch((e) => console.log('titres (file)', String(e).slice(0, 120)));
+      if (!over) await cacheClear(env, 6 * 3600 * 1000);
+    }
     if (over) return;
     await env.DB.prepare('DELETE FROM searches WHERE created_at < ?').bind(Date.now() - 24 * 3600 * 1000).run().catch(() => {});
-    await cacheClear(env, 6 * 3600 * 1000);
   })());
 }
 
@@ -227,10 +235,12 @@ let indexesTriedAt = 0;
 async function ensureIndexes(env) {
   if (indexesReady || Date.now() - indexesTriedAt < 600000) return;
   indexesTriedAt = Date.now();
+  // Déjà créés (noté dans Upstash) : pas de lecture de sqlite_master à chaque démarrage du Worker.
+  if ((await kvGet(env, 'd1:indexes').catch(() => null)) === String(INDEXES.length)) { indexesReady = true; return; }
   const row = await env.DB.prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE name IN ('shops_due', 'items_qcdue', 'search_cache', 'qc_requests', 'image_channels')").first();
-  if (row.n === INDEXES.length) { indexesReady = true; return; }
-  for (const sql of INDEXES) await env.DB.prepare(sql).run();
+  if (row.n !== INDEXES.length) for (const sql of INDEXES) await env.DB.prepare(sql).run();
   indexesReady = true;
+  await kvSet(env, 'd1:indexes', String(INDEXES.length)).catch(() => {});
 }
 
 // Réponses : voir respond.js.
@@ -730,11 +740,23 @@ async function shardEnv(env, shard, kind) {
 async function dueShops(env, limit, shard = { n: 1, i: 0 }) {
   // Boutiques jamais indexées d'abord (les plus vendeuses en tête, index shops_due), sinon celles à réindexer.
   const now = Date.now();
-  const { results } = await env.DB.prepare(
-    `SELECT id, name FROM shops INDEXED BY shops_due WHERE status = 'pending' AND CAST(id AS INTEGER) % ? = ?
-     ORDER BY score DESC LIMIT ?`,
-  ).bind(shard.n, shard.i, limit).all();
-  if (results.length) return results;
+  // Les 20 parts de l'indexeur demandent chacune leurs boutiques : la liste des boutiques en attente est lue une fois
+  // toutes les 2 min (gardée dans Upstash) au lieu d'être parcourue à chaque demande (~1,5 M lignes D1 lues par jour).
+  // Chaque part garde les siennes (numéro modulo nombre de parts), puis leur statut est revérifié (10 lignes).
+  let pending = null;
+  try { pending = JSON.parse((await kvGet(env, 'shops:pending')) || 'null'); } catch {}
+  if (!pending) {
+    pending = (await env.DB.prepare(`SELECT id, name FROM shops INDEXED BY shops_due WHERE status = 'pending' ORDER BY score DESC LIMIT 400`).all()).results;
+    await kvSet(env, 'shops:pending', JSON.stringify(pending), 120).catch(() => {});
+  }
+  const mine = pending.filter((x) => Number(x.id) % shard.n === shard.i).slice(0, limit * 2);
+  if (mine.length) {
+    const { results: still } = await env.DB.prepare(`SELECT id, name FROM shops WHERE status = 'pending' AND id IN (${mine.map(() => '?').join(',')})`)
+      .bind(...mine.map((x) => x.id)).all();
+    const ok = new Set(still.map((x) => x.id));
+    const results = mine.filter((x) => ok.has(x.id)).slice(0, limit);
+    if (results.length) return results;
+  }
   const { results: again } = await env.DB.prepare(
     `SELECT id, name FROM shops
      WHERE ((status IN ('ok', 'error') AND (last_indexed IS NULL OR last_indexed < ?))
@@ -875,7 +897,7 @@ async function handleApi(request, env, url) {
   if (path === '/api/brandscan' && request.method === 'POST') {
     const { scanBrands } = await import('./searchindex.js');
     try {
-      return json({ ok: true, scanned: await scanBrands(env) });
+      return json({ ok: true, scanned: await scanBrands(env, Math.max(0, Math.min(5, Number(url.searchParams.get('slice')) || 0))) });
     } catch (err) {
       return json({ ok: false, error: String(err.message || err).slice(0, 300) });
     }
@@ -999,9 +1021,9 @@ async function handleApi(request, env, url) {
   // Diagnostic : derniers événements (recherches, erreurs…).
   if (path === '/api/events' && request.method === 'GET') {
     const { redis } = await import('./kvstore.js');
-    const r = await redis(env, [['LRANGE', 'events', '0', '29']]);
+    const r = await redis(env, [['LRANGE', 'events', '0', '29'], ['LLEN', 'titles:next'], ['LLEN', 'titles:held'], ['LLEN', 'titles:neon']]);
     const { aiNeurons } = await import('./translate.js');
-    return json({ ok: true, aiNeurons: (await aiNeurons(env).catch(() => ({}))).used, events: ((r && r[0]) || []).map((e) => { try { return JSON.parse(e); } catch { return e; } }) });
+    return json({ ok: true, aiNeurons: (await aiNeurons(env).catch(() => ({}))).used, titleQueues: r && { next: r[1], held: r[2], neon: r[3] }, events: ((r && r[0]) || []).map((e) => { try { return JSON.parse(e); } catch { return e; } }) });
   }
   if (path === '/api/find-preview' && request.method === 'GET') {
     const { findView } = await import('./views.js');

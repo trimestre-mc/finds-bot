@@ -128,7 +128,8 @@ function order(params) {
 }
 
 const FEW_RESULTS = 10;
-const SCAN_ROWS = 200000;
+// Secours seulement (Neon ne répond pas) : 200 000 lisaient 200 000 lignes Turso par recherche et par base.
+const SCAN_ROWS = 20000;
 
 export async function allResultIds(env, params, money) {
   if (params.groups && params.groups.length) {
@@ -168,8 +169,8 @@ async function rankedIds(env, params, money, indexed = false) {
   // Lecture bornée : au plus les SCAN_ROWS items les plus vendus (3 000 si le quota de lectures du mois est atteint).
   // Chaque base du catalogue lit sa moitié, avec son propre quota.
   const parts = await Promise.all(perDb(env).map(async (e) => {
-    // D1 (5 M lectures/jour) : 20 000 lignes au plus par recherche.
-    const scan = (await readsOver(e)) ? 3000 : e.DB.isD1 ? 20000 : SCAN_ROWS;
+    // D1 (5 M lectures/jour) : 10 000 lignes au plus par recherche (secours seulement : 20 000 lisaient ~1 M lignes par jour).
+    const scan = (await readsOver(e)) ? 3000 : e.DB.isD1 ? 10000 : SCAN_ROWS;
     return (await e.DB.prepare(
       // Secours si l'index de recherche (Neon) ne répond pas : les items les plus récents (ordre d'arrivée, sans
       // index en plus, voir schema.sql).

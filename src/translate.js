@@ -104,16 +104,33 @@ const GROQ = 'https://api.groq.com/openai/v1';
 // gpt-oss-20b écarté : réponses vides sur nos lots de titres (essai du 31/10/2026).
 const GROQ_PREFERRED = [/qwen3/i, /llama-3\.3-70b/i, /kimi/i, /llama-4/i, /gpt-oss-120b/i, /llama-3\.1-8b/i];
 
+// Liste des modèles et modèles « de côté » gardés aussi en mémoire (chaque commande compte dans le quota mensuel
+// d'Upstash) : relus au plus toutes les heures et toutes les 5 min.
+let groqList = { at: 0, list: null };
+const groqOff = new Map(); // modèle → fin du délai
+let groqOffReadAt = 0;
+
 async function groqModels(env) {
+  if (groqList.list && Date.now() - groqList.at < 3600000) return groqList.list;
   const cached = await kvGet(env, 'groq:models:2').catch(() => null);
-  if (cached) return JSON.parse(cached);
+  if (cached) { groqList = { at: Date.now(), list: JSON.parse(cached) }; return groqList.list; }
   const res = await fetch(`${GROQ}/models`, { headers: { Authorization: `Bearer ${env.GROQ_API_KEY}` }, signal: AbortSignal.timeout(5000) });
   if (!res.ok) throw new Error(`Groq ${res.status}`);
   const ids = ((await res.json()).data || []).map((m) => m.id).filter((id) => !/whisper|guard|tts|compound|playai|orpheus|safeguard/i.test(id));
   const ranked = GROQ_PREFERRED.flatMap((re) => ids.filter((id) => re.test(id)));
   const list = [...new Set(ranked)];
   await kvSet(env, 'groq:models:2', JSON.stringify(list), 86400).catch(() => {});
+  groqList = { at: Date.now(), list };
   return list;
+}
+
+async function groqResting(env, models) {
+  if (Date.now() - groqOffReadAt > 300000) {
+    groqOffReadAt = Date.now();
+    const r = await redis(env, models.map((m) => ['TTL', `groq:off:${m}`]));
+    if (r) models.forEach((m, k) => { if (Number(r[k]) > 0) groqOff.set(m, Date.now() + Number(r[k]) * 1000); });
+  }
+  return (m) => (groqOff.get(m) || 0) > Date.now();
 }
 
 // Un appel à un modèle. Lève { limited: secondes } si son quota est atteint, une erreur ordinaire sinon.
@@ -144,9 +161,9 @@ async function groqCall(env, model, titles, timeoutMs) {
 export async function groqTitles(env, titles, timeoutMs = 20000, only = null) {
   if (!env.GROQ_API_KEY || !titles.length) return null;
   const models = only ? [only] : await groqModels(env).catch((err) => { console.log('groq', String(err).slice(0, 120)); return []; });
-  const off = models.length ? ((await redis(env, [['MGET', ...models.map((m) => `groq:off:${m}`)]])) || [[]])[0] || [] : [];
-  for (const [k, model] of models.entries()) {
-    if (off[k]) continue;
+  const resting = models.length ? await groqResting(env, models) : () => false;
+  for (const model of models) {
+    if (resting(model)) continue;
     try {
       try {
         return await groqCall(env, model, titles, timeoutMs);
@@ -159,7 +176,10 @@ export async function groqTitles(env, titles, timeoutMs = 20000, only = null) {
       }
     } catch (err) {
       // Quota de ce modèle atteint (ou modèle retiré) : de côté pendant le délai indiqué, le suivant prend le relais.
-      if (err.limited) await kvSet(env, `groq:off:${model}`, '1', err.limited).catch(() => {});
+      if (err.limited) {
+        groqOff.set(model, Date.now() + err.limited * 1000);
+        await kvSet(env, `groq:off:${model}`, '1', err.limited).catch(() => {});
+      }
       console.log('groq', model, String(err).slice(0, 160));
     }
   }
@@ -196,7 +216,7 @@ export async function liveTitles(env, items) {
   await Promise.all([
     usage.length ? budget.add(Math.round((spent || missing.length * NEURONS_PER_TITLE) * 100) / 100) : null,
     indexSetTitles(env, fresh),
-    queueTitles(env, fresh.map(([id]) => id)), // recopiés dans la base par la traduction de fond
+    holdTitles(env, 'titles:held', fresh), // recopiés dans la base par la traduction de fond
   ].map((p) => Promise.resolve(p).catch(() => {})));
   return out;
 }
@@ -245,14 +265,13 @@ export async function aiNeurons(env) {
 // titre reste dans l'index et y est repris plus tard sans IA. Renvoie le nombre traduit.
 export async function translatePending(env, limit) {
   if (!env.AI) return 0; // pas d'IA (ex. test sur GitHub) : les titres attendent
-  const { indexUntitled, indexTitles, indexSetTitles } = await import('./searchindex.js');
   const { itemDb } = await import('./shard.js');
-  if (env.NEON_URL) await syncTitlesFromIndex(env, indexTitles).catch((err) => console.log('titres (copie)', String(err).slice(0, 120)));
+  await retryHeldTitles(env).catch((err) => console.log('titres (copie)', String(err).slice(0, 120)));
   const budget = await aiNeurons(env);
   // Groq (si sa clé est là) ne compte pas dans le quota de Workers AI : il traduit même quand celui-ci est épuisé.
   if (budget.used >= TRANSLATE_NEURONS && !env.GROQ_API_KEY) return 0;
   // Candidats de cette base, du plus populaire au moins populaire (3 fois plus que nécessaire : certains attendent).
-  const ranked = await indexUntitled(env, limit * 3);
+  const ranked = await nextCandidates(env, limit * 3);
   const wanted = ranked ? ranked.filter((c) => itemDb(env, c.id) === env.DB) : null;
   if (wanted && !wanted.length) return 0;
   // Sans index : n'importe quels items sans titre (pas de tri : on ne lit que les lignes traitées, quota de lectures).
@@ -278,7 +297,7 @@ export async function translatePending(env, limit) {
     if (r.platform === 'weidian' && r.images == null && r.first_seen >= Date.now() - titleWait(env)) continue;
     if (results.length < limit) results.push(r);
   }
-  if (wanted) await indexSetTitles(env, settled).catch((err) => console.log('titres (index)', String(err).slice(0, 120)));
+  if (wanted) await holdTitles(env, 'titles:neon', settled).catch(() => {}); // pour l'index, au prochain créneau Neon
   let done = 0;
   for (let i = 0; i < results.length; i += BATCH) {
     const batch = results.slice(i, i + BATCH);
@@ -305,35 +324,68 @@ export async function translatePending(env, limit) {
     const stmts = batch.map((it, j) => (titles[j]
       ? env.DB.prepare("UPDATE items SET title_en = ?, category = CASE WHEN category = 'other' THEN NULL ELSE category END WHERE id = ?").bind(titles[j], it.id)
       : env.DB.prepare('UPDATE items SET translate_failed = translate_failed + 1 WHERE id = ?').bind(it.id)));
-    const [written] = await Promise.all([
-      env.DB.batch(stmts),
-      indexSetTitles(env, batch.map((it, j) => [it.id, titles[j]]).filter(([, t]) => t)).catch((err) => console.log('titres (index)', String(err).slice(0, 120))),
-    ]);
-    // Base pleine pour aujourd'hui : les titres sont dans l'index, recopiés dans la base plus tard.
-    if (written.some((x) => x && x.meta && x.meta.skipped)) await queueTitles(env, batch.filter((_, j) => titles[j]).map((it) => it.id)).catch(() => {});
+    const written = await env.DB.batch(stmts);
+    // Base pleine pour aujourd'hui : titres gardés dans Upstash, réessayés chaque minute (et copiés dans l'index).
+    if (written.some((x) => x && x.meta && x.meta.skipped)) {
+      await holdTitles(env, 'titles:held', batch.map((it, j) => [it.id, titles[j]]).filter(([, t]) => t)).catch(() => {});
+    }
     done += titles.filter(Boolean).length;
   }
   return done;
 }
 
-// Titres traduits pendant que la base refusait les écritures (quota du jour) ou à l'affichage : leurs ids attendent
-// dans Upstash (« titles:todo ») et le titre est recopié depuis l'index, sans IA, dès que la base écrit de nouveau.
-export async function queueTitles(env, ids) {
-  if (ids.length) await redis(env, [['RPUSH', 'titles:todo', ...ids], ['LTRIM', 'titles:todo', '-50000', '-1']]);
+// Neon gratuit : 100 h de calcul par mois et par projet, et il ne s'éteint qu'après 5 min sans requête. La traduction
+// de fond ne l'interroge donc qu'au créneau Neon (toutes les 15 min, refreshTitleQueue) ; entre-temps tout passe par
+// Upstash :
+// - « titles:next » : les prochains items à traduire, les plus populaires d'abord ;
+// - « titles:held » : titres que la base a refusés (quota d'écritures du jour), réessayés chaque minute ;
+// - « titles:neon » : titres à copier dans l'index (ceux de la base n'y arrivent qu'au tour suivant de la copie).
+const QUEUE_SIZE = 4000; // un peu plus que 15 min de traduction (80 items × 3 candidats par minute)
+
+export async function holdTitles(env, list, pairs) {
+  if (!pairs.length) return;
+  await redis(env, [['RPUSH', list, ...pairs.map((p) => JSON.stringify(p))], ['LTRIM', list, '-50000', '-1']]);
 }
 
-async function syncTitlesFromIndex(env, indexTitles) {
-  const r = await redis(env, [['LPOP', 'titles:todo', '100']]);
-  const ids = (r && r[0]) || [];
-  if (!ids.length) return;
-  const found = await indexTitles(env, ids);
-  const pairs = Object.entries(found).filter(([, t]) => t && !/[\u4e00-\u9fff]/.test(t));
+const parsed = (rows) => (rows || []).map((x) => { try { return JSON.parse(x); } catch { return null; } }).filter(Boolean);
+
+// [{ id, title_zh }] ou null (pas d'index, ou liste pas encore remplie : la traduction lit alors la base comme avant).
+// Une seule lecture par minute pour toutes les bases (chacune garde ensuite ses items).
+let popped = { at: 0, promise: null };
+async function nextCandidates(env, n) {
+  if (!env.NEON_URL) return null;
+  if (!popped.promise || Date.now() - popped.at > 20000) {
+    const { perDb } = await import('./shard.js');
+    popped = { at: Date.now(), promise: redis(env, [['LPOP', 'titles:next', String(n * perDb(env).length)]]) };
+  }
+  const rows = parsed(((await popped.promise) || [])[0]);
+  return rows.length ? rows.map(([id, zh]) => ({ id, title_zh: zh })) : null;
+}
+
+async function retryHeldTitles(env) {
+  // Toutes les 5 min, depuis la 1re base seulement (une commande Upstash de moins par minute et par base).
+  if (new Date().getUTCMinutes() % 5 !== 0 || (env.MAIN && env.DB !== env.MAIN)) return;
+  const r = await redis(env, [['LPOP', 'titles:held', '100']]);
+  const pairs = parsed(r && r[0]).filter(([, t]) => t && !/[\u4e00-\u9fff]/.test(t));
   if (!pairs.length) return;
   const { itemDb, batchByDb } = await import('./shard.js');
   const res = await batchByDb(pairs.map(([id, t]) => [itemDb(env, id), itemDb(env, id).prepare(
     "UPDATE items SET title_en = ?, category = CASE WHEN category = 'other' THEN NULL ELSE category END WHERE id = ? AND title_en IS NULL").bind(t, id)]));
-  // Base toujours pleine (ou illisible) : réessayé plus tard.
-  if (res.some(([, list]) => list.some((x) => x && x.meta && x.meta.skipped))) await queueTitles(env, pairs.map(([id]) => id));
+  // Base toujours pleine (ou illisible) : remis dans la file.
+  if (res.some(([, list]) => list.some((x) => x && x.meta && x.meta.skipped))) await holdTitles(env, 'titles:held', pairs);
+}
+
+// Créneau Neon (toutes les 15 min) : titres en attente copiés dans l'index, puis la file des prochains items remplie.
+export async function refreshTitleQueue(env) {
+  if (!env.NEON_URL) return 0;
+  const { indexUntitled, indexSetTitles } = await import('./searchindex.js');
+  const r = await redis(env, [['LPOP', 'titles:neon', '5000'], ['LRANGE', 'titles:held', '0', '4999']]);
+  const pairs = [...parsed(r && r[0]), ...parsed(r && r[1])];
+  if (pairs.length) await indexSetTitles(env, pairs);
+  const next = await indexUntitled(env, QUEUE_SIZE);
+  if (!next) return pairs.length;
+  await redis(env, [['DEL', 'titles:next'], ...(next.length ? [['RPUSH', 'titles:next', ...next.map((c) => JSON.stringify([c.id, c.title_zh]))]] : [])]);
+  return pairs.length;
 }
 
 // Délai pendant lequel on attend le titre anglais gratuit de la page produit (réglable pour les tests).

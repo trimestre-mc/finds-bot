@@ -274,11 +274,12 @@ export async function fuzzySearch(env, words, params, money) {
 // vision chez OVH, gratuit : les quotas d'IA du jour restent aux membres). Des plus vendus aux moins vendus.
 // Renvoie le nombre d'items regardés.
 const SCAN_PER_RUN = 6;
-export async function scanBrands(env) {
+// slice : tranche de la liste (plusieurs exécutions en parallèle au même créneau, sans lire les mêmes items).
+export async function scanBrands(env, slice = 0) {
   if (!env.NEON_URL || env.BRAND_SCAN === '0') return 0;
   for (const pe of neonParts(env)) await ensureSchema(pe);
   const rows = ((await fromParts(env, (pe) => neon(pe, `SELECT id, title_en, title_zh, shop_name, popularity FROM items_search
-    WHERE brand_checked IS NULL AND hidden = 0 AND popularity >= 20 ORDER BY popularity DESC LIMIT 60`))) || [])
+    WHERE brand_checked IS NULL AND hidden = 0 AND popularity >= 20 ORDER BY popularity DESC LIMIT 60 OFFSET $1`, [slice * 60]))) || [])
     .sort((a, b) => Number(b.popularity) - Number(a.popularity)).slice(0, 60);
   if (!rows.length) return 0;
   // Titre qui cite déjà une marque (nom, modèle ou nom codé) : rien à lire.
