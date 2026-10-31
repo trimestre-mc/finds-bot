@@ -276,13 +276,15 @@ function cacheKey(params) {
 }
 
 export async function cachedIds(env, params, money) {
-  if (params.q) await logEvent(env, 'search', `« ${String(params.q).slice(0, 60)} »`).catch(() => {});
-  // Recherches /find les plus faites : comptées pour être recalculées à l'avance (prewarmPopular).
-  if (params.q && params.public) {
-    await redis(env, [['ZINCRBY', 'q:pop', '1', String(params.q).toLowerCase().trim().slice(0, 100)], ['ZREMRANGEBYRANK', 'q:pop', '0', '-501']]).catch(() => {});
-  }
   const key = cacheKey(params);
-  const row = await cacheGet(env, key);
+  // Journal, compteur des recherches populaires (prewarmPopular) et cache : en même temps, pas l'un après l'autre.
+  const [row] = await Promise.all([
+    cacheGet(env, key),
+    params.q ? logEvent(env, 'search', `« ${String(params.q).slice(0, 60)} »`).catch(() => {}) : null,
+    params.q && params.public
+      ? redis(env, [['ZINCRBY', 'q:pop', '1', String(params.q).toLowerCase().trim().slice(0, 100)], ['ZREMRANGEBYRANK', 'q:pop', '0', '-501']]).catch(() => {})
+      : null,
+  ]);
   if (row && Date.now() - row.at < CACHE_MS) return JSON.parse(row.ids);
   const ids = await allResultIds(env, params, money);
   await cacheSet(env, key, JSON.stringify(ids));

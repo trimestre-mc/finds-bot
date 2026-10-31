@@ -396,9 +396,8 @@ export async function healthView(env) {
 const FIND_PAGE = 3;
 
 export async function findView(env, sid, page) {
-  const s = await loadSearch(env, sid);
+  const [s, ctx] = await Promise.all([loadSearch(env, sid), postContext(env)]);
   if (!s) return [container([text('⌛ Recherche expirée, relance `/find`.')])];
-  const ctx = await postContext(env);
   const params = { ...s.params };
   const ids = await searchIds(env, sid, params, ctx.money);
   const total = ids.length;

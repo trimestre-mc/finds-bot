@@ -64,7 +64,12 @@ export async function getSignup(env) {
   } catch { return null; }
 }
 
+// Version des réglages : change à chaque écriture, le contexte gardé en mémoire (post.js) est alors relu.
+export let configVersion = 0;
+export function bumpConfig() { configVersion++; }
+
 export async function setSignup(env, value) {
+  bumpConfig();
   if (!value) await env.DB.prepare("DELETE FROM settings WHERE key = 'signup'").run();
   else await env.DB.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('signup', ?)").bind(JSON.stringify(value)).run();
 }
@@ -76,6 +81,7 @@ export async function getCoupon(env) {
 }
 
 export async function setCoupon(env, value) {
+  bumpConfig();
   if (!value) await env.DB.prepare("DELETE FROM settings WHERE key = 'coupon'").run();
   else await env.DB.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('coupon', ?)").bind(JSON.stringify(value)).run();
 }
@@ -90,6 +96,7 @@ export function parseCouponLinks(raw) {
 }
 
 export async function setConfig(env, key, value) {
+  bumpConfig();
   if (!KEYS.includes(key)) throw new Error(`réglage inconnu : ${key}`);
   if (value == null) await env.DB.prepare('DELETE FROM settings WHERE key = ?').bind(`cfg_${key}`).run();
   else await env.DB.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)').bind(`cfg_${key}`, String(value)).run();

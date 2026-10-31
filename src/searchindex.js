@@ -162,14 +162,22 @@ async function upsertRows(pe, rows) {
 }
 
 // L'index est utilisable quand chaque base du catalogue a été copiée en entier au moins une fois.
+// Gardé 60 s en mémoire une fois prêt (deux lectures Upstash en moins à chaque recherche).
+let readyMemo = 0;
 export async function searchIndexReady(env) {
   if (!env.NEON_URL || env.SEARCH_INDEX === '0') return false;
+  if (Date.now() - readyMemo < 60000) return true;
   const done = await Promise.all(perDb(env).map((e) => kvGet(env, `sidx:done:${dbTag(e, env)}`)));
-  return done.every((v) => v);
+  if (done.every((v) => v)) { readyMemo = Date.now(); return true; }
+  return false;
 }
 
 const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const latinAlt = (s) => /^[a-z0-9' -]+$/.test(s);
+
+// Liste en tableau Postgres ('{"a","b"}'), comparée par « = ANY($n::text[]) » : contrairement à
+// « IN (SELECT jsonb_array_elements_text(…)) », Postgres peut alors combiner les index (2 s → 10 ms sur Neon 1).
+const pgArray = (list) => `{${list.map((x) => `"${String(x).replace(/["\\]/g, '\\$&')}"`).join(',')}}`;
 
 // Même filtre que where() de search.js, en Postgres.
 export function neonWhere(params, money) {
@@ -182,7 +190,7 @@ export function neonWhere(params, money) {
     // lieu de relire chaque titre.
     if (g.kind === 'brand' && params.tagged) {
       const names = brandNames(g);
-      clauses.push(`(brands && ARRAY[${p(g.alt[0])}::text]${names.length ? ` OR brand IN (SELECT jsonb_array_elements_text(${p(JSON.stringify(names))}::jsonb))` : ''})`);
+      clauses.push(`(brands && ARRAY[${p(g.alt[0])}::text]${names.length ? ` OR brand = ANY(${p(pgArray(names))}::text[])` : ''})`);
       continue;
     }
     const ors = [];
@@ -203,7 +211,7 @@ export function neonWhere(params, money) {
     if (g.cat) ors.push(`category = ${p(g.cat)}`);
     // Marque lue sur la photo (titre sans marque).
     const names = g.kind === 'brand' ? brandNames(g) : [];
-    if (names.length) ors.push(`brand IN (SELECT jsonb_array_elements_text(${p(JSON.stringify(names))}::jsonb))`);
+    if (names.length) ors.push(`brand = ANY(${p(pgArray(names))}::text[])`);
     if (ors.length) clauses.push(`(${ors.join(' OR ')})`);
   }
   if (params.min != null) clauses.push(`price >= ${p(params.min / money.rate)}`);
@@ -242,8 +250,10 @@ const merged = (rows, limit, sort = 'popular') => (rows ? rows.map(num).sort(MER
 
 export async function indexSearch(env, params, money) {
   const w = neonWhere({ ...params, tagged: await tagged(env) }, money);
-  const rows = await fromParts(env, (pe) => neon(pe, `SELECT ${COLS} FROM items_search ${w.sql} ORDER BY popularity DESC, first_seen DESC LIMIT 5000`, w.binds));
-  return merged(rows, 5000);
+  // 2 000 candidats par projet (4 000 en tout) : de quoi classer les 500 résultats gardés, pour 2,5 fois moins de
+  // données à recevoir et à trier qu'avec 5 000 chacun (recherche nettement plus rapide).
+  const rows = await fromParts(env, (pe) => neon(pe, `SELECT ${COLS} FROM items_search ${w.sql} ORDER BY popularity DESC, first_seen DESC LIMIT 2000`, w.binds));
+  return merged(rows, 4000);
 }
 
 // Fautes de frappe (« suprem hodie ») : items dont le texte contient un mot proche de chacun des mots cherchés
@@ -313,7 +323,7 @@ export async function indexItems(env, ids) {
   if (!ids.length) return [];
   const rows = (await Promise.all(byPart(env, ids.slice(0, 500), (id) => id).map(([pe, part]) => neon(pe,
     `SELECT id, title_en, title_zh, shop_name, shop_id, category, popularity, first_seen, price, posted, qc, prev_price, price_changed_at
-    FROM items_search WHERE hidden = 0 AND id IN (SELECT jsonb_array_elements_text($1::jsonb))`, [JSON.stringify(part)])))).flat();
+    FROM items_search WHERE hidden = 0 AND id = ANY($1::text[])`, [pgArray(part)])))).flat();
   return rows.map((r) => {
     const [platform, itemId] = r.id.split(':');
     return { id: r.id, platform, item_id: itemId, url: canonicalUrl(platform, itemId), title_en: r.title_en, title_zh: r.title_zh,

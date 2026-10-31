@@ -160,7 +160,14 @@ export function searchModal(params = {}, sid = '') {
 
 // Recherches enregistrées (pagination, filtres, publication) : dans Upstash pour 24 h, et dans la base en secours.
 // Elles marchent ainsi même quand la base est illisible (quota du jour).
+// Copie pour la durée d'une seule exécution (env est propre à chacune) : créer puis afficher une recherche ne relit
+// pas Upstash. Jamais d'une exécution à l'autre (un filtre changé ailleurs serait ignoré).
+const searchMemo = new WeakMap();
+const memoOf = (env) => { if (!searchMemo.has(env)) searchMemo.set(env, new Map()); return searchMemo.get(env); };
+
 export async function loadSearch(env, sid) {
+  const local = memoOf(env).get(sid);
+  if (local) return structuredClone(local);
   try {
     const kept = JSON.parse(await kvGet(env, `search:${sid}`) || 'null');
     if (kept) return kept;
@@ -174,9 +181,12 @@ export async function updateSearch(env, sid, change) {
   const s = await loadSearch(env, sid);
   if (!s) return;
   const next = { ...s, ...change };
-  await kvSet(env, `search:${sid}`, JSON.stringify(next), 86400);
-  if (change.params) await env.DB.prepare('UPDATE searches SET params = ? WHERE id = ?').bind(JSON.stringify(change.params), sid).run().catch(() => {});
-  if (change.channelId) await env.DB.prepare('UPDATE searches SET channel_id = ?, channel_type = ? WHERE id = ?').bind(change.channelId, change.channelType || 0, sid).run().catch(() => {});
+  memoOf(env).set(sid, structuredClone(next));
+  await Promise.all([
+    kvSet(env, `search:${sid}`, JSON.stringify(next), 86400),
+    change.params ? env.DB.prepare('UPDATE searches SET params = ? WHERE id = ?').bind(JSON.stringify(change.params), sid).run().catch(() => {}) : null,
+    change.channelId ? env.DB.prepare('UPDATE searches SET channel_id = ?, channel_type = ? WHERE id = ?').bind(change.channelId, change.channelType || 0, sid).run().catch(() => {}) : null,
+  ]);
 }
 
 export async function createSearch(env, it, params) {
@@ -186,9 +196,13 @@ export async function createSearch(env, it, params) {
   const cfg = await getConfig(env).catch(() => ({}));
   const channel = cfg.defaultChannel || it.channel_id;
   const type = cfg.defaultChannel ? cfg.defaultChannelType : (it.channel && it.channel.type === 15 ? 15 : 0);
-  await kvSet(env, `search:${sid}`, JSON.stringify({ params, channelId: channel, channelType: type }), 86400);
-  await env.DB.prepare('INSERT INTO searches (id, guild_id, user_id, params, channel_id, channel_type, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
-    .bind(sid, it.guild_id, uid, JSON.stringify(params), channel, type, Date.now()).run().catch(() => {});
+  const saved = { params, channelId: channel, channelType: type };
+  memoOf(env).set(sid, structuredClone(saved));
+  await Promise.all([
+    kvSet(env, `search:${sid}`, JSON.stringify(saved), 86400),
+    env.DB.prepare('INSERT INTO searches (id, guild_id, user_id, params, channel_id, channel_type, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
+      .bind(sid, it.guild_id, uid, JSON.stringify(params), channel, type, Date.now()).run().catch(() => {}),
+  ]);
   return sid;
 }
 

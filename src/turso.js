@@ -39,6 +39,11 @@ function toResult(r, sql = '', db = null) {
 }
 
 // shared : compteur de requêtes commun à toutes les bases de l'exécution (50 requêtes externes max sur Workers gratuit).
+// Lectures bloquées par Turso (quota du mois) : retenu 5 min par base, les lectures suivantes échouent tout de suite
+// au lieu d'un aller-retour inutile (chaque fiche Taobao/1688 passait par là avant l'index Neon).
+const blockedUntil = new Map();
+const READ_ONLY = /^\s*(select|with)\b/i;
+
 export function tursoDb(url, token, shared = { calls: 0 }) {
   const endpoint = `${String(url).replace(/^libsql:\/\//, 'https://').replace(/\/$/, '')}/v2/pipeline`;
   const db = { rowsRead: 0, get calls() { return shared.calls; } };
@@ -77,8 +82,17 @@ export function tursoDb(url, token, shared = { calls: 0 }) {
     }
 
     async all() {
-      const [response] = await pipeline([{ type: 'execute', stmt: { sql: this.sql, args: this.args.map(toArg) } }]);
-      return toResult(response.result, this.sql, db);
+      const read = READ_ONLY.test(this.sql);
+      const known = read && blockedUntil.get(url);
+      if (known && known.until > Date.now()) throw new Error(known.message);
+      try {
+        const [response] = await pipeline([{ type: 'execute', stmt: { sql: this.sql, args: this.args.map(toArg) } }]);
+        if (read) blockedUntil.delete(url);
+        return toResult(response.result, this.sql, db);
+      } catch (err) {
+        if (read && /reads are blocked/i.test(String(err))) blockedUntil.set(url, { until: Date.now() + 300000, message: err.message });
+        throw err;
+      }
     }
 
     async first(column) {

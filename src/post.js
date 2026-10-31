@@ -4,7 +4,7 @@ import { discordApi } from './discord.js';
 import { buildAgentLink } from './links.js';
 import { COMPONENTS_V2, container, gallery, text, sep, row, link, escape, Style } from './components.js';
 import { fetchWeidianItem } from './weidian.js';
-import { getConfig, getMoney, getSignup, formatMoney, formatCny, refreshRates, ACCENTS, LANGS, SIGNUP_COLORS, DEFAULTS } from './config.js';
+import { getConfig, getMoney, getSignup, formatMoney, formatCny, refreshRates, ACCENTS, LANGS, SIGNUP_COLORS, DEFAULTS, configVersion, bumpConfig } from './config.js';
 import { forumTagFor, CATEGORY_BY_KEY } from './categories.js';
 import { qcButtons, refreshQc, communityQc, postForumQc } from './qc.js';
 import { itemDb, itemsWhereIds, batchByDb } from './shard.js';
@@ -43,7 +43,24 @@ export async function getAgents(env) {
 let ctxSaved = 0;
 
 // La base illisible (quota du jour de D1 atteint) : dernière copie gardée dans Upstash, sinon les valeurs par défaut.
+// Gardé 20 s en mémoire : chaque clic relisait réglages, agents, taux, inscription et emojis (5 lectures).
+// Clé : l'environnement d'origine du Worker (withDb en fait une copie à chaque exécution).
+const ctxMemo = new WeakMap();
+const memoKey = (env) => {
+  const proto = Object.getPrototypeOf(env);
+  return proto && proto !== Object.prototype ? proto : env;
+};
+export function forgetPostContext() { bumpConfig(); }
+
 export async function postContext(env) {
+  const m = ctxMemo.get(memoKey(env));
+  if (m && m.epoch === configVersion && Date.now() - m.at < 20000) return { ...m.ctx, forumTags: new Map() };
+  const ctx = await loadPostContext(env);
+  if (!ctx.fallback) ctxMemo.set(memoKey(env), { at: Date.now(), epoch: configVersion, ctx });
+  return ctx;
+}
+
+async function loadPostContext(env) {
   const base = (env.PUBLIC_URL || '').replace(/\/$/, '');
   try {
     const cfg = await getConfig(env);
@@ -57,7 +74,7 @@ export async function postContext(env) {
     try { kept = JSON.parse(await kvGet(env, 'ctx:cache') || 'null'); } catch {}
     const emojis = await loadEmojis(env).catch(() => ({}));
     return { cfg: (kept && kept.cfg) || { ...DEFAULTS }, agents: (kept && kept.agents) || [], money: (kept && kept.money) || { rate: 0.13, code: 'eur' },
-      signup: (kept && kept.signup) || null, emojis, base, forumTags: new Map() };
+      signup: (kept && kept.signup) || null, emojis, base, forumTags: new Map(), fallback: true };
   }
 }
 

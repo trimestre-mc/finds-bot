@@ -10,7 +10,7 @@ import {
   parseItemLink, isValidTemplate, canonicalUrl, buildAgentLink, AGENT_PRESETS, isValidCode, presetTemplate,
 } from './links.js';
 import { idsToPost, withoutCache, allResultIds, itemsByIds } from './search.js';
-import { getRate, refreshRate, formatPrice, postItem, processQueue, postContext, logError } from './post.js';
+import { getRate, refreshRate, formatPrice, postItem, processQueue, postContext, logError, forgetPostContext } from './post.js';
 import {
   triggerIndexer, handleGo, handlePublicCommand, handlePublicComponent, handleFeatureComponent, handleFeatureModal,
   runSchedules, runQcChannels,
@@ -292,6 +292,8 @@ async function routeInteraction(it, env, ctx) {
   }
 
   if (it.type === InteractionType.COMMAND) return panel(await homeView(env, it, null, ctx));
+  // Panneau d'admin : un réglage peut changer (agents, devise, inscription…), le contexte en mémoire est relu.
+  if (it.type === InteractionType.COMPONENT || it.type === MODAL_SUBMIT) forgetPostContext();
   if (it.type === InteractionType.COMPONENT) return inTime(it, env, ctx, () => onComponent(it, env, ctx));
   if (it.type === MODAL_SUBMIT) return inTime(it, env, ctx, () => onModal(it, env, ctx));
   return reply('Action inconnue.');
@@ -856,7 +858,8 @@ async function handleApi(request, env, url) {
   // Diagnostic : requête en lecture seule sur l'index Neon (SELECT uniquement).
   if (path === '/api/neon-query' && request.method === 'GET') {
     const q = url.searchParams.get('q') || '';
-    if (!/^\s*select\b/i.test(q) || /;/.test(q)) return json({ ok: false, error: 'SELECT seulement' });
+    // SELECT, ou son plan d'exécution (EXPLAIN ANALYZE : la requête est exécutée, rien n'est modifié).
+    if (!/^\s*(explain\s*(\((analyze|buffers|,|\s)+\)\s*)?)?select\b/i.test(q) || /;/.test(q)) return json({ ok: false, error: 'SELECT seulement' });
     const { neon } = await import('./kvstore.js');
     const { neonParts } = await import('./searchindex.js');
     const pe = neonParts(env)[url.searchParams.get('part') === '2' ? 1 : 0] || env;
@@ -995,12 +998,27 @@ async function handleApi(request, env, url) {
     const { findView } = await import('./views.js');
     const q = url.searchParams.get('q') || '';
     const max = url.searchParams.get('max') ? Number(url.searchParams.get('max')) : null;
+    // trace=1 : chaque appel externe (hôte, durée), pour voir où passe le temps.
+    const trace = [];
+    const realFetch = globalThis.fetch;
+    const t0 = Date.now();
+    if (url.searchParams.get('trace')) {
+      globalThis.fetch = async (input, init) => {
+        const start = Date.now();
+        try { return await realFetch(input, init); } finally {
+          const body = init && typeof init.body === 'string' ? init.body.slice(0, 70) : '';
+          trace.push(`${start - t0}+${Date.now() - start}ms ${new URL(String(input.url || input)).hostname.split('.')[0]} ${body}`);
+        }
+      };
+    }
     try {
       const sid = await createSearch(env, { guild_id: '0', channel_id: '0', member: { user: { id: '0' } } }, { q, groups: expandQuery(q), variants: [], category: null, autoCategory: null, max, includePosted: !url.searchParams.get('menu'), sort: 'popular', public: true });
       const view = url.searchParams.get('menu') ? await resultsView(env, sid, 0) : await findView(env, sid, 0);
-      return json({ ok: true, text: JSON.stringify(view).slice(0, 600), size: JSON.stringify(view).length });
+      return json({ ok: true, ms: Date.now() - t0, text: JSON.stringify(view).slice(0, 600), size: JSON.stringify(view).length, trace });
     } catch (err) {
       return json({ ok: false, error: String(err.message || err), stack: String(err.stack || '').slice(0, 1200) });
+    } finally {
+      globalThis.fetch = realFetch;
     }
   }
 
