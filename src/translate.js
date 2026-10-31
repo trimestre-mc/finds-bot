@@ -97,13 +97,12 @@ export async function rewriteTitles(env, titles, model = LLM_MODEL, opts = {}) {
 }
 
 // Titres anglais des items affichés qui n'en ont pas encore (traduction de fond en retard, ou base illisible) :
-// gardés 30 jours dans Upstash et copiés dans l'index Neon. Au plus 2,5 s d'attente, sinon le titre chinois reste.
+// gardés dans l'index Neon (recopiés ensuite dans la base par la traduction de fond). Au plus 2,5 s d'attente, sinon le titre chinois reste.
 // items = [{ id, title_zh }] ; renvoie { id: titre }.
 export async function liveTitles(env, items) {
   if (!items.length) return {};
-  const known = (await redis(env, [['MGET', ...items.map((i) => `ten:${i.id}`)]])) || [[]];
-  const out = {};
-  items.forEach((it, k) => { if (known[0] && known[0][k]) out[it.id] = known[0][k]; });
+  const { indexTitles, indexSetTitles } = await import('./searchindex.js');
+  const out = await indexTitles(env, items.map((it) => it.id)); // déjà traduit en fond, pas encore dans la base
   const missing = items.filter((it) => !out[it.id]);
   if (!missing.length || !env.AI) return out;
   const budget = await aiNeurons(env).catch(() => null);
@@ -120,11 +119,10 @@ export async function liveTitles(env, items) {
   const fresh = missing.map((it, k) => [it.id, titles[k]]).filter(([, t]) => t);
   for (const [id, t] of fresh) out[id] = t;
   const spent = usage.reduce((n, u) => n + (u && u.neurons ? u.neurons : 0), 0);
-  const { indexSetTitles } = await import('./searchindex.js');
   await Promise.all([
     budget.add(Math.round((spent || missing.length * NEURONS_PER_TITLE) * 100) / 100),
-    fresh.length ? redis(env, fresh.map(([id, t]) => ['SET', `ten:${id}`, t, 'EX', '2592000'])) : null,
     indexSetTitles(env, fresh),
+    queueTitles(env, fresh.map(([id]) => id)), // recopiés dans la base par la traduction de fond
   ].map((p) => Promise.resolve(p).catch(() => {})));
   return out;
 }
@@ -168,18 +166,42 @@ export async function aiNeurons(env) {
   };
 }
 
-// Traduit un lot d'items sans titre anglais. Renvoie le nombre traduit.
+// Traduit un lot d'items sans titre anglais, les plus populaires d'abord (liste tirée de l'index Neon, voir
+// indexUntitled). Chaque titre va dans la base et dans l'index : si la base refuse les écritures (quota du jour), le
+// titre reste dans l'index et y est repris plus tard sans IA. Renvoie le nombre traduit.
 export async function translatePending(env, limit) {
   if (!env.AI) return 0; // pas d'IA (ex. test sur GitHub) : les titres attendent
+  const { indexUntitled, indexTitles, indexSetTitles } = await import('./searchindex.js');
+  const { itemDb } = await import('./shard.js');
+  if (env.NEON_URL) await syncTitlesFromIndex(env, indexTitles).catch((err) => console.log('titres (copie)', String(err).slice(0, 120)));
   const budget = await aiNeurons(env);
   if (budget.used >= TRANSLATE_NEURONS) return 0;
-  const { results } = await env.DB.prepare(
-    `SELECT id, title_zh, translate_failed FROM items
-     WHERE title_en IS NULL AND translate_failed < 3 AND title_zh IS NOT NULL
-       -- d'abord le titre anglais gratuit de la page produit ; sans elle au bout d'un moment, l'IA traduit quand même
-       AND (platform != 'weidian' OR images IS NOT NULL OR first_seen < ?)
-     LIMIT ?`, // pas de tri : on ne lit que les lignes traitées (quota de lectures D1)
-  ).bind(Date.now() - titleWait(env), limit).all();
+  // Candidats de cette base, du plus populaire au moins populaire (3 fois plus que nécessaire : certains attendent).
+  const ranked = await indexUntitled(env, limit * 3);
+  const wanted = ranked ? ranked.filter((c) => itemDb(env, c.id) === env.DB) : null;
+  if (wanted && !wanted.length) return 0;
+  // Sans index : n'importe quels items sans titre (pas de tri : on ne lit que les lignes traitées, quota de lectures).
+  const { results: rows } = await (wanted
+    ? env.DB.prepare(`SELECT id, title_en, title_zh, translate_failed, platform, images, first_seen FROM items WHERE id IN (${wanted.map(() => '?').join(',')})`)
+      .bind(...wanted.map((c) => c.id))
+    : env.DB.prepare(`SELECT id, title_en, title_zh, translate_failed, platform, images, first_seen FROM items
+        WHERE title_en IS NULL AND translate_failed < 3 AND title_zh IS NOT NULL LIMIT ?`).bind(limit * 3)
+  ).all();
+  const candidates = wanted || rows;
+  const byId = new Map(rows.map((r) => [r.id, r]));
+  const settled = []; // titres que l'index n'a pas encore : [[id, titre]]
+  const results = [];
+  for (const c of candidates) {
+    const r = byId.get(c.id);
+    if (!r) continue;
+    if (r.title_en) { settled.push([c.id, r.title_en]); continue; } // traduit dans la base, pas encore dans l'index
+    // Traduction impossible : le titre chinois tient lieu de titre dans l'index (l'item ne revient plus en tête).
+    if (r.translate_failed >= 3) { settled.push([c.id, r.title_zh]); continue; }
+    // D'abord le titre anglais gratuit de la page produit ; sans elle au bout d'un moment, l'IA traduit quand même.
+    if (r.platform === 'weidian' && r.images == null && r.first_seen >= Date.now() - titleWait(env)) continue;
+    if (results.length < limit) results.push(r);
+  }
+  if (wanted) await indexSetTitles(env, settled).catch((err) => console.log('titres (index)', String(err).slice(0, 120)));
   let done = 0;
   for (let i = 0; i < results.length; i += BATCH) {
     const batch = results.slice(i, i + BATCH);
@@ -205,10 +227,35 @@ export async function translatePending(env, limit) {
     const stmts = batch.map((it, j) => (titles[j]
       ? env.DB.prepare("UPDATE items SET title_en = ?, category = CASE WHEN category = 'other' THEN NULL ELSE category END WHERE id = ?").bind(titles[j], it.id)
       : env.DB.prepare('UPDATE items SET translate_failed = translate_failed + 1 WHERE id = ?').bind(it.id)));
-    await env.DB.batch(stmts);
+    const [written] = await Promise.all([
+      env.DB.batch(stmts),
+      indexSetTitles(env, batch.map((it, j) => [it.id, titles[j]]).filter(([, t]) => t)).catch((err) => console.log('titres (index)', String(err).slice(0, 120))),
+    ]);
+    // Base pleine pour aujourd'hui : les titres sont dans l'index, recopiés dans la base plus tard.
+    if (written.some((x) => x && x.meta && x.meta.skipped)) await queueTitles(env, batch.filter((_, j) => titles[j]).map((it) => it.id)).catch(() => {});
     done += titles.filter(Boolean).length;
   }
   return done;
+}
+
+// Titres traduits pendant que la base refusait les écritures (quota du jour) ou à l'affichage : leurs ids attendent
+// dans Upstash (« titles:todo ») et le titre est recopié depuis l'index, sans IA, dès que la base écrit de nouveau.
+export async function queueTitles(env, ids) {
+  if (ids.length) await redis(env, [['RPUSH', 'titles:todo', ...ids], ['LTRIM', 'titles:todo', '-50000', '-1']]);
+}
+
+async function syncTitlesFromIndex(env, indexTitles) {
+  const r = await redis(env, [['LPOP', 'titles:todo', '100']]);
+  const ids = (r && r[0]) || [];
+  if (!ids.length) return;
+  const found = await indexTitles(env, ids);
+  const pairs = Object.entries(found).filter(([, t]) => t && !/[\u4e00-\u9fff]/.test(t));
+  if (!pairs.length) return;
+  const { itemDb, batchByDb } = await import('./shard.js');
+  const res = await batchByDb(pairs.map(([id, t]) => [itemDb(env, id), itemDb(env, id).prepare(
+    "UPDATE items SET title_en = ?, category = CASE WHEN category = 'other' THEN NULL ELSE category END WHERE id = ? AND title_en IS NULL").bind(t, id)]));
+  // Base toujours pleine (ou illisible) : réessayé plus tard.
+  if (res.some(([, list]) => list.some((x) => x && x.meta && x.meta.skipped))) await queueTitles(env, pairs.map(([id]) => id));
 }
 
 // Délai pendant lequel on attend le titre anglais gratuit de la page produit (réglable pour les tests).

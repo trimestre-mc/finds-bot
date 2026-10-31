@@ -26,6 +26,8 @@ const SCHEMA = [
   'DROP INDEX IF EXISTS items_search_txt',
   `CREATE INDEX IF NOT EXISTS items_search_latin ON items_search USING gin ((${TXT}) gin_trgm_ops)`,
   'CREATE INDEX IF NOT EXISTS items_search_pop ON items_search (popularity DESC, first_seen DESC)',
+  // Items sans titre anglais, par popularité (traduction de fond, indexUntitled).
+  'CREATE INDEX IF NOT EXISTS items_search_untitled ON items_search (popularity DESC, first_seen DESC) WHERE title_en IS NULL',
   // Marque lue sur la photo (scanBrands), pour les items dont le titre ne la donne pas ; brand_checked : déjà regardé.
   'ALTER TABLE items_search ADD COLUMN IF NOT EXISTS brand TEXT',
   'ALTER TABLE items_search ADD COLUMN IF NOT EXISTS brand_checked BIGINT',
@@ -154,7 +156,7 @@ async function upsertRows(pe, rows) {
      FROM jsonb_to_recordset($1::jsonb) AS x(id TEXT, title_en TEXT, title_zh TEXT, shop_name TEXT, shop_id TEXT, category TEXT,
        popularity INTEGER, first_seen BIGINT, price_cny REAL, hidden SMALLINT, posted_count INTEGER, qc_count INTEGER,
        prev_price REAL, price_changed_at BIGINT)
-     ON CONFLICT (id) DO UPDATE SET title_en = EXCLUDED.title_en, title_zh = EXCLUDED.title_zh, shop_name = EXCLUDED.shop_name,
+     ON CONFLICT (id) DO UPDATE SET title_en = coalesce(EXCLUDED.title_en, items_search.title_en), title_zh = EXCLUDED.title_zh, shop_name = EXCLUDED.shop_name,
        shop_id = EXCLUDED.shop_id, category = EXCLUDED.category, popularity = EXCLUDED.popularity, first_seen = EXCLUDED.first_seen,
        price = EXCLUDED.price, hidden = EXCLUDED.hidden, posted = EXCLUDED.posted, qc = EXCLUDED.qc,
        prev_price = EXCLUDED.prev_price, price_changed_at = EXCLUDED.price_changed_at, brands = EXCLUDED.brands`,
@@ -333,12 +335,36 @@ export async function indexItems(env, ids) {
   });
 }
 
-// Titres anglais traduits à l'affichage → index (seulement s'il n'en avait pas). pairs = [[id, titre], …]
+// Titres anglais traduits (à l'affichage ou en fond) → index, seulement s'il n'en avait pas. pairs = [[id, titre], …]
 export async function indexSetTitles(env, pairs) {
-  for (const [pe, part] of byPart(env, pairs, ([id]) => id)) {
-    await neon(pe, `UPDATE items_search s SET title_en = x.t FROM jsonb_to_recordset($1::jsonb) AS x(id TEXT, t TEXT)
-      WHERE s.id = x.id AND s.title_en IS NULL`, [JSON.stringify(part.map(([id, t]) => ({ id, t })))]);
+  if (!pairs.length) return;
+  await Promise.all(byPart(env, pairs, ([id]) => id).map(([pe, part]) => neon(pe,
+    `UPDATE items_search s SET title_en = x.t FROM jsonb_to_recordset($1::jsonb) AS x(id TEXT, t TEXT)
+      WHERE s.id = x.id AND s.title_en IS NULL`, [JSON.stringify(part.map(([id, t]) => ({ id, t })))])));
+}
+
+// Items sans titre anglais, les plus populaires d'abord (puis ceux qui ont des QC) : la traduction de fond commence
+// par ceux que les membres voient. [{ id, title_zh }]
+// null si l'index n'est pas là (pas de Neon, ou Neon ne répond pas).
+export async function indexUntitled(env, n) {
+  if (!env.NEON_URL) return null;
+  try {
+    const rows = await Promise.all(neonParts(env).map((pe) => neon(pe,
+      `SELECT id, title_zh FROM items_search WHERE title_en IS NULL AND title_zh IS NOT NULL AND hidden = 0
+       ORDER BY popularity DESC, first_seen DESC LIMIT $1`, [n])));
+    return rows.flat();
+  } catch (err) {
+    console.log('titres (index)', String(err).slice(0, 120));
+    return null;
   }
+}
+
+// Titres anglais de l'index pour ces items : { id: titre }.
+export async function indexTitles(env, ids) {
+  if (!ids.length) return {};
+  const rows = (await Promise.all(byPart(env, ids, (id) => id).map(([pe, part]) => neon(pe,
+    'SELECT id, title_en FROM items_search WHERE title_en IS NOT NULL AND id = ANY($1::text[])', [pgArray(part)]).catch(() => [])))).flat();
+  return Object.fromEntries(rows.map((r) => [r.id, r.title_en]));
 }
 
 // Produits FinderQC trouvés en direct → index de recherche tout de suite (titre, prix, ventes, QC, catégorie).
