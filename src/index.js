@@ -800,9 +800,10 @@ async function handleApi(request, env, url) {
     const { titles, model } = await request.json();
     const t = Date.now();
     try {
-      const list = (titles || []).slice(0, 30);
+      const list = (titles || []).slice(0, 40);
       if (model === 'quick') return json({ titles: await quickTitles(env, list), glossary: list.map(applyGlossary), ms: Date.now() - t });
-      if (model === 'groq') return json({ titles: await groqTitles(env, list), ms: Date.now() - t });
+      if (model === 'groq-models') { const { kvGet } = await import('./kvstore.js'); return json({ models: JSON.parse((await kvGet(env, 'groq:models:2')) || '[]') }); }
+      if (model && model.startsWith('groq')) return json({ titles: await groqTitles(env, list, 20000, model.slice(5) || null), ms: Date.now() - t });
       const usage = [];
       const out = await rewriteTitles(env, list, model && model !== 'short' ? model : undefined, { short: model === 'short', usage });
       return json({ titles: out, usage: usage[0], ms: Date.now() - t });

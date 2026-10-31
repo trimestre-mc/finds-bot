@@ -72,7 +72,8 @@ export function tidyTitle(t) {
 const SYSTEM_SHORT = `Turn messy marketplace listing titles (Chinese, some words already in English) into clean English product titles.
 For each title: 3 to 8 words in Title Case = [Brand if explicitly present] + [model/code if present] + [color if given] + [item type].
 Exact item types: 手镯 bracelet, 项链 necklace, 戒指 ring, 墨镜 sunglasses, 卫衣 hoodie/sweatshirt, 卫裤 sweatpants, 短袖/T恤 tee, 长袖 long sleeve tee, 短裤 shorts, 牛仔裤 jeans, 夹克/外套 jacket, 羽绒服 down jacket, 马甲 vest, 针织 knit, 包 bag.
-Never guess a brand that is not written. Drop seller names, slogans, stock/shipping words (现货, 秒发, 发出, 不退换), fabric details and internal codes.
+Never guess a brand that is not written. Drop seller names, slogans, stock/shipping words (现货, 秒发, 发出, 不退换, 自主), fabric details, internal codes and season codes (25ss, 26SS, 24fw).
+Seller brand codes are brands, write them in full: BAL = Balenciaga, Pra = Prada, ch = Chrome Hearts, 马户 = Louis Vuitton, alex/大王 = Alexander Wang, Acne = Acne Studios.
 Reply with ONLY a JSON array of strings, same order and count as the input.`;
 
 export async function rewriteTitles(env, titles, model = LLM_MODEL, opts = {}) {
@@ -100,50 +101,64 @@ export async function rewriteTitles(env, titles, model = LLM_MODEL, opts = {}) {
 // sont par modèle (requêtes et jetons par jour) : un modèle qui répond 429 est mis de côté jusqu'à la fin de son
 // délai, et le suivant prend le relais. Modèles disponibles relus chaque jour (liste de Groq). null si rien ne répond.
 const GROQ = 'https://api.groq.com/openai/v1';
-const GROQ_PREFERRED = [/qwen3/i, /gpt-oss-120b/i, /llama-3\.3-70b/i, /kimi/i, /llama-4/i, /gpt-oss-20b/i, /llama-3\.1-8b/i];
+// gpt-oss-20b écarté : réponses vides sur nos lots de titres (essai du 31/10/2026).
+const GROQ_PREFERRED = [/qwen3/i, /llama-3\.3-70b/i, /kimi/i, /llama-4/i, /gpt-oss-120b/i, /llama-3\.1-8b/i];
 
 async function groqModels(env) {
-  const cached = await kvGet(env, 'groq:models').catch(() => null);
+  const cached = await kvGet(env, 'groq:models:2').catch(() => null);
   if (cached) return JSON.parse(cached);
   const res = await fetch(`${GROQ}/models`, { headers: { Authorization: `Bearer ${env.GROQ_API_KEY}` }, signal: AbortSignal.timeout(5000) });
   if (!res.ok) throw new Error(`Groq ${res.status}`);
   const ids = ((await res.json()).data || []).map((m) => m.id).filter((id) => !/whisper|guard|tts|compound|playai|orpheus|safeguard/i.test(id));
   const ranked = GROQ_PREFERRED.flatMap((re) => ids.filter((id) => re.test(id)));
   const list = [...new Set(ranked)];
-  await kvSet(env, 'groq:models', JSON.stringify(list), 86400).catch(() => {});
+  await kvSet(env, 'groq:models:2', JSON.stringify(list), 86400).catch(() => {});
   return list;
 }
 
-export async function groqTitles(env, titles, timeoutMs = 20000) {
+// Un appel à un modèle. Lève { limited: secondes } si son quota est atteint, une erreur ordinaire sinon.
+async function groqCall(env, model, titles, timeoutMs) {
+  const reasoning = /qwen3/i.test(model) ? { reasoning_effort: 'none' } : /gpt-oss/i.test(model) ? { reasoning_effort: 'low' } : {};
+  const res = await fetch(`${GROQ}/chat/completions`, {
+    method: 'POST', signal: AbortSignal.timeout(timeoutMs),
+    headers: { Authorization: `Bearer ${env.GROQ_API_KEY}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model, temperature: 0.2, max_tokens: 200 + titles.length * 45, ...reasoning,
+      messages: [{ role: 'system', content: SYSTEM_SHORT }, { role: 'user', content: JSON.stringify(titles.map(applyGlossary)) }],
+    }),
+  });
+  if (res.status === 429 || res.status === 413) {
+    throw Object.assign(new Error('Groq 429'), { limited: Math.min(86400, Math.max(60, Math.ceil(parseFloat(res.headers.get('retry-after')) || 600))) });
+  }
+  if (res.status === 404 || res.status === 400) throw Object.assign(new Error(`Groq ${res.status}`), { limited: 86400 });
+  if (!res.ok) throw new Error(`Groq ${res.status} ${(await res.text()).slice(0, 120)}`);
+  const raw = String((((await res.json()).choices || [])[0] || {}).message?.content || '');
+  const match = raw.replace(/<think>[\s\S]*?<\/think>/g, '').match(/\[[\s\S]*\]/);
+  const arr = match ? JSON.parse(match[0]) : null;
+  const out = Array.isArray(arr) && arr.length === titles.length ? arr.map((t) => tidyTitle(typeof t === 'string' ? t : '')) : null;
+  if (!out || out.filter(Boolean).length < titles.length / 2) throw new Error(`réponse inattendue: ${raw.slice(0, 120)}`);
+  return out;
+}
+
+export async function groqTitles(env, titles, timeoutMs = 20000, only = null) {
   if (!env.GROQ_API_KEY || !titles.length) return null;
-  const models = await groqModels(env).catch((err) => { console.log('groq', String(err).slice(0, 120)); return []; });
+  const models = only ? [only] : await groqModels(env).catch((err) => { console.log('groq', String(err).slice(0, 120)); return []; });
   const off = models.length ? ((await redis(env, [['MGET', ...models.map((m) => `groq:off:${m}`)]])) || [[]])[0] || [] : [];
   for (const [k, model] of models.entries()) {
     if (off[k]) continue;
     try {
-      const reasoning = /qwen3/i.test(model) ? { reasoning_effort: 'none' } : /gpt-oss/i.test(model) ? { reasoning_effort: 'low' } : {};
-      const res = await fetch(`${GROQ}/chat/completions`, {
-        method: 'POST', signal: AbortSignal.timeout(timeoutMs),
-        headers: { Authorization: `Bearer ${env.GROQ_API_KEY}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          model, temperature: 0.2, max_tokens: 200 + titles.length * 45, ...reasoning,
-          messages: [{ role: 'system', content: SYSTEM_SHORT }, { role: 'user', content: JSON.stringify(titles.map(applyGlossary)) }],
-        }),
-      });
-      if (res.status === 429 || res.status === 413) {
-        // Quota de ce modèle atteint : de côté pendant le délai indiqué (au moins une minute, au plus un jour).
-        const wait = Math.min(86400, Math.max(60, Math.ceil(parseFloat(res.headers.get('retry-after')) || 600)));
-        await kvSet(env, `groq:off:${model}`, '1', wait).catch(() => {});
-        continue;
+      try {
+        return await groqCall(env, model, titles, timeoutMs);
+      } catch (err) {
+        // Réponse vide ou incomplète (arrive sur les gros lots) : même modèle, en deux moitiés.
+        if (err.limited || titles.length < 10) throw err;
+        const mid = Math.ceil(titles.length / 2);
+        const [a, b] = await Promise.all([groqCall(env, model, titles.slice(0, mid), timeoutMs), groqCall(env, model, titles.slice(mid), timeoutMs)]);
+        return [...a, ...b];
       }
-      if (res.status === 404 || res.status === 400) { await kvSet(env, `groq:off:${model}`, '1', 86400).catch(() => {}); continue; }
-      if (!res.ok) throw new Error(`Groq ${res.status} ${(await res.text()).slice(0, 120)}`);
-      const raw = String((((await res.json()).choices || [])[0] || {}).message?.content || '');
-      const match = raw.replace(/<think>[\s\S]*?<\/think>/g, '').match(/\[[\s\S]*\]/);
-      const arr = match ? JSON.parse(match[0]) : null;
-      if (!Array.isArray(arr) || arr.length !== titles.length) throw new Error(`réponse inattendue: ${raw.slice(0, 160)}`);
-      return arr.map((t) => tidyTitle(typeof t === 'string' ? t : ''));
     } catch (err) {
+      // Quota de ce modèle atteint (ou modèle retiré) : de côté pendant le délai indiqué, le suivant prend le relais.
+      if (err.limited) await kvSet(env, `groq:off:${model}`, '1', err.limited).catch(() => {});
       console.log('groq', model, String(err).slice(0, 160));
     }
   }
@@ -240,12 +255,14 @@ export async function translatePending(env, limit) {
   const wanted = ranked ? ranked.filter((c) => itemDb(env, c.id) === env.DB) : null;
   if (wanted && !wanted.length) return 0;
   // Sans index : n'importe quels items sans titre (pas de tri : on ne lit que les lignes traitées, quota de lectures).
-  const { results: rows } = await (wanted
-    ? env.DB.prepare(`SELECT id, title_en, title_zh, translate_failed, platform, images, first_seen FROM items WHERE id IN (${wanted.map(() => '?').join(',')})`)
-      .bind(...wanted.map((c) => c.id))
-    : env.DB.prepare(`SELECT id, title_en, title_zh, translate_failed, platform, images, first_seen FROM items
-        WHERE title_en IS NULL AND translate_failed < 3 AND title_zh IS NOT NULL LIMIT ?`).bind(limit * 3)
-  ).all();
+  const COLS = 'id, title_en, title_zh, translate_failed, platform, images, first_seen';
+  const chunks = [];
+  for (let i = 0; wanted && i < wanted.length; i += 90) chunks.push(wanted.slice(i, i + 90)); // D1 : 100 valeurs au plus
+  const rows = wanted
+    ? (await Promise.all(chunks.map((part) => env.DB.prepare(`SELECT ${COLS} FROM items WHERE id IN (${part.map(() => '?').join(',')})`)
+      .bind(...part.map((c) => c.id)).all()))).flatMap((r) => r.results)
+    : (await env.DB.prepare(`SELECT ${COLS} FROM items WHERE title_en IS NULL AND translate_failed < 3 AND title_zh IS NOT NULL LIMIT ?`)
+      .bind(limit * 3).all()).results;
   const candidates = wanted || rows;
   const byId = new Map(rows.map((r) => [r.id, r]));
   const settled = []; // titres que l'index n'a pas encore : [[id, titre]]
