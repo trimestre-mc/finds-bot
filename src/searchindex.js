@@ -333,6 +333,14 @@ export async function indexItems(env, ids) {
   });
 }
 
+// Titres anglais traduits à l'affichage → index (seulement s'il n'en avait pas). pairs = [[id, titre], …]
+export async function indexSetTitles(env, pairs) {
+  for (const [pe, part] of byPart(env, pairs, ([id]) => id)) {
+    await neon(pe, `UPDATE items_search s SET title_en = x.t FROM jsonb_to_recordset($1::jsonb) AS x(id TEXT, t TEXT)
+      WHERE s.id = x.id AND s.title_en IS NULL`, [JSON.stringify(part.map(([id, t]) => ({ id, t })))]);
+  }
+}
+
 // Produits FinderQC trouvés en direct → index de recherche tout de suite (titre, prix, ventes, QC, catégorie).
 export async function indexUpsert(env, list) {
   const { finderKey } = await import('./qc.js');

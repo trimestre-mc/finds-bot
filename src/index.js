@@ -994,6 +994,13 @@ async function handleApi(request, env, url) {
   }
 
   // Diagnostic : /find complet (comme dans Discord), erreur et pile renvoyées.
+  // Diagnostic : derniers événements (recherches, erreurs…).
+  if (path === '/api/events' && request.method === 'GET') {
+    const { redis } = await import('./kvstore.js');
+    const r = await redis(env, [['LRANGE', 'events', '0', '29']]);
+    const { aiNeurons } = await import('./translate.js');
+    return json({ ok: true, aiNeurons: (await aiNeurons(env).catch(() => ({}))).used, events: ((r && r[0]) || []).map((e) => { try { return JSON.parse(e); } catch { return e; } }) });
+  }
   if (path === '/api/find-preview' && request.method === 'GET') {
     const { findView } = await import('./views.js');
     const q = url.searchParams.get('q') || '';

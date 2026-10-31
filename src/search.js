@@ -314,12 +314,18 @@ export async function itemsByIds(env, ids) {
       console.log('fiches (base illisible, index Neon)', String(err).slice(0, 100));
       return indexItems(env, keys);
     })))).flat();
-  // Fiches sans photo (petites pages seulement : /find, menu) : photo FinderQC.
-  const bare = results.filter((r) => !r.image).map((r) => r.id);
-  if (bare.length && ids.length <= 10) {
-    const { finderPhotos } = await import('./qc.js');
-    const photos = await finderPhotos(env, bare).catch(() => ({}));
-    for (const r of results) if (!r.image && photos[r.id]) r.image = photos[r.id];
+  // Petites pages (/find, menu) : photo FinderQC des fiches qui n'en ont pas, et titres pas encore traduits.
+  if (ids.length <= 10) {
+    const bare = results.filter((r) => !r.image).map((r) => r.id);
+    const raw = results.filter((r) => !r.title_en && r.title_zh);
+    const [photos, titles] = await Promise.all([
+      bare.length ? import('./qc.js').then((m) => m.finderPhotos(env, bare)).catch(() => ({})) : {},
+      raw.length ? import('./translate.js').then((m) => m.liveTitles(env, raw)).catch(() => ({})) : {},
+    ]);
+    for (const r of results) {
+      if (!r.image && photos[r.id]) r.image = photos[r.id];
+      if (!r.title_en && titles[r.id]) r.title_en = titles[r.id];
+    }
   }
   const byId = new Map(results.map((r) => [r.id, r]));
   return ids.map((id) => byId.get(id)).filter(Boolean);

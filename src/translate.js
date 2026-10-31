@@ -2,7 +2,7 @@
 // en titres produit courts et propres en anglais. m2m100 sert de secours.
 
 import { chineseBrandNames } from './synonyms.js';
-import { dayAdd, dayGet } from './kvstore.js';
+import { dayAdd, dayGet, redis } from './kvstore.js';
 
 const MT_MODEL = '@cf/meta/m2m100-1.2b';
 // Gemma 4 : meilleurs titres que Llama 3.3 70B sur nos tests (marques reconnues) et ~5 fois moins cher en neurons.
@@ -94,6 +94,39 @@ export async function rewriteTitles(env, titles, model = LLM_MODEL, opts = {}) {
   if (!Array.isArray(arr) || arr.length !== titles.length) throw new Error(`réponse inattendue: ${(raw || JSON.stringify(res)).slice(0, 400)}`);
   if (opts.usage) opts.usage.push(res.usage || null);
   return arr.map(tidyTitle);
+}
+
+// Titres anglais des items affichés qui n'en ont pas encore (traduction de fond en retard, ou base illisible) :
+// gardés 30 jours dans Upstash et copiés dans l'index Neon. Au plus 2,5 s d'attente, sinon le titre chinois reste.
+// items = [{ id, title_zh }] ; renvoie { id: titre }.
+export async function liveTitles(env, items) {
+  if (!items.length) return {};
+  const known = (await redis(env, [['MGET', ...items.map((i) => `ten:${i.id}`)]])) || [[]];
+  const out = {};
+  items.forEach((it, k) => { if (known[0] && known[0][k]) out[it.id] = known[0][k]; });
+  const missing = items.filter((it) => !out[it.id]);
+  if (!missing.length || !env.AI) return out;
+  const budget = await aiNeurons(env).catch(() => null);
+  // Quelques neurons par page : au-delà de la part de la traduction de fond, en gardant de quoi lire les photos.
+  if (!budget || budget.used >= AI_NEURONS_PER_DAY - 1500) return out;
+  let timer;
+  const usage = [];
+  const titles = await Promise.race([
+    rewriteTitles(env, missing.map((it) => it.title_zh), LLM_MODEL, { short: true, usage }).catch((err) => { console.log('titres (affichage)', String(err).slice(0, 160)); return null; }),
+    new Promise((r) => { timer = setTimeout(() => r(null), 2500); }),
+  ]);
+  clearTimeout(timer);
+  if (!titles) return out;
+  const fresh = missing.map((it, k) => [it.id, titles[k]]).filter(([, t]) => t);
+  for (const [id, t] of fresh) out[id] = t;
+  const spent = usage.reduce((n, u) => n + (u && u.neurons ? u.neurons : 0), 0);
+  const { indexSetTitles } = await import('./searchindex.js');
+  await Promise.all([
+    budget.add(Math.round((spent || missing.length * NEURONS_PER_TITLE) * 100) / 100),
+    fresh.length ? redis(env, fresh.map(([id, t]) => ['SET', `ten:${id}`, t, 'EX', '2592000'])) : null,
+    indexSetTitles(env, fresh),
+  ].map((p) => Promise.resolve(p).catch(() => {})));
+  return out;
 }
 
 // Le modèle renvoie parfois une liste vide ou incomplète : on réessaie en deux moitiés.
