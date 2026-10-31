@@ -2,7 +2,7 @@
 // en titres produit courts et propres en anglais. m2m100 sert de secours.
 
 import { chineseBrandNames } from './synonyms.js';
-import { dayAdd, dayGet, redis } from './kvstore.js';
+import { dayAdd, dayGet, redis, kvGet, kvSet } from './kvstore.js';
 
 const MT_MODEL = '@cf/meta/m2m100-1.2b';
 // Gemma 4 : meilleurs titres que Llama 3.3 70B sur nos tests (marques reconnues) et ~5 fois moins cher en neurons.
@@ -96,6 +96,60 @@ export async function rewriteTitles(env, titles, model = LLM_MODEL, opts = {}) {
   return arr.map(tidyTitle);
 }
 
+// Groq (offre gratuite, clé GROQ_API_KEY) : quota en plus de celui de Workers AI, utilisé en premier. Les limites
+// sont par modèle (requêtes et jetons par jour) : un modèle qui répond 429 est mis de côté jusqu'à la fin de son
+// délai, et le suivant prend le relais. Modèles disponibles relus chaque jour (liste de Groq). null si rien ne répond.
+const GROQ = 'https://api.groq.com/openai/v1';
+const GROQ_PREFERRED = [/qwen3/i, /gpt-oss-120b/i, /llama-3\.3-70b/i, /kimi/i, /llama-4/i, /gpt-oss-20b/i, /llama-3\.1-8b/i];
+
+async function groqModels(env) {
+  const cached = await kvGet(env, 'groq:models').catch(() => null);
+  if (cached) return JSON.parse(cached);
+  const res = await fetch(`${GROQ}/models`, { headers: { Authorization: `Bearer ${env.GROQ_API_KEY}` }, signal: AbortSignal.timeout(5000) });
+  if (!res.ok) throw new Error(`Groq ${res.status}`);
+  const ids = ((await res.json()).data || []).map((m) => m.id).filter((id) => !/whisper|guard|tts|compound|playai|orpheus|safeguard/i.test(id));
+  const ranked = GROQ_PREFERRED.flatMap((re) => ids.filter((id) => re.test(id)));
+  const list = [...new Set(ranked)];
+  await kvSet(env, 'groq:models', JSON.stringify(list), 86400).catch(() => {});
+  return list;
+}
+
+export async function groqTitles(env, titles, timeoutMs = 20000) {
+  if (!env.GROQ_API_KEY || !titles.length) return null;
+  const models = await groqModels(env).catch((err) => { console.log('groq', String(err).slice(0, 120)); return []; });
+  const off = models.length ? ((await redis(env, [['MGET', ...models.map((m) => `groq:off:${m}`)]])) || [[]])[0] || [] : [];
+  for (const [k, model] of models.entries()) {
+    if (off[k]) continue;
+    try {
+      const reasoning = /qwen3/i.test(model) ? { reasoning_effort: 'none' } : /gpt-oss/i.test(model) ? { reasoning_effort: 'low' } : {};
+      const res = await fetch(`${GROQ}/chat/completions`, {
+        method: 'POST', signal: AbortSignal.timeout(timeoutMs),
+        headers: { Authorization: `Bearer ${env.GROQ_API_KEY}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model, temperature: 0.2, max_tokens: 200 + titles.length * 45, ...reasoning,
+          messages: [{ role: 'system', content: SYSTEM_SHORT }, { role: 'user', content: JSON.stringify(titles.map(applyGlossary)) }],
+        }),
+      });
+      if (res.status === 429 || res.status === 413) {
+        // Quota de ce modèle atteint : de côté pendant le délai indiqué (au moins une minute, au plus un jour).
+        const wait = Math.min(86400, Math.max(60, Math.ceil(parseFloat(res.headers.get('retry-after')) || 600)));
+        await kvSet(env, `groq:off:${model}`, '1', wait).catch(() => {});
+        continue;
+      }
+      if (res.status === 404 || res.status === 400) { await kvSet(env, `groq:off:${model}`, '1', 86400).catch(() => {}); continue; }
+      if (!res.ok) throw new Error(`Groq ${res.status} ${(await res.text()).slice(0, 120)}`);
+      const raw = String((((await res.json()).choices || [])[0] || {}).message?.content || '');
+      const match = raw.replace(/<think>[\s\S]*?<\/think>/g, '').match(/\[[\s\S]*\]/);
+      const arr = match ? JSON.parse(match[0]) : null;
+      if (!Array.isArray(arr) || arr.length !== titles.length) throw new Error(`réponse inattendue: ${raw.slice(0, 160)}`);
+      return arr.map((t) => tidyTitle(typeof t === 'string' ? t : ''));
+    } catch (err) {
+      console.log('groq', model, String(err).slice(0, 160));
+    }
+  }
+  return null;
+}
+
 // Titres anglais des items affichés qui n'en ont pas encore (traduction de fond en retard, ou base illisible) :
 // gardés dans l'index Neon (recopiés ensuite dans la base par la traduction de fond). Au plus 2,5 s d'attente, sinon le titre chinois reste.
 // items = [{ id, title_zh }] ; renvoie { id: titre }.
@@ -104,14 +158,18 @@ export async function liveTitles(env, items) {
   const { indexTitles, indexSetTitles } = await import('./searchindex.js');
   const out = await indexTitles(env, items.map((it) => it.id)); // déjà traduit en fond, pas encore dans la base
   const missing = items.filter((it) => !out[it.id]);
-  if (!missing.length || !env.AI) return out;
-  const budget = await aiNeurons(env).catch(() => null);
-  // Quelques neurons par page : au-delà de la part de la traduction de fond, en gardant de quoi lire les photos.
-  if (!budget || budget.used >= AI_NEURONS_PER_DAY - 1500) return out;
+  if (!missing.length) return out;
+  const budget = env.AI ? await aiNeurons(env).catch(() => null) : null;
+  // Groq d'abord ; sinon quelques neurons par page, au-delà de la part de la traduction de fond, en gardant de quoi lire les photos.
+  const cfOk = budget && budget.used < AI_NEURONS_PER_DAY - 1500;
+  if (!env.GROQ_API_KEY && !cfOk) return out;
   let timer;
   const usage = [];
+  const zh = missing.map((it) => it.title_zh);
   const titles = await Promise.race([
-    rewriteTitles(env, missing.map((it) => it.title_zh), LLM_MODEL, { short: true, usage }).catch((err) => { console.log('titres (affichage)', String(err).slice(0, 160)); return null; }),
+    (async () => (await groqTitles(env, zh, 2400))
+      || (cfOk ? await rewriteTitles(env, zh, LLM_MODEL, { short: true, usage }) : null))()
+      .catch((err) => { console.log('titres (affichage)', String(err).slice(0, 160)); return null; }),
     new Promise((r) => { timer = setTimeout(() => r(null), 2500); }),
   ]);
   clearTimeout(timer);
@@ -120,7 +178,7 @@ export async function liveTitles(env, items) {
   for (const [id, t] of fresh) out[id] = t;
   const spent = usage.reduce((n, u) => n + (u && u.neurons ? u.neurons : 0), 0);
   await Promise.all([
-    budget.add(Math.round((spent || missing.length * NEURONS_PER_TITLE) * 100) / 100),
+    usage.length ? budget.add(Math.round((spent || missing.length * NEURONS_PER_TITLE) * 100) / 100) : null,
     indexSetTitles(env, fresh),
     queueTitles(env, fresh.map(([id]) => id)), // recopiés dans la base par la traduction de fond
   ].map((p) => Promise.resolve(p).catch(() => {})));
@@ -175,7 +233,8 @@ export async function translatePending(env, limit) {
   const { itemDb } = await import('./shard.js');
   if (env.NEON_URL) await syncTitlesFromIndex(env, indexTitles).catch((err) => console.log('titres (copie)', String(err).slice(0, 120)));
   const budget = await aiNeurons(env);
-  if (budget.used >= TRANSLATE_NEURONS) return 0;
+  // Groq (si sa clé est là) ne compte pas dans le quota de Workers AI : il traduit même quand celui-ci est épuisé.
+  if (budget.used >= TRANSLATE_NEURONS && !env.GROQ_API_KEY) return 0;
   // Candidats de cette base, du plus populaire au moins populaire (3 fois plus que nécessaire : certains attendent).
   const ranked = await indexUntitled(env, limit * 3);
   const wanted = ranked ? ranked.filter((c) => itemDb(env, c.id) === env.DB) : null;
@@ -205,8 +264,9 @@ export async function translatePending(env, limit) {
   let done = 0;
   for (let i = 0; i < results.length; i += BATCH) {
     const batch = results.slice(i, i + BATCH);
-    let titles;
-    try {
+    let titles = await groqTitles(env, batch.map((it) => it.title_zh));
+    if (!titles && budget.used >= TRANSLATE_NEURONS) break; // Groq au plafond et Workers AI aussi : on attend
+    if (!titles) try {
       const usage = [];
       titles = await rewriteInHalves(env, batch.map((it) => it.title_zh), usage);
       const spent = usage.reduce((n, u) => n + (u && u.neurons ? u.neurons : 0), 0);

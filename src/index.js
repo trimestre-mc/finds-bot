@@ -27,7 +27,7 @@ import { describeImage, analyzeQc } from './vision.js';
 import { uploadEmojis, refreshEmojis } from './emojis.js';
 import { expandQuery, suggestQueries } from './synonyms.js';
 import { watchChannels, imageJob, saveFound, handleLiveMessage } from './watch.js';
-import { translatePending, rewriteTitles, titleWait, quickTitles, applyGlossary } from './translate.js';
+import { translatePending, rewriteTitles, titleWait, quickTitles, applyGlossary, groqTitles } from './translate.js';
 import { fetchWeidianItem } from './weidian.js';
 import { extractWeidian, ingest, resolveQueue, scanSource, runDiscovery } from './discover.js';
 import {
@@ -201,7 +201,7 @@ async function handleScheduled(event, env, ctx) {
     if (!over) await ensureIndexes(env).catch((e) => console.log('index', String(e).slice(0, 120)));
     await Promise.all([
       // Traduction et catégories : dans chaque base sous son plafond (quota d'IA commun, voir translate.js).
-      ...open.map((e) => translatePending(e, Math.ceil(TRANSLATE_PER_MINUTE / open.length)).catch((err) => console.log('traduction', String(err)))),
+      ...open.map((e) => translatePending(e, Math.ceil((env.GROQ_API_KEY ? 2 : 1) * TRANSLATE_PER_MINUTE / open.length)).catch((err) => console.log('traduction', String(err)))),
       ...open.map((e) => categorizePending(e, 400, titleWait(env)).catch((err) => console.log('catégories', String(err)))),
       refreshRate(env).catch((e) => console.log('taux', String(e))),
       autoIndex(env).catch((e) => console.log('indexeur', String(e))),
@@ -802,6 +802,7 @@ async function handleApi(request, env, url) {
     try {
       const list = (titles || []).slice(0, 30);
       if (model === 'quick') return json({ titles: await quickTitles(env, list), glossary: list.map(applyGlossary), ms: Date.now() - t });
+      if (model === 'groq') return json({ titles: await groqTitles(env, list), ms: Date.now() - t });
       const usage = [];
       const out = await rewriteTitles(env, list, model && model !== 'short' ? model : undefined, { short: model === 'short', usage });
       return json({ titles: out, usage: usage[0], ms: Date.now() - t });
