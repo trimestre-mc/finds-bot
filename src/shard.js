@@ -73,8 +73,15 @@ export async function itemsWhereIds(env, ids, columns = '*', where = '') {
 }
 
 // Un item par sa clé.
-export function itemById(env, key) {
-  return itemDb(env, key).prepare('SELECT * FROM items WHERE id = ?').bind(key).first();
+// Base illisible (quota du mois) : la fiche vient de l'index de recherche Neon (sans photo), sinon null.
+export async function itemById(env, key) {
+  try {
+    return await itemDb(env, key).prepare('SELECT * FROM items WHERE id = ?').bind(key).first();
+  } catch (err) {
+    if (!/reads are blocked|forbidden/i.test(String(err))) throw err;
+    const { indexItems } = await import('./searchindex.js');
+    return (await indexItems(env, [key]).catch(() => []))[0] || null;
+  }
 }
 
 // Lots par base : statements = [[db, stmt], …]. Renvoie [[db, résultats], …] (lots de 100 au plus).

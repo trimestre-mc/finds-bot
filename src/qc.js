@@ -7,7 +7,7 @@ import { discordApi, discordUpload } from './discord.js';
 import { popularItemStatements } from './items.js';
 import { canonicalUrl } from './links.js';
 import { detectCategory, isDeadLink } from './categories.js';
-import { budget, rowsWritten } from './budget.js';
+import { budget, rowsWritten, readsOver } from './budget.js';
 import { itemDb, onDb, perDb, groupByDb, batchByDb } from './shard.js';
 import { emo, etxt } from './emojis.js';
 import { kvGet, kvSet, kvLock, kvDel, logEvent, finderBusy, finderPaused } from './kvstore.js';
@@ -538,7 +538,7 @@ async function syncLane(env, lane, state, pagesPerRun = SYNC_PAGES_PER_RUN) {
   // Seulement les bases où vont les plateformes de ce parcours.
   const laneDbs = new Set(lane.platforms.map((p) => itemDb(env, `${PLATFORMS[p]}:0`)));
   const shards = await Promise.all(perDb(env).filter((e) => laneDbs.has(e.DB))
-    .map(async (e) => ({ e, b: await budget(e, 'qcsync'), written: 0, rows: 0 })));
+    .map(async (e) => ({ e, b: (await readsOver(e)) ? { left: 0 } : await budget(e, 'qcsync'), written: 0, rows: 0 }))); // base aux lectures bloquées : sautée
   const open = (db) => shards.find((x) => x.e.DB === db && x.written < x.b.left);
   if (!shards.some((x) => x.b.left)) return 0;
 

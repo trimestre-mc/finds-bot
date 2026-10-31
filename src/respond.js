@@ -27,7 +27,7 @@ export function later(it, env, ctx, task, newMessage = false) {
       components = await task();
     } catch (err) {
       console.log('tâche', err && err.stack ? err.stack : String(err));
-      components = errorView(err.message || err);
+      components = errorView();
     }
     await editOriginal(env, it.token, { flags: COMPONENTS_V2, components, allowed_mentions: { parse: [] } })
       .catch((e) => console.log('édition', String(e)));

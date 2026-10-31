@@ -585,9 +585,10 @@ export function deniedView() {
   ], 0xed4245)];
 }
 
-export function errorView(message) {
+// Message sobre pour les membres : le détail technique reste dans les journaux (respond.js, index.js).
+export function errorView() {
   return [container([
-    text(`## ❌ Oups\n${escape(String(message).slice(0, 400))}`),
+    text('## Erreur temporaire\nL\'action n\'a pas pu aboutir. Réessaie dans quelques instants.'),
     row(backHome()),
   ], 0xed4245)];
 }

@@ -10,7 +10,7 @@ import {
   parseItemLink, isValidTemplate, canonicalUrl, buildAgentLink, AGENT_PRESETS, isValidCode, presetTemplate,
 } from './links.js';
 import { idsToPost, withoutCache, allResultIds, itemsByIds } from './search.js';
-import { getRate, refreshRate, formatPrice, postItem, processQueue, postContext } from './post.js';
+import { getRate, refreshRate, formatPrice, postItem, processQueue, postContext, logError } from './post.js';
 import {
   triggerIndexer, handleGo, handlePublicCommand, handlePublicComponent, handleFeatureComponent, handleFeatureModal,
   runSchedules, runQcChannels,
@@ -33,7 +33,7 @@ import { extractWeidian, ingest, resolveQueue, scanSource, runDiscovery } from '
 import {
   QUEUE_PER_MINUTE, homeView, searchModal, loadSearch, createSearch, resultsView, confirmAllView,
   catalogsView, addShopModal, shopView, confirmDeleteShopView, agentsView, agentModal, presetModal, itemModal, signupModal, couponModal,
-  accessView, hasAdminPermission, deniedView, sourcesView, updateSearch } from './ui.js';
+  accessView, hasAdminPermission, deniedView, sourcesView, updateSearch, errorView } from './ui.js';
 import { itemDb, itemById, itemDbs, perDb, allRows, countAll, batchByDb, groupByDb, itemsWhereIds, onDb, itemEnv, deleteShopItems } from './shard.js';
 import { checkWatches, checkSearchAlerts } from './alerts.js';
 import { sendDailyReport, dailyReport, sendWeeklyTop } from './report.js';
@@ -241,6 +241,18 @@ async function handleInteraction(request, env, ctx) {
   const { ok, body } = await verifyRequest(request, env.DISCORD_PUBLIC_KEY);
   if (!ok) return new Response('Bad signature', { status: 401 });
   const it = JSON.parse(body);
+  try {
+    return await routeInteraction(it, env, ctx);
+  } catch (err) {
+    // Erreur imprévue : un message clair au membre (au lieu de « L'interaction a échoué »), le détail dans les journaux.
+    console.log('interaction', (it.data && (it.data.name || it.data.custom_id)) || it.type, err && err.stack ? err.stack : String(err));
+    ctx.waitUntil(logError(env, 'interaction', `${(it.data && (it.data.name || it.data.custom_id)) || it.type} : ${err && err.message ? err.message : err}`));
+    if (it.type === InteractionType.AUTOCOMPLETE) return json({ type: Reply.AUTOCOMPLETE, data: { choices: [] } });
+    return panel(errorView());
+  }
+}
+
+async function routeInteraction(it, env, ctx) {
 
   if (it.type === InteractionType.PING) return json({ type: Reply.PONG });
   // Boutons des MP du bot : « Se désinscrire » (pub) et approbation d'un nouveau serveur (propriétaire).
