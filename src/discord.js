@@ -40,7 +40,17 @@ export async function verifyRequest(request, publicKey) {
   }
 }
 
+// Aucun ping par défaut (@everyone, @here, rôles, membres) : un titre d'item ou un message recopié ne peut pas
+// mentionner tout un serveur. Un envoi qui veut mentionner quelqu'un le dit lui-même (allowed_mentions).
+function noPings(path, body) {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return body;
+  if (/\/threads$/.test(path) && body.message && !body.message.allowed_mentions) return { ...body, message: { ...body.message, allowed_mentions: { parse: [] } } };
+  if (/\/messages(\/|$)|^\/webhooks\/[^/]+\/[^/]+$/.test(path) && !body.allowed_mentions) return { ...body, allowed_mentions: { parse: [] } };
+  return body;
+}
+
 export async function discordApi(env, method, path, body) {
+  body = noPings(path, body);
   for (let attempt = 0; attempt < 3; attempt++) {
     const res = await fetch((env.DISCORD_API || DEFAULT_API) + path, {
       method,
@@ -64,6 +74,7 @@ export async function discordApi(env, method, path, body) {
 
 // Message avec fichiers joints (ex. photos QC). files = [{ name, blob }].
 export async function discordUpload(env, path, payload, files) {
+  payload = noPings(path, payload);
   for (let attempt = 0; attempt < 3; attempt++) {
     const form = new FormData();
     form.append('payload_json', JSON.stringify({

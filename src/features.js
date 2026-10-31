@@ -101,6 +101,10 @@ export async function handlePublicCommand(it, env, ctx) {
   }
   if (it.data.name === 'aide') return panel(await guideView(env), true);
   if (it.data.name === 'suivis') return panel(await watchesView(env, userId(it)), true);
+  if (it.data.name === 'find' || it.data.name === 'qc') {
+    const lim = await rateLimit(env, it.data.name, userId(it), LIMITS[it.data.name]);
+    if (!lim.ok) return panel([container([text(limitText(lim, it.data.name === 'find' ? 'recherches' : 'fenêtres QC'))])]);
+  }
   if (it.data.name === 'find') {
     return later(it, env, ctx, async () => {
       const q = String(opts.recherche || '').slice(0, 100);
@@ -159,6 +163,8 @@ export async function handlePublicComponent(it, env, ctx) {
     const key = parts.slice(2).join(':');
     const [platform, itemId] = key.split(':');
     if (!canonicalUrl(platform, itemId)) return null;
+    const lim = await rateLimit(env, 'qc', userId(it), LIMITS.qc);
+    if (!lim.ok) return panel([container([text(limitText(lim, 'fenêtres QC'))])]);
     ctx.waitUntil(env.DB.prepare('INSERT INTO clicks (item_id, agent, channel_id, at) VALUES (?, ?, ?, ?)')
       .bind(key, 'qc_view', it.channel_id || null, Date.now()).run().catch(() => {}));
     return later(it, env, ctx, () => openQc(env, key, platform, itemId, 0), true);

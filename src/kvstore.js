@@ -137,11 +137,14 @@ export async function rateLimit(env, scope, userId, rules) {
 export const LIMITS = {
   aiqc: [{ s: 20, max: 1 }, { s: 3600, max: 5 }, { s: 86400, max: 15 }],
   image: [{ s: 10, max: 1 }, { s: 3600, max: 30 }],
+  // Recherches et fenêtres QC (Neon, FinderQC en direct) : large pour un membre, mais un spam ne sature plus le bot.
+  find: [{ s: 3, max: 1 }, { s: 60, max: 12 }, { s: 3600, max: 150 }],
+  qc: [{ s: 2, max: 1 }, { s: 60, max: 15 }, { s: 3600, max: 200 }],
 };
 
 // Texte d'attente : « prochaine dans 3 minutes » (horodatage Discord qui se met à jour tout seul).
 export function limitText(lim, what, icon = '⏱️') {
-  const per = lim.rule.s >= 86400 ? 'par jour' : lim.rule.s >= 3600 ? 'par heure' : null;
+  const per = lim.rule.s >= 86400 ? 'par jour' : lim.rule.s >= 3600 ? 'par heure' : lim.rule.s >= 60 ? 'par minute' : null;
   const next = `<t:${Math.ceil(lim.until / 1000)}:R>`;
   return per
     ? `${icon} **Limite atteinte** : ${lim.rule.max} ${what} ${per} et par membre. Prochaine demande possible ${next}.`

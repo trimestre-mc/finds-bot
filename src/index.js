@@ -2,7 +2,7 @@
 // Une seule commande, /menu, ouvre un panneau ; tout le reste passe par boutons, menus et formulaires.
 
 import { InteractionType, Reply, verifyRequest, discordApi, json, reply } from './discord.js';
-import { panel, update, openModal, later, userId } from './respond.js';
+import { panel, update, openModal, later, inTime, userId } from './respond.js';
 import { COMMANDS } from './commands.js';
 import { modalValues, escape, fmtInt, COMPONENTS_V2 } from './components.js';
 import { guideView, couponView } from './views.js';
@@ -284,7 +284,7 @@ async function routeInteraction(it, env, ctx) {
     return (await handlePublicCommand(it, env, ctx)) || reply('Commande inconnue.');
   }
   if (it.type === InteractionType.COMPONENT && it.data.custom_id.startsWith('pub:')) {
-    return (await handlePublicComponent(it, env, ctx)) || reply('Action inconnue.');
+    return inTime(it, env, ctx, async () => (await handlePublicComponent(it, env, ctx)) || reply('Action inconnue.'));
   }
 
   if (!(await isAdmin(env, it))) {
@@ -292,8 +292,8 @@ async function routeInteraction(it, env, ctx) {
   }
 
   if (it.type === InteractionType.COMMAND) return panel(await homeView(env, it, null, ctx));
-  if (it.type === InteractionType.COMPONENT) return onComponent(it, env, ctx);
-  if (it.type === MODAL_SUBMIT) return onModal(it, env, ctx);
+  if (it.type === InteractionType.COMPONENT) return inTime(it, env, ctx, () => onComponent(it, env, ctx));
+  if (it.type === MODAL_SUBMIT) return inTime(it, env, ctx, () => onModal(it, env, ctx));
   return reply('Action inconnue.');
 }
 
@@ -776,9 +776,16 @@ async function jadeshipDue(env) {
 
 // ---------------------------------------------------------------- API de l'indexeur
 
+// Comparaison en temps constant : la durée de la réponse ne révèle pas le secret, caractère par caractère.
+function sameSecret(given, expected) {
+  const a = new TextEncoder().encode(given);
+  const b = new TextEncoder().encode(expected);
+  if (a.length !== b.length) return false;
+  return crypto.subtle.timingSafeEqual ? crypto.subtle.timingSafeEqual(a, b) : a.every((x, i) => x === b[i]);
+}
+
 async function handleApi(request, env, url) {
-  const auth = request.headers.get('Authorization') || '';
-  if (!env.INDEXER_SECRET || auth !== `Bearer ${env.INDEXER_SECRET}`) return json({ error: 'unauthorized' }, 401);
+  if (!env.INDEXER_SECRET || !sameSecret(request.headers.get('Authorization') || '', `Bearer ${env.INDEXER_SECRET}`)) return json({ error: 'unauthorized' }, 401);
   const path = url.pathname;
 
   if (path === '/api/register-commands' && request.method === 'POST') {
