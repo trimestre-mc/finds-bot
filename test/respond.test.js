@@ -38,3 +38,13 @@ test('itemById : autre erreur toujours remontée', async () => {
   const broken = { prepare: () => ({ bind: () => ({ first: async () => { throw new Error('réseau'); } }) }) };
   await assert.rejects(itemById({ DB: broken }, 'weidian:7234567890'), /réseau/);
 });
+
+test('batchByDb : une base aux lectures bloquées n\'empêche pas d\'écrire dans l\'autre', async () => {
+  const { batchByDb } = await import('../src/shard.js');
+  const written = [];
+  const ok = { batch: async (l) => { written.push(...l); return l.map(() => ({ meta: { rows_written: 1 } })); } };
+  const blocked = { batch: async () => { throw new Error('Turso : reads are blocked'); } };
+  const out = await batchByDb([[blocked, 'a'], [ok, 'b'], [blocked, 'c']]);
+  assert.deepEqual(written, ['b']);
+  assert.equal(out.find(([db]) => db === blocked)[1].length, 2);
+});

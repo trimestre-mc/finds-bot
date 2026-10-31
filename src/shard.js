@@ -94,7 +94,14 @@ export async function batchByDb(statements) {
   const out = [];
   for (const [db, list] of map) {
     const results = [];
-    for (let i = 0; i < list.length; i += 100) results.push(...await db.batch(list.slice(i, i + 100)));
+    try {
+      for (let i = 0; i < list.length; i += 100) results.push(...await db.batch(list.slice(i, i + 100)));
+    } catch (err) {
+      // Base aux lectures bloquées (quota du mois) : son lot est sauté, les autres bases sont quand même écrites.
+      if (map.size < 2 || !/reads are blocked|forbidden/i.test(String(err))) throw err;
+      console.log('lot sauté (lectures bloquées)', String(err).slice(0, 100));
+      while (results.length < list.length) results.push({ results: [], meta: { rows_written: 0, skipped: true } });
+    }
     out.push([db, results]);
   }
   return out;

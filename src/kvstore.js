@@ -41,8 +41,8 @@ const today = () => new Date().toISOString().slice(0, 10);
 // Compteur du jour (remis à zéro chaque jour UTC) : ajoute n et renvoie le nouveau total.
 export async function dayAdd(env, name, n = 1) {
   const key = `${name}:${today()}`;
-  const op = Number.isInteger(n) ? ['INCRBY', key, String(n)] : ['INCRBYFLOAT', key, String(n)];
-  const r = await pipeline(env, [op, ['EXPIRE', key, '172800']]);
+  // Toujours en décimal : un compteur qui a reçu une fois 0,5 refuserait ensuite tout INCRBY entier (budgets sous-comptés).
+  const r = await pipeline(env, [['INCRBYFLOAT', key, String(n)], ['EXPIRE', key, '172800']]);
   return r === undefined ? undefined : Number(r[0]);
 }
 
