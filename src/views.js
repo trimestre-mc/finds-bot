@@ -355,11 +355,14 @@ export async function healthView(env) {
   const writesCap = Number(env.BUDGET_MONTH_ROWS) || 9000000;
   const M = (n) => `${(Number(n || 0) / 1e6).toFixed(1).replace('.', ',')} M`;
   const quotas = await Promise.all(itemDbs(env).map(async (db, i) => {
-    const { results } = await db.prepare("SELECT key, value FROM settings WHERE key IN ('reads:month', 'budget:month')").all();
+    const name = `**Base ${i + 1}${i ? ' (Taobao + 1688)' : env.DB2 ? ' (Weidian)' : ''}**`;
+    const got = await db.prepare("SELECT key, value FROM settings WHERE key IN ('reads:month', 'budget:month')").all().catch(() => null);
+    if (!got) return `${okq(false)} ${name} : lectures bloquées jusqu'au 1er du mois (quota mensuel atteint)`;
+    const { results } = got;
     const v = Object.fromEntries(results.map((r) => { try { return [r.key, JSON.parse(r.value)]; } catch { return [r.key, {}]; } }));
     const reads = (v['reads:month'] || {}).rows || 0;
     const written = (v['budget:month'] || {}).rows || 0;
-    return `${okq(reads < readsCap)} **Base ${i + 1}${i ? ' (Taobao + 1688)' : env.DB2 ? ' (Weidian)' : ''}** : lectures ${M(reads)} / ${M(readsCap)} · écritures ${M(written)} / ${M(writesCap)}` +
+    return `${okq(reads < readsCap)} ${name} : lectures ${M(reads)} / ${M(readsCap)} · écritures ${M(written)} / ${M(writesCap)}` +
       (reads >= readsCap ? ' · ⏸️ indexation en pause jusqu\'au 1er' : '');
   }));
   const neurons = await aiNeurons(env);

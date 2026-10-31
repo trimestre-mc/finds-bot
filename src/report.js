@@ -25,6 +25,8 @@ export async function dailyReport(env, save = false) {
     env.DB.prepare('SELECT kind, message, at FROM logs WHERE at > ? ORDER BY id DESC LIMIT 3').bind(since).all(),
     aiNeurons(env),
     Promise.all(itemDbs(env).map(async (db, i) => {
+      // Base illisible (quota du mois) : rapport quand même envoyé, sans ses chiffres.
+      if (!(await db.prepare('SELECT 1 FROM settings LIMIT 1').first().then(() => true).catch(() => false))) return { i, blocked: true };
       const [top, month, reads, prev] = await Promise.all([
         db.prepare('SELECT MAX(rowid) AS m FROM items').first(),
         read(db, 'budget:month'), read(db, 'reads:month'), read(db, 'report:rowid'),
@@ -37,7 +39,7 @@ export async function dailyReport(env, save = false) {
   const writeCap = Number(env.BUDGET_MONTH_ROWS) || 9000000;
   const readCap = Number(env.READS_MONTH_CAP) || 480000000;
   const names = ['Weidian', 'Taobao + 1688'];
-  const baseLines = bases.map((b) => `**Base ${b.i + 1} · ${names[b.i] || ''}** : ≈ ${fmtInt(b.last)} items` +
+  const baseLines = bases.map((b) => b.blocked ? `**Base ${b.i + 1} · ${names[b.i] || ''}** : lectures bloquées jusqu'au 1er du mois` : `**Base ${b.i + 1} · ${names[b.i] || ''}** : ≈ ${fmtInt(b.last)} items` +
     (b.added != null ? ` (**+${fmtInt(b.added)}** en 24 h)` : '') +
     `\n-# écritures ${millions(b.written)} (${pct(b.written, writeCap)})  ·  lectures ${millions(b.reads)} (${pct(b.reads, readCap)})` +
     (b.reads >= readCap ? '  ·  ⏸️ indexation en pause jusqu\'au 1er du mois' : ''));
