@@ -83,7 +83,7 @@ export async function rewriteTitles(env, titles, model = LLM_MODEL, opts = {}) {
       { role: 'system', content: opts.short ? SYSTEM_SHORT : SYSTEM },
       { role: 'user', content: JSON.stringify(opts.short ? titles.map(applyGlossary) : titles) + (reasoning ? ' /no_think' : '') },
     ],
-    max_tokens: 60 + titles.length * 30,
+    max_tokens: 120 + titles.length * 45, // marge : une réponse coupée fait échouer tout le lot
     temperature: 0.2,
     ...(reasoning ? { chat_template_kwargs: { enable_thinking: false }, reasoning_effort: 'low' } : {}),
   });
