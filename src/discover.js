@@ -100,7 +100,11 @@ export async function resolveQueue(env, limit) {
 }
 
 async function resolveQueueOn(env, db, limit) {
-  const { results } = await db.prepare('SELECT item_id, source FROM link_queue LIMIT ?').bind(limit).all();
+  // Base illisible (quota du mois) : sa file attend, celle des autres bases avance.
+  const results = await db.prepare('SELECT item_id, source FROM link_queue LIMIT ?').bind(limit).all().then((r) => r.results).catch((err) => {
+    if (!/reads are blocked|forbidden/i.test(String(err))) throw err;
+    return [];
+  });
   let added = 0;
   for (const row of results) {
     try {

@@ -153,7 +153,8 @@ export async function toggleSearchAlert(env, userId, guildId, params) {
   const n = await env.DB.prepare('SELECT COUNT(*) AS n FROM search_alerts WHERE user_id = ?').bind(userId).first();
   if (n.n >= MAX_SEARCH_ALERTS) return `${e('fb_warn')} Tu as déjà ${MAX_SEARCH_ALERTS} alertes : supprimes-en une dans \`/suivis\`.`;
   // Seuls les items ajoutés après la création de l'alerte comptent.
-  const cursors = await Promise.all(itemDbs(env).map((db) => db.prepare('SELECT MAX(rowid) AS m FROM items').first().then((r) => r.m || 0)));
+  // Base illisible (quota du mois) : pas de repère pour elle, le passage périodique part de son propre curseur.
+  const cursors = await Promise.all(itemDbs(env).map((db) => db.prepare('SELECT MAX(rowid) AS m FROM items').first().then((r) => r.m || 0).catch(() => null)));
   await env.DB.prepare('INSERT INTO search_alerts (user_id, guild_id, q, params, cursors, at) VALUES (?, ?, ?, ?, ?, ?)')
     .bind(userId, guildId || null, q.slice(0, 100), key, JSON.stringify(cursors), Date.now()).run();
   const price = params.max != null ? ` à ${params.max} ${ctx.money.code} max` : '';
@@ -171,8 +172,9 @@ export async function checkSearchAlerts(env) {
   const saved = await env.DB.prepare("SELECT value FROM settings WHERE key = 'salert:cursor'").first();
   let cursors = [];
   try { cursors = saved ? JSON.parse(saved.value) : []; } catch {}
-  const tops = await Promise.all(dbs.map((db) => db.prepare('SELECT MAX(rowid) AS m FROM items').first().then((r) => r.m || 0)));
-  const next = tops.map((top, i) => (cursors[i] == null ? top : Math.min(top, cursors[i] + NEW_ROWS_PER_RUN)));
+  // Base illisible : son curseur ne bouge pas, les autres bases sont quand même parcourues.
+  const tops = await Promise.all(dbs.map((db) => db.prepare('SELECT MAX(rowid) AS m FROM items').first().then((r) => r.m || 0).catch(() => null)));
+  const next = tops.map((top, i) => (top == null ? (cursors[i] ?? null) : cursors[i] == null ? top : Math.min(top, cursors[i] + NEW_ROWS_PER_RUN)));
   await env.DB.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('salert:cursor', ?)").bind(JSON.stringify(next)).run();
   if (!alerts.length) return 0;
   const parsed = alerts.map((a) => {
@@ -185,10 +187,10 @@ export async function checkSearchAlerts(env) {
   const byUser = new Map();
   for (const [i, db] of dbs.entries()) {
     if (cursors[i] == null || next[i] <= cursors[i]) continue;
-    const { results: rows } = await db.prepare(
+    const rows = await db.prepare(
       `SELECT rowid AS _r, id, platform, item_id, url, title_en, title_zh, shop_name, category, price_cny, image, popularity, qc_count
        FROM items WHERE rowid > ? AND rowid <= ? AND hidden = 0`,
-    ).bind(cursors[i], next[i]).all();
+    ).bind(cursors[i], next[i]).all().then((r) => r.results).catch((err) => { console.log('alertes recherche : base sautée', String(err).slice(0, 100)); return []; });
     for (const a of parsed) {
       for (const r of rows) {
         if (r._r <= (a.from[i] || 0)) continue;
