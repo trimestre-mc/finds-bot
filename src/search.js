@@ -314,6 +314,13 @@ export async function itemsByIds(env, ids) {
       console.log('fiches (base illisible, index Neon)', String(err).slice(0, 100));
       return indexItems(env, keys);
     })))).flat();
+  // Fiches sans photo (petites pages seulement : /find, menu) : photo FinderQC.
+  const bare = results.filter((r) => !r.image).map((r) => r.id);
+  if (bare.length && ids.length <= 10) {
+    const { finderPhotos } = await import('./qc.js');
+    const photos = await finderPhotos(env, bare).catch(() => ({}));
+    for (const r of results) if (!r.image && photos[r.id]) r.image = photos[r.id];
+  }
   const byId = new Map(results.map((r) => [r.id, r]));
   return ids.map((id) => byId.get(id)).filter(Boolean);
 }

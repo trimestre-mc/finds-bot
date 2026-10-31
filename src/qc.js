@@ -10,7 +10,7 @@ import { detectCategory, isDeadLink } from './categories.js';
 import { budget, rowsWritten, readsOver } from './budget.js';
 import { itemDb, onDb, perDb, groupByDb, batchByDb } from './shard.js';
 import { emo, etxt } from './emojis.js';
-import { kvGet, kvSet, kvLock, kvDel, logEvent, finderBusy, finderPaused } from './kvstore.js';
+import { kvGet, kvSet, kvLock, kvDel, logEvent, finderBusy, finderPaused, redis } from './kvstore.js';
 import { ADULT } from './titles.js';
 
 const UA = 'finds-bot/1.0 (+https://github.com/trimestre-mc/finds-bot)';
@@ -50,6 +50,30 @@ export async function fetchQcPage(itemId, page = 1) {
 }
 
 const PLATFORMS = { Weidian: 'weidian', Taobao: 'taobao', Ali1688: '1688' };
+
+// Photo produit FinderQC des items sans photo (fiches venues de l'index Neon quand leur base est illisible).
+// Gardée 30 jours dans Upstash ; au plus 1,5 s d'attente, sinon l'item reste sans photo. { id: url }
+export async function finderPhotos(env, ids) {
+  if (!ids.length) return {};
+  const known = (await redis(env, [['MGET', ...ids.map((id) => `img:${id}`)]])) || [[]];
+  const out = {};
+  ids.forEach((id, i) => { if (known[0] && known[0][i]) out[id] = known[0][i]; });
+  const missing = ids.filter((id) => !out[id]);
+  if (!missing.length) return out;
+  const found = await Promise.all(missing.map(async (id) => {
+    try {
+      const res = await fetch(`${API}?id=${encodeURIComponent(id.split(':')[1])}&page=1&pageSize=1`, { headers: { 'User-Agent': UA }, signal: AbortSignal.timeout(1500) });
+      if (!res.ok) return null;
+      const s = ((await res.json()).data || {}).spuInfo || {};
+      const url = s.picUrl || s.originalThubnaiUrl || s.originalThubnaiURL;
+      return /^https:\/\//.test(url || '') ? [id, url] : null;
+    } catch { return null; }
+  }));
+  const fresh = found.filter(Boolean);
+  for (const [id, url] of fresh) out[id] = url;
+  if (fresh.length) await redis(env, fresh.map(([id, url]) => ['SET', `img:${id}`, url, 'EX', '2592000'])).catch(() => {});
+  return out;
+}
 
 // Repfind (2e source, avec l'accord de son propriétaire) : utilisé quand FinderQC n'a rien pour l'item.
 const REPFIND = 'https://www.repfind.ai/client';
