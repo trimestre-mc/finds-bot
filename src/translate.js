@@ -123,7 +123,8 @@ async function groqCall(env, model, titles, timeoutMs) {
     method: 'POST', signal: AbortSignal.timeout(timeoutMs),
     headers: { Authorization: `Bearer ${env.GROQ_API_KEY}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      model, temperature: 0.2, max_tokens: 200 + titles.length * 45, ...reasoning,
+      // gpt-oss : sa réflexion compte dans max_tokens (réponse coupée sinon).
+      model, temperature: 0.2, max_tokens: 200 + titles.length * 45 + (/gpt-oss/i.test(model) ? 1500 : 0), ...reasoning,
       messages: [{ role: 'system', content: SYSTEM_SHORT }, { role: 'user', content: JSON.stringify(titles.map(applyGlossary)) }],
     }),
   });
