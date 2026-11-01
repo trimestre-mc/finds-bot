@@ -1146,6 +1146,72 @@ async function handleApi(request, env, url) {
     return json({ ok: true, ...out });
   }
 
+  // Retour sur Turso (1er nov. 2026) : recopie dans la base 1 ce que D1 a reçu pendant le secours (items Weidian,
+  // titres, boutiques, salons, réglages). Rien n'est effacé : un item déjà présent ne reçoit que ce qui lui manque.
+  // ?table=items&from=<rowid D1>&size=…, ?table=config, ?dry=1 pour compter seulement.
+  if (path === '/api/db1/merge' && request.method === 'POST') {
+    const { tursoDb } = await import('./turso.js');
+    if (!env.TURSO_URL || !env.TURSO_TOKEN) return json({ ok: false, error: 'pas de Turso' });
+    const d1 = Object.getPrototypeOf(env).DB;
+    const t1 = tursoDb(env.TURSO_URL, env.TURSO_TOKEN, { calls: 0 });
+    const colsOf = async (db, table) => new Set((await db.prepare(`SELECT name FROM pragma_table_info('${table}')`).all()).results.map((r) => r.name));
+    const table = url.searchParams.get('table') || 'items';
+    if (url.searchParams.get('dry')) {
+      const tables = ['items', 'shops', 'link_queue', 'agents', 'admins', 'sources', 'convert_channels', 'image_channels', 'aiqc_channels', 'qc_channels', 'watches', 'qc_votes', 'search_alerts', 'schedules'];
+      const out = {};
+      for (const t of tables) {
+        const [a, b] = await Promise.all([d1, t1].map((db) => db.prepare(`SELECT COUNT(*) AS n FROM ${t}`).first().then((r) => r.n, (e) => String(e.message || e).slice(0, 80))));
+        out[t] = { d1: a, turso: b };
+      }
+      out.tursoMaxRowid = (await t1.prepare('SELECT MAX(rowid) AS m FROM items').first()).m;
+      return json(out);
+    }
+    if (table === 'items') {
+      const from = Number(url.searchParams.get('from')) || 0;
+      const size = Math.min(Number(url.searchParams.get('size')) || 2000, 4000);
+      const { results } = await d1.prepare('SELECT * FROM items WHERE rowid > ? AND rowid <= ?').bind(from, from + size).all();
+      let rows = 0;
+      if (results.length) {
+        const dest = await colsOf(t1, 'items');
+        const cols = Object.keys(results[0]).filter((c) => dest.has(c));
+        const fill = ['title_en', 'image', 'images', 'category', 'qc_count', 'qc_preview', 'qc_checked_at'].filter((c) => dest.has(c));
+        const sql = `INSERT INTO items (${cols.join(', ')}) VALUES (${cols.map(() => '?').join(', ')})
+          ON CONFLICT(id) DO UPDATE SET ${fill.map((c) => `${c} = coalesce(items.${c}, excluded.${c})`).join(', ')}
+          WHERE ${fill.map((c) => `(items.${c} IS NULL AND excluded.${c} IS NOT NULL)`).join(' OR ')}`;
+        for (let i = 0; i < results.length; i += 200) {
+          const res = await t1.batch(results.slice(i, i + 200).map((r) => t1.prepare(sql).bind(...cols.map((c) => r[c]))));
+          rows += res.reduce((n, r) => n + ((r.meta && r.meta.rows_written) || 0), 0);
+        }
+      }
+      const max = (await d1.prepare('SELECT MAX(rowid) AS m FROM items').first()).m || 0;
+      return json({ ok: true, read: results.length, rowsWritten: rows, next: from + size, done: from + size >= max });
+    }
+    // Petites tables : D1 a l'état le plus récent (remplace la ligne de même clé) ; boutiques et file de liens aussi.
+    const out = {};
+    const keep = ['emojis', 'rates', 'rates_at', 'cny_eur', 'cny_eur_at', 'jadeship_at'];
+    for (const t of ['agents', 'admins', 'sources', 'convert_channels', 'image_channels', 'aiqc_channels', 'qc_channels', 'watches', 'qc_votes', 'shops', 'link_queue', 'settings']) {
+      const { results } = await d1.prepare(t === 'settings' ? `SELECT * FROM settings WHERE key IN (${keep.map(() => '?').join(', ')})` : `SELECT * FROM ${t}`)
+        .bind(...(t === 'settings' ? keep : [])).all();
+      if (!results.length) { out[t] = 0; continue; }
+      const dest = await colsOf(t1, t);
+      const cols = Object.keys(results[0]).filter((c) => dest.has(c));
+      const sql = `INSERT ${t === 'link_queue' ? 'OR IGNORE' : 'OR REPLACE'} INTO ${t} (${cols.join(', ')}) VALUES (${cols.map(() => '?').join(', ')})`;
+      for (let i = 0; i < results.length; i += 200) {
+        await t1.batch(results.slice(i, i + 200).map((r) => t1.prepare(sql).bind(...cols.map((c) => r[c]))));
+      }
+      out[t] = results.length;
+    }
+    // Alertes de recherche : leur curseur suit les rowid ; les items recopiés ne doivent pas partir en message privé.
+    const [top, cur] = await Promise.all([
+      t1.prepare('SELECT MAX(rowid) AS m FROM items').first(),
+      d1.prepare("SELECT value FROM settings WHERE key = 'salert:cursor'").first(),
+    ]);
+    const next = JSON.parse((cur && cur.value) || '[0,0]');
+    next[0] = top.m || 0;
+    await t1.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('salert:cursor', ?)").bind(JSON.stringify(next)).run();
+    return json({ ok: true, copied: out, alertCursor: next });
+  }
+
   // Copie de secours du contexte des cartes (agents, réglages) dans Upstash, utilisée si la base est illisible.
   if (path === '/api/ctx-cache' && request.method === 'POST') {
     const { kvSet } = await import('./kvstore.js');
