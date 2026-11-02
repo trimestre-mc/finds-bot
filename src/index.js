@@ -1367,11 +1367,14 @@ async function handleApi(request, env, url) {
   // Diagnostic : état de chaque base du catalogue (taille approchée par le dernier rowid, compteurs du mois).
   if (path === '/api/db-stats' && request.method === 'GET') {
     return json(await Promise.all(itemDbs(env).map(async (db, i) => {
+      // Une base bloquée (quota de lectures) ne doit pas cacher l'état de l'autre.
+      return (async () => {
       const [top, settings] = await Promise.all([
         db.prepare('SELECT MAX(rowid) AS m FROM items').first(),
         db.prepare("SELECT key, value FROM settings WHERE key IN ('budget:month', 'reads:month', 'qcsync', 'qcsync:2', 'budget:items', 'budget:qcsync')").all(),
       ]);
       return { base: i + 1, lastRowid: top.m, settings: Object.fromEntries(settings.results.map((r) => [r.key, r.value])) };
+      })().catch((err) => ({ base: i + 1, error: String(err.message || err).slice(0, 160) }));
     })));
   }
 

@@ -163,14 +163,17 @@ async function upsertRows(pe, rows) {
   [JSON.stringify(rows)]);
 }
 
-// L'index est utilisable quand chaque base du catalogue a été copiée en entier au moins une fois.
-// Gardé 60 s en mémoire une fois prêt (deux lectures Upstash en moins à chaque recherche).
+// L'index est utilisable quand chaque base du catalogue a été copiée en entier au moins une fois, ou que sa copie
+// est en cours (curseur posé). Sinon chaque recherche lit les bases Turso : le 01/11/2026, après le retour sur la
+// base 1 (nouvelle copie 'db1' pas finie), les recherches ont vidé en un jour le quota de lectures des deux bases.
+// Gardé 60 s en mémoire une fois prêt (lectures Upstash en moins à chaque recherche).
 let readyMemo = 0;
 export async function searchIndexReady(env) {
   if (!env.NEON_URL || env.SEARCH_INDEX === '0') return false;
   if (Date.now() - readyMemo < 60000) return true;
-  const done = await Promise.all(perDb(env).map((e) => kvGet(env, `sidx:done:${dbTag(e, env)}`)));
-  if (done.every((v) => v)) { readyMemo = Date.now(); return true; }
+  const tags = perDb(env).map((e) => dbTag(e, env));
+  const state = await Promise.all(tags.map((t) => Promise.all([kvGet(env, `sidx:done:${t}`), kvGet(env, `sidx:cursor:${t}`)])));
+  if (state.every(([done, cursor]) => done || Number(cursor) > 0)) { readyMemo = Date.now(); return true; }
   return false;
 }
 
